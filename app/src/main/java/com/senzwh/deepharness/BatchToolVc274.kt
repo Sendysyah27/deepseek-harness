@@ -12,7 +12,9 @@ import org.json.JSONObject
 // - tiap call yang dieksekusi = 1 langkah terhadap cap lane (latar 50,
 //   grup 3 per anggota, tim 6, room 50 kumulatif per sesi); penolakan
 //   validasi O3, call yang ditunda (O7), dan call yang dilewati TIDAK
-//   memakan langkah dan TIDAK dihitung StuckDetector.
+//   memakan langkah dan TIDAK dihitung StuckDetector — KECUALI sejak
+//   vc303 P1-5 (LP-8): rejected IKUT recordOutcome (memakan 1 langkah +
+//   dihitung StuckWatch, kunci ke-3); deferred/skipped tetap tidak.
 // - tool READ yang independen dan berurutan dieksekusi KONKUREN (pool
 //   maks 4 — aman karena Tools.execute memakai ThreadLocal untuk
 //   lastResultId dan lastFullLength, dan execute() me-reset keduanya di
@@ -188,8 +190,9 @@ object BatchToolVc274 {
     //   jalur sekuensial.
     // - recordOutcome: pembukuan SATU call yang dieksekusi, di thread
     //   koordinator dan sesuai urutan (langkah lane +1, korpus/transkrip,
-    //   EventDb, dsb.); dipanggil HANYA untuk kind ok/failed/unknown —
-    //   TIDAK untuk rejected/deferred/skipped. Mengembalikan teks
+    //   EventDb, dsb.); dipanggil untuk kind ok/failed/unknown DAN —
+    //   sejak vc303 P1-5 (LP-8) — rejected (dihitung StuckDetector);
+    //   TIDAK untuk deferred/skipped. Mengembalikan teks
     //   StuckDetector ("" bila tidak ada); bila mengandung tanda berhenti,
     //   engine menghentikan sisa batch.
     fun runBatch(
@@ -241,7 +244,13 @@ object BatchToolVc274 {
                 }
                 val groupOutcomes = runReadGroup(group.map { batch[it] to batchIds[it] }, executeOne)
                 for (oc in groupOutcomes) {
-                    val stuck = if (oc.kind == "rejected") "" else recordOutcome(oc)
+                    // VC303-P1-5 (LP-8): rejected IKUT recordOutcome —
+                    // dulu dilewati (""), sehingga panggilan tervalidasi-
+                    // gagal berulang di batch tidak pernah dihitung
+                    // StuckDetector. Efek samping dicatat: rejected kini
+                    // memakan 1 langkah lane (konsisten dengan jalur
+                    // tunggal 1-1 yang mencatat rejected sebagai step).
+                    val stuck = recordOutcome(oc)
                     outcomes.add(if (stuck.isBlank()) oc else oc.copy(stuckText = stuck))
                     priorIds.add(oc.callId)
                     val wp = AgentPrompt.writtenPathOf(oc.tool, oc.args)
@@ -260,7 +269,13 @@ object BatchToolVc274 {
             }
             val oc = executeOne(tool, effArgs, callId, depReason)
             if (oc.kind == "rejected") {
-                outcomes.add(oc)
+                // VC303-P1-5 (LP-8): rejected IKUT recordOutcome (lihat
+                // catatan di kelompok baca di atas) — StuckDetector
+                // menghitung rejected berulang per (tool, jenis penolakan)
+                // dan mengunci di ke-3.
+                val stuckRejVc303 = recordOutcome(oc)
+                outcomes.add(if (stuckRejVc303.isBlank()) oc else oc.copy(stuckText = stuckRejVc303))
+                if (AgentPrompt.StuckWatch.isStop(stuckRejVc303)) { stopBatch = true; stopReason = "StuckDetector mengunci giliran" }
             } else {
                 val stuck = recordOutcome(oc)
                 outcomes.add(if (stuck.isBlank()) oc else oc.copy(stuckText = stuck))

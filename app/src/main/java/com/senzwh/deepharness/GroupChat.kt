@@ -274,6 +274,15 @@ object GroupChat {
                     currentAgent = m.name
                     try { listener.onTurnStart(m.name) } catch (e: Exception) {}
                     var prompt = buildPrompt(app, m, userText, memories, execMode)
+                    // VC303-P2-11 (CX-4): jejak tool ronde anggota ini —
+                    // ditulis ke kunci grup di akhir giliran anggota.
+                    // Dideklarasi DI LUAR try di bawah supaya terlihat juga
+                    // dari catch (local fun di dalam try tidak terlihat di
+                    // catch); list dibuat baru tiap anggota.
+                    val roundWorkVc303 = ArrayList<WorkItem>()
+                    fun flushGroupWorkVc303() {
+                        if (roundWorkVc303.isNotEmpty()) WorkNotesVc301.appendToKey(app, WorkNotesVc301.groupNotesKey(), roundWorkVc303, { s -> RedactSecrets.redact(s) })
+                    }
                     try {
                         val client = SlotClient(app, slot, auth.first, auth.second)
                         var finalText: String? = null
@@ -316,6 +325,8 @@ object GroupChat {
                                 recordOutcome = { oc ->
                                     toolIter++
                                     roundToolsVc249.add(oc.tool)
+                                    // VC303-P2-11 (CX-4): kumpulkan jejak tool grup (jalur batch).
+                                    roundWorkVc303.add(WorkItem(oc.tool, oc.ms, oc.ok, RedactSecrets.redact(oc.result).take(120), evidence = oc.result, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", totalChars = oc.resultTotal, callId = oc.callId))
                                     roundCorpusVc249.append("🔧 ").append(if (oc.callId.isNotBlank()) "[" + oc.callId + "] " else "").append(oc.tool).append(": ").append(RedactSecrets.redact(oc.result).take(4000)).append("\n")
                                     val toolTextGrpVc274 = ActivityTitle.formatText(oc.tool, oc.args, RedactSecrets.redact(oc.result), oc.ms, !WorkLog.isFailed(oc.result))
                                     try { mdb.addGroupMsg("tool", m.name, toolTextGrpVc274) } catch (e: Exception) {}
@@ -381,6 +392,11 @@ object GroupChat {
                                 break
                             }
                             val t0GrpVc254 = System.currentTimeMillis()
+                            // VC303-P2-11 (CX-4): R-id sebelum eksekusi —
+                            // runGroupTool bisa kembali tanpa mengeksekusi
+                            // (mis. analyze_photo di grup) sehingga R-id
+                            // lama di ThreadLocal TIDAK boleh dipakai.
+                            val grpRidBeforeVc303 = Tools.lastResultId()
                             val result = runGroupTool(app, tool, args, listener, callIdGrpVc272)
                             val msGrpVc254 = System.currentTimeMillis() - t0GrpVc254
                             roundToolsVc249.add(tool)
@@ -400,6 +416,11 @@ object GroupChat {
                             }
                             val grpId = Tools.lastResultId()
                             val grpTotal = Tools.lastFullLength()
+                            // VC303-P2-11 (CX-4): kumpulkan jejak tool grup (jalur tunggal).
+                            run {
+                                val grpRidVc303 = if (grpId != null && grpId != grpRidBeforeVc303) grpId else ""
+                                roundWorkVc303.add(WorkItem(tool, msGrpVc254, !WorkLog.isFailed(result), RedactSecrets.redact(result).take(120), evidence = result, args = args.toString().take(4000), resultId = grpRidVc303, totalChars = if (grpRidVc303.isBlank()) 0 else grpTotal, callId = callIdGrpVc272))
+                            }
                             // vc254: teks simpanan grup jadi format aktivitas
                             // (judul + status + argumen + hasil). Korpus
                             // reviewer (roundCorpusVc249) TIDAK diubah.
@@ -516,7 +537,13 @@ object GroupChat {
                                 }
                             }
                         }
+                        // VC303-P2-11 (CX-4): akhir giliran anggota — tulis
+                        // catatan kerja grup untuk ronde ini.
+                        flushGroupWorkVc303()
                     } catch (e: Exception) {
+                        // VC303-P2-11 (CX-4): giliran anggota gagal di tengah —
+                        // tetap tulis jejak tool yang sudah jalan.
+                        try { flushGroupWorkVc303() } catch (e2: Exception) {}
                         val note = "⚠️ ${m.name} gagal: " + (e.message ?: "").take(200)
                         try { mdb.addGroupMsg("sistem", "Sistem", note) } catch (e: Exception) {}
                         listener.onSystem(note)
@@ -605,6 +632,10 @@ object GroupChat {
         if (factsVc240.isNotBlank()) base.append("MEMORI PERSISTEN (fakta user):\n").append(factsVc240).append("\n\n")
         val goalsVc240 = try { RedactSecrets.redact(MemoryDb.get(app).goalsText(userText)) } catch (e: Exception) { "" }
         if (goalsVc240.isNotBlank()) base.append("TUJUAN AKTIF:\n").append(goalsVc240).append("\n\n")
+        // VC303-P2-11 (CX-4): catatan kerja grup (satu kunci untuk seluruh
+        // grup — grup tidak punya sessionId) — ronde berikut melihat hasil
+        // tool ronde sebelumnya walau sudah keluar dari 30 pesan terakhir.
+        run { val wbGrpVc303 = WorkNotesVc301.blockForKey(app, WorkNotesVc301.groupNotesKey()); if (wbGrpVc303.isNotBlank()) base.append("[CATATAN KERJA GRUP]\n").append(wbGrpVc303).append("\n\n") }
         if (toolsEnabled) {
             // vc240 M18: cap base ditegakkan dengan memangkas katalog
             // (bukan hanya transkrip) — katalog penuh dicap 6000 char

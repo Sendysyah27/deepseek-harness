@@ -9,7 +9,7 @@ import org.json.JSONObject
  * waktu kerja (workedMillis ala Jarves). Disimpan sebagai JSON di kolom
  * history.work (MemoryDb v7) dan dikirim ke UI React sebagai event chat.work.
  */
-data class WorkItem(val tool: String, val ms: Long, val ok: Boolean, val summary: String, val evidence: String = "", val args: String = "", val resultId: String = "", val callId: String = "")
+data class WorkItem(val tool: String, val ms: Long, val ok: Boolean, val summary: String, val evidence: String = "", val args: String = "", val resultId: String = "", val callId: String = "", val totalChars: Int = 0) // VC303-P2-12 (CX-6): total char hasil tool (dari resultTotal/lastFullLengthTL) — dibawa ke formatLine WorkNotes; default 0 = tidak diketahui (baris lama tanpa "(N char)").
 
 object WorkLog {
     /** JSON {"items":[{tool,ms,ok,summary}],"totalMs":N} — null bila tak ada tool. */

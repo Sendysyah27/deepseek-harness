@@ -72,32 +72,44 @@ object TeamRun {
             lane.copy(slot = s)
         }
         val results = arrayOfNulls<String>(eff.size)
+        // VC303-P2-11 (CX-5): R-id tiap tool per lane — dikumpulkan
+        // runLane, ditulis ke teamBoard + disisipkan ke string hasil
+        // run_team supaya masuk baris WorkNotes 1-1.
+        val laneRidsArr = Array(eff.size) { emptyList<String>() }
         writeBoard(app, goal, eff, results, "berjalan")
         val latch = CountDownLatch(eff.size)
         eff.forEachIndexed { i, lane ->
             Thread {
-                try { results[i] = runLane(app, lane) } catch (e: Exception) { results[i] = "Ruang gagal jalan: ${e.message}" }
-                writeBoard(app, goal, eff, results, "berjalan")
+                try { val prVc303 = runLane(app, lane); results[i] = prVc303.first; laneRidsArr[i] = prVc303.second } catch (e: Exception) { results[i] = "Ruang gagal jalan: ${e.message}" }
+                writeBoard(app, goal, eff, results, "berjalan", laneRidsArr.toList())
                 latch.countDown()
             }.apply { isDaemon = true }.start()
         }
         try { latch.await(7, TimeUnit.MINUTES) } catch (e: Exception) {}
         val done = results.mapIndexed { i, r -> r ?: "Ruang ${eff[i].agentName}: belum selesai dalam batas 7 menit — dicatat belum tuntas." }
-        writeBoard(app, goal, eff, done.toTypedArray(), honestBoardStatus(done))
+        writeBoard(app, goal, eff, done.toTypedArray(), honestBoardStatus(done), laneRidsArr.toList())
         val verify = verify(app, goal, eff, done)
         val sb = StringBuilder()
         sb.append("HASIL TIM (").append(eff.size).append(" ruang paralel, status papan: ").append(honestBoardStatus(done)).append(") — tujuan: ").append(goal).append("\n")
         eff.forEachIndexed { i, l ->
             sb.append("\n— Ruang ").append(l.agentName).append(" (slot ").append(if (l.slot < 0) "tanpa slot" else "Browser " + l.slot).append("): ").append(done[i].take(8000)).append("\n")
+            // VC303-P2-11 (CX-5): daftar R-id lane disisipkan di sini —
+            // string hasil run_team ini yang masuk SATU baris WorkNotes
+            // 1-1, jadi R-id tiap tool lane tetap bisa ditelusur.
+            if (laneRidsArr[i].isNotEmpty()) sb.append("[R-id lane ").append(l.agentName).append(": ").append(laneRidsArr[i].joinToString(", ")).append("]\n")
         }
         sb.append("\nVERIFIKASI SILANG (Mentor): ").append(verify.take(8000))
         sb.append("\n\nSintesiskan hasil tim ini menjadi jawaban final untuk user: gabungkan temuan tiap ruang, sebutkan yang belum tuntas apa adanya, jangan mengarang di luar hasil ruang.")
         return sb.toString()
     }
 
-    private fun runLane(app: Context, lane: Lane): String {
-        if (lane.slot < 0) return "Ruang ${lane.agentName}: tidak ada akun login untuk lane ini (slot yang diminta kosong, atau semua slot login sudah dipakai lane lain) — buka Browser di Setup, login, lalu ulangi."
-        val api = makeClient(app, lane.slot) ?: return "Ruang ${lane.agentName}: Browser ${lane.slot} belum login — buka Browser ${lane.slot} di Setup, login, lalu ulangi."
+    // VC303-P2-11 (CX-5): mengembalikan Pair(hasil, daftar R-id tool lane)
+    // — R-id dikumpulkan dari BatchToolVc274 outcomes (recordOutcome) +
+    // jalur tunggal (Tools.lastResultId sesudah execute).
+    private fun runLane(app: Context, lane: Lane): Pair<String, List<String>> {
+        if (lane.slot < 0) return "Ruang ${lane.agentName}: tidak ada akun login untuk lane ini (slot yang diminta kosong, atau semua slot login sudah dipakai lane lain) — buka Browser di Setup, login, lalu ulangi." to emptyList()
+        val api = makeClient(app, lane.slot) ?: return "Ruang ${lane.agentName}: Browser ${lane.slot} belum login — buka Browser ${lane.slot} di Setup, login, lalu ulangi." to emptyList()
+        val laneRidsVc303 = ArrayList<String>()
         val role = when (lane.agentId.lowercase()) {
             "mandor" -> "Kamu berperan sebagai Mandor — eksekutor lapangan: kerjakan tugas secara konkret langkah demi langkah, pakai tool yang perlu, laporkan hasil apa adanya termasuk kegagalan."
             "mentor" -> "Kamu berperan sebagai Mentor — pemeriksa kritis: kerjakan tugas dengan teliti, tandai risiko, asumsi, dan ketidakpastian secara eksplisit."
@@ -180,6 +192,8 @@ object TeamRun {
                 recordOutcome = { oc ->
                     steps++
                     usedToolsVc249.add(oc.tool)
+                    // VC303-P2-11 (CX-5): R-id lane (jalur batch).
+                    oc.resultId?.takeIf { it.isNotBlank() }?.let { if (it !in laneRidsVc303) laneRidsVc303.add(it) }
                     // vc298 (1B): tiap outcome batch masuk jejak tool lane.
                     appendTraceVc298(oc.tool, oc.ok, oc.result)
                     if (oc.prereqFailed) "" else stuckWatchTeamVc263.observe(oc.tool, oc.args, oc.result)
@@ -247,6 +261,11 @@ object TeamRun {
             steps++
             if (steps > maxSteps) { finalText = honestCapStopVc277(); break }
             if (visible.isNotBlank()) transcript.append("\nAsisten: ").append(visible.take(1000))
+            // VC303-P2-11 (CX-5): R-id sebelum eksekusi — Tools.execute
+            // membersihkan ThreadLocal R-id di awal; cabang pesan (tool
+            // BERISIKO / run_team di dalam lane) tidak mengeksekusi, jadi
+            // R-id lama TIDAK boleh dipakai.
+            val ridBeforeTeamVc303 = Tools.lastResultId()
             val result = when {
                 // vc246 GELOMBANG 5 (TL-M9, pilihan implementasi): sama
                 // seperti latar — rencana tim kini ditulis lewat
@@ -264,6 +283,11 @@ object TeamRun {
                     }
                     Tools.execute(app, tool, args, callIdTeamVc272)
                 }
+            }
+            // VC303-P2-11 (CX-5): R-id lane (jalur tunggal).
+            run {
+                val ridAfterTeamVc303 = Tools.lastResultId()
+                if (ridAfterTeamVc303 != null && ridAfterTeamVc303 != ridBeforeTeamVc303 && ridAfterTeamVc303 !in laneRidsVc303) laneRidsVc303.add(ridAfterTeamVc303)
             }
             transcript.append("\n[HASIL TOOL] $tool" + (if (callIdTeamVc272.isNotBlank()) " [$callIdTeamVc272]" else "") + ": ").append(result.take(4000))
             // vc298 (1B): jalur tunggal ikut masuk jejak tool lane.
@@ -335,7 +359,7 @@ object TeamRun {
                 outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + outTeamVc249
             }
         }
-        return outTeamVc249
+        return outTeamVc249 to laneRidsVc303
     }
 
     private fun rebuildPrompt(app: Context, lane: Lane, transcript: StringBuilder): String {
@@ -385,7 +409,10 @@ object TeamRun {
             val lanes = root.optJSONArray("lanes") ?: org.json.JSONArray()
             for (i in 0 until lanes.length()) {
                 val l = lanes.optJSONObject(i) ?: continue
-                sb.append("— Lane ").append(l.optString("agent")).append(": ").append(if (l.optBoolean("done", false)) "selesai" else "berjalan").append(" — ").append(l.optString("result").take(300)).append("\n")
+                // VC303-P2-11 (CX-5): tampilkan R-id lane dari teamBoard.
+                val ridsVc303 = l.optJSONArray("rids")
+                val ridsTxtVc303 = if (ridsVc303 != null && ridsVc303.length() > 0) " [R-id: " + (0 until ridsVc303.length()).joinToString(", ") { ridsVc303.optString(it) } + "]" else ""
+                sb.append("— Lane ").append(l.optString("agent")).append(": ").append(if (l.optBoolean("done", false)) "selesai" else "berjalan").append(" — ").append(l.optString("result").take(300)).append(ridsTxtVc303).append("\n")
             }
             sb.toString()
         } catch (e: Exception) { "" }
@@ -401,7 +428,7 @@ object TeamRun {
         return if (bad) "sebagian" else "selesai"
     }
 
-    private fun writeBoard(app: Context, goal: String, lanes: List<Lane>, results: Array<String?>, status: String) {
+    private fun writeBoard(app: Context, goal: String, lanes: List<Lane>, results: Array<String?>, status: String, rids: List<List<String>>? = null) {
         try {
             val arr = JSONArray()
             lanes.forEachIndexed { i, l ->
@@ -411,6 +438,14 @@ object TeamRun {
                 o.put("task", l.task.take(120))
                 o.put("done", results[i] != null)
                 o.put("result", (results[i] ?: "").take(220))
+                // VC303-P2-11 (CX-5): R-id lane disimpan TERPISAH dari
+                // result 220 char (tidak muat di situ) — dibaca Monitor
+                // (boardText) + dibawa ke string hasil run_team.
+                if (rids != null && i < rids.size && rids[i].isNotEmpty()) {
+                    val ra = JSONArray()
+                    for (r in rids[i]) ra.put(r)
+                    o.put("rids", ra)
+                }
                 arr.put(o)
             }
             val root = JSONObject()

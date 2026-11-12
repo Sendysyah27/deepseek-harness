@@ -308,6 +308,11 @@ object BgBrain {
         // sama; tanpa blok ini agen latar mengulang langkah yang sudah selesai
         // di chat. Kunci = sessionId pemilik (sudah diwariskan submit).
         run { val wb = AgentPrompt.workNotesBlockVc302(ctx, sessionId); if (wb.isNotBlank()) sb.append("\n\n").append(wb) }
+        // VC303-P2-10 (CX-3): catatan kerja latar origin yang sama,
+        // berdampingan dengan WorkNotes sesi pemilik — tugas latar
+        // berikut melihat hasil tool tugas latar sebelumnya (bukan hanya
+        // brief sekali-pakai yang sudah dihapus saat dibaca).
+        run { val wbBgVc303 = WorkNotesVc301.blockForKey(ctx, WorkNotesVc301.bgNotesKey(origin)); if (wbBgVc303.isNotBlank()) sb.append("\n\n[CATATAN KERJA LATAR — origin $origin]\n").append(wbBgVc303) }
         sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
         // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan) — tugas latar.
         sb.append("\n\n").append(AgentPrompt.PAGING_TOTAL_RULE_VC302)
@@ -359,9 +364,12 @@ object BgBrain {
         // origin yang sama. TIDAK ada retry diam-diam di sini.
         val keyVc263 = (jobId ?: ("origin:" + origin + ":" + task.hashCode())).replace(" ", "_")
         val startVc263 = System.currentTimeMillis()
+        // VC303-P2-10 (CX-3): jejak tool tugas latar ini — dikumpulkan
+        // loopInner, ditulis ke kunci ber-namespace di finally (di bawah).
+        val bgWorkVc303 = ArrayList<WorkItem>()
         try {
             prefs(ctx).edit().putLong("bgActive_" + keyVc263, startVc263).putLong("bgHeartbeat_" + keyVc263, startVc263).putLong("bgLastSuccess_" + keyVc263, startVc263).apply()
-            loopInnerVc263(ctx, api, task, origin, notifTitle, sessionId, transcript, steps0, firstPrompt, jobId, jobTools)
+            loopInnerVc263(ctx, api, task, origin, notifTitle, sessionId, transcript, steps0, firstPrompt, jobId, jobTools, bgWorkVc303)
         } finally {
             try {
                 val pVc263 = prefs(ctx)
@@ -378,12 +386,17 @@ object BgBrain {
                     edVc263.putString("bgBriefLast_" + origin, briefVc263)
                     edVc263.putLong("bgBriefLastTs_" + origin, System.currentTimeMillis()).apply()
                 }
+                // VC303-P2-10 (CX-3): selain brief sekali-pakai, tulis
+                // WorkNotes ber-namespace per origin (tool+R-id+ok) — tugas
+                // latar berikut (origin sama/beda) dan 1-1 tidak lagi buta
+                // terhadap hasil latar; brief tetap ditulis seperti dulu.
+                WorkNotesVc301.appendToKey(ctx, WorkNotesVc301.bgNotesKey(origin), bgWorkVc303, { s -> RedactSecrets.redact(s) })
             } catch (e: Exception) {}
         }
     }
 
     private fun loopInnerVc263(ctx: Context, api: DsApiClient, task: String, origin: String, notifTitle: String?,
-                     sessionId: Long, transcript: StringBuilder, steps0: Int, firstPrompt: String?, jobId: String? = null, jobTools: Set<String>? = null) {
+                     sessionId: Long, transcript: StringBuilder, steps0: Int, firstPrompt: String?, jobId: String? = null, jobTools: Set<String>? = null, workVc303: MutableList<WorkItem>? = null) {
         // vc265 V-m7 (vc299: plafon naik 50 → 200): batas atas dicocokkan dengan UI (200).
         val maxSteps = prefs(ctx).getInt("maxToolSteps", 50).coerceIn(5, 200)
         // vc266: FAKTA PIN penuh sekali per tugas latar — dipakai gate bukti, warning, dan filter reviewer.
@@ -432,6 +445,8 @@ object BgBrain {
                 recordOutcome = { oc ->
                     steps++
                     usedToolsVc249.add(oc.tool)
+                    // VC303-P2-10 (CX-3): kumpulkan jejak tool latar (jalur batch).
+                    workVc303?.add(WorkItem(oc.tool, oc.ms, oc.ok, RedactSecrets.redact(oc.result).take(120), evidence = oc.result, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", totalChars = oc.resultTotal, callId = oc.callId))
                     try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] tool " + oc.tool + " -> " + oc.result.take(160)) } catch (e: Exception) {}
                     try {
                         val hbBgVc274 = System.currentTimeMillis()
@@ -578,6 +593,13 @@ object BgBrain {
                 return
             }
             if (visible.isNotBlank()) transcript.append("\nAsisten: ").append(visible.take(2000))
+            // VC303-P2-10 (CX-3): R-id sebelum eksekusi — Tools.execute
+            // membersihkan ThreadLocal R-id di awal, jadi bila sesudah
+            // `when` nilainya BERUBAH, itulah R-id tool ini; bila sama /
+            // null, tool tidak dieksekusi / tidak tersimpan (cabang pesan
+            // analyze_photo/delete_session/parkir) — jangan pakai id basi.
+            val t0BgVc303 = System.currentTimeMillis()
+            val ridBeforeBgVc303 = Tools.lastResultId()
             val result: String = when {
                 // vc246 GELOMBANG 5 (TL-M9, pilihan implementasi):
                 // make_plan/update_plan latar kini BENAR-BENAR menulis
@@ -631,6 +653,12 @@ object BgBrain {
                     return
                 }
                 else -> Tools.execute(ctx, tool, args, callIdBgVc272)
+            }
+            // VC303-P2-10 (CX-3): kumpulkan jejak tool latar (jalur tunggal).
+            run {
+                val ridAfterBgVc303 = Tools.lastResultId()
+                val ridBgVc303 = if (ridAfterBgVc303 != null && ridAfterBgVc303 != ridBeforeBgVc303) ridAfterBgVc303 else ""
+                workVc303?.add(WorkItem(tool, System.currentTimeMillis() - t0BgVc303, !WorkLog.isFailed(result), RedactSecrets.redact(result).take(120), evidence = result, args = args.toString().take(4000), resultId = ridBgVc303, totalChars = if (ridBgVc303.isBlank()) 0 else Tools.lastFullLength(), callId = callIdBgVc272))
             }
             lastRejected = if (result.startsWith("⚠️ PANGGILAN TOOL DITOLAK SISTEM")) tool else null
             try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] tool $tool -> ${result.take(160)}") } catch (e: Exception) {}

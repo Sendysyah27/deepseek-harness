@@ -1670,7 +1670,7 @@ object Tools {
                     val off = args.optInt("offset", 0).coerceAtLeast(0)
                     val lim = args.optInt("limit", 2000).coerceIn(1, 2000)
                     val e = ResultStore.get(ctx, id)
-                    if (e == null) "id tidak ditemukan (mungkin sudah dibersihkan/TTL 48 jam habis atau melebihi batas store) — jalankan ulang tool aslinya."
+                    if (e == null) "id tidak ditemukan — R-id kedaluwarsa/TTL (atau sudah dibersihkan/melebihi batas store) — baca ulang dari file sumber, jangan mengarang isinya." // VC303-P2-13 (CX-8)
                     else if (off >= e.total) "offset $off di luar total ${e.total} char untuk $id — tidak ada potongan yang bisa dibaca."
                     else if (off >= e.text.length) "id $id tersimpan terpotong di ${e.text.length} char dari total ${e.total} char — offset $off di luar bagian yang tersimpan; jalankan ulang tool aslinya untuk hasil penuh."
                     else {
@@ -1694,7 +1694,7 @@ object Tools {
                     val pat = args.optString("pattern")
                     val ctxN = args.optInt("context", 200).coerceIn(0, 500)
                     val e = ResultStore.get(ctx, id)
-                    if (e == null) "id tidak ditemukan (mungkin sudah dibersihkan/TTL 48 jam habis atau melebihi batas store) — jalankan ulang tool aslinya."
+                    if (e == null) "id tidak ditemukan — R-id kedaluwarsa/TTL (atau sudah dibersihkan/melebihi batas store) — baca ulang dari file sumber, jangan mengarang isinya." // VC303-P2-13 (CX-8)
                     else if (pat.isEmpty()) "grep_result butuh pattern."
                     else {
                         val hits = ArrayList<Pair<Int, String>>()
@@ -1938,7 +1938,14 @@ object Tools {
                     else if (slug.length > 80) "create_skill ditolak: nama slug ${slug.length} karakter, maks 80."
                     else if (specVc262.blocked) { try { AttentionBudget.noteSkillBlocked(ctx) } catch (e: Exception) {}; "create_skill DITOLAK oleh SkillSpector (pemindai keamanan impor, BUKAN approval eksekusi tool): " + SkillSpector.verdictText(specVc262) + ". Perbaiki isi skill (hapus pola kredensial/shell/jaringan/injeksi) lalu coba lagi." }
                     else if (linesVc293 > SkillJudge.MAX_LINES) "create_skill ditolak (vc293 aturan 500 baris): instruction $linesVc293 baris, maks ${SkillJudge.MAX_LINES}. Pindahkan detail ke bagian REFERENSI di akhir instruction (tandai 'REFERENSI — baca hanya bila ...') dan ringkas intinya <=500 baris — progressive disclosure hemat konteks DeepSeek web."
-                    else if (judgeVc293.d1 <= SkillJudge.D1_REJECT_MAX) "create_skill DITOLAK oleh Skill Judge vc293: Knowledge Delta D1 = ${judgeVc293.d1}/20 (rendah) — " + judgeVc293.reasons.joinToString("; ") + ". Perbaiki draf: " + judgeVc293.improvements.joinToString("; ") + ". Skill TIDAK disimpan."
+                    else if (judgeVc293.d1 <= SkillJudge.D1_REJECT_MAX) run {
+                        // VC303-P1-4 (LP-7): hitung create_skill yang ditolak
+                        // D1 per skill per giliran, batas sama (5). Ke-6:
+                        // berhenti + laporkan ke user, jangan ulangi draf.
+                        val d1nVc303 = EvalLoopGuardVc303.noteD1Rejection(slug, TurnMetrics.currentTurnNo())
+                        val baseVc303 = "create_skill DITOLAK oleh Skill Judge vc293: Knowledge Delta D1 = ${judgeVc293.d1}/20 (rendah) — " + judgeVc293.reasons.joinToString("; ") + ". Perbaiki draf: " + judgeVc293.improvements.joinToString("; ") + ". Skill TIDAK disimpan."
+                        if (d1nVc303 >= EvalLoopGuardVc303.MAX_EVAL_ITERATIONS_VC303 + 1) baseVc303 + " Ini penolakan D1 ke-$d1nVc303 untuk skill '$slug' di giliran ini (batas ${EvalLoopGuardVc303.MAX_EVAL_ITERATIONS_VC303}) — BERHENTI mengulang draf yang sama; laporkan draf terbaik sejauh ini ke user dan minta user memilih/mengubah arah." else baseVc303
+                    }
                     else {
                         // vc302 Fix D (verify-before-write): menimpa skill
                         // yang sudah ada WAJIB didahului baca live state
@@ -1960,6 +1967,10 @@ object Tools {
                             val res = MemoryDb.get(ctx).forgeUpsert(slug, ins, dsc)
                             if (res.first <= 0) "Gagal menyimpan skill '$slug'."
                             else {
+                                // VC303-P1-4 (LP-7): draf ditulis ulang =
+                                // seri iterasi eval baru (maks 5 dihitung
+                                // dari draf ini); seri lama direset.
+                                try { EvalLoopGuardVc303.resetEvalIterations(slug) } catch (e: Exception) {}
                                 // vc302 Fix D (D2): sebut ukuran lama vs
                                 // baru di hasil sukses.
                                 val newVerVc302 = try { MemoryDb.get(ctx).latestSkillVersion(res.first)?.versionNo ?: 0 } catch (e: Exception) { 0 }
@@ -2136,7 +2147,41 @@ object Tools {
                         val sk = MemoryDb.get(ctx).skillByName(slugifySkillName(q)) ?: MemoryDb.get(ctx).skills().firstOrNull { it.name.equals(q, ignoreCase = true) }
                         if (sk == null) "Skill '$q' tidak ditemukan — cek list_skills."
                         else if (arr == null) "forge_trigger_eval butuh queries: array objek {query, should_trigger} — minimal 8 should-trigger + 8 should-not-trigger (ideal 20); duplikat dan query tanpa kata konten ditolak."
-                        else SkillJudge.triggerEvalText(sk.descr, arr, votesVc301)
+                        else run {
+                            // VC303-P1-4 (LP-7): penghitung iterasi eval 5x
+                            // di code (dulu hanya teks prompt). Naik tiap
+                            // forge_trigger_eval tanpa eval_save sukses;
+                            // iterasi ke-6 ditolak: laporkan TEST terbaik +
+                            // minta user memilih.
+                            val slugVc303 = slugifySkillName(q)
+                            val iterVc303 = EvalLoopGuardVc303.noteEvalIteration(slugVc303)
+                            if (iterVc303 > EvalLoopGuardVc303.MAX_EVAL_ITERATIONS_VC303) {
+                                val bestVc303 = EvalLoopGuardVc303.bestEval(slugVc303)
+                                val bestTxtVc303 = if (bestVc303 == null) "belum ada eval dengan vote yang tercatat untuk skill ini."
+                                else "TEST terbaik sejauh ini: ${bestVc303.second}% (deskripsi: \"${bestVc303.first}\")."
+                                "forge_trigger_eval ditolak: iterasi eval ke-$iterVc303 untuk skill '$slugVc303' — batas maks ${EvalLoopGuardVc303.MAX_EVAL_ITERATIONS_VC303} iterasi tercapai. $bestTxtVc303 Laporkan TEST terbaik ke user dan minta user memilih: pakai deskripsi terbaik itu, ubah arah, atau lanjut manual — jangan eval lagi."
+                            } else {
+                                val outVc303 = SkillJudge.triggerEvalText(sk.descr, arr, votesVc301)
+                                // VC303-P1-1 (EV-1/2/5 opsi a): simpan run
+                                // sesudah eval sukses — hanya bila ada
+                                // agent_votes + validasi lolos (hasil error
+                                // diawali "forge_trigger_eval:" tidak
+                                // disimpan). Gagal simpan run tidak
+                                // menggagalkan hasil eval.
+                                if (votesVc301 != null && !outVc303.startsWith("forge_trigger_eval:")) {
+                                    try {
+                                        val runVc303 = triggerEvalFromVotesVc303(votesVc301)
+                                        if (runVc303 != null) {
+                                            val mdbVc303 = MemoryDb.get(ctx)
+                                            val verNoVc303 = try { mdbVc303.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                                            mdbVc303.saveEvalRun(sk.id, runVc303.first, arr.toString(), votesVc301.toString(), runVc303.second, runVc303.third, descrHashVc303(sk.descr, sk.instruction), verNoVc303)
+                                            EvalLoopGuardVc303.noteEvalBest(slugVc303, sk.descr, runVc303.third)
+                                        }
+                                    } catch (e: Exception) {}
+                                }
+                                outVc303
+                            }
+                        }
                     }
                 }
                 "forge_eval_save" -> {
@@ -2147,37 +2192,110 @@ object Tools {
                     else {
                         val sk = MemoryDb.get(ctx).skillByName(slugifySkillName(q)) ?: MemoryDb.get(ctx).skills().firstOrNull { it.name.equals(q, ignoreCase = true) }
                         if (sk == null) "Skill '$q' tidak ditemukan — cek list_skills."
-                        else if (ev.toString().length > 8000) "forge_eval_save ditolak: eval ${ev.toString().length} karakter, maks 8000 — ringkas."
-                        else {
-                            // vc299 N6-m3: cross-check deterministik — judge_total/grade
-                            // di eval WAJIB cocok dengan hitung ulang judge_skill atas
-                            // isi skill SAAT INI (judge tidak pernah disimpan, jadi
-                            // tidak ada flag tersimpan yang bisa dicek; hitung ulang
-                            // adalah buktinya). Tidak cocok = judge tidak dijalankan
-                            // atas isi ini (atau angka difabrikasi) -> TOLAK.
-                            val judgeVc299 = SkillJudge.score(sk.name, sk.descr, sk.instruction)
-                            val jtVc299 = ev.optInt("judge_total", -1)
-                            if (jtVc299 < 0 || jtVc299 != judgeVc299.total || ev.optString("grade", "") != judgeVc299.grade) "forge_eval_save ditolak: judge_total/grade di eval (" + (if (jtVc299 < 0) "tidak ada judge_total" else jtVc299.toString() + "/" + ev.optString("grade", "?")) + ") tidak cocok dengan hasil judge_skill atas isi skill saat ini (" + judgeVc299.total + "/120 grade " + judgeVc299.grade + ") — jalankan judge_skill (dan forge_trigger_eval untuk trigger) pada skill ini dulu, lalu simpan angka yang benar. Benchmark model-asserted tanpa judge tidak disimpan."
-                            else {
-                                // vc301 SF-A10: trigger_* HANYA boleh disimpan
-                                // dengan agent_votes + trigger_query_hash yang
-                                // lolos hitung-ulang (mayoritas vote + hash).
-                                // Tanpa trigger_* di eval, validasi ini lolos
-                                // (kompatibel: eval judge/A-B/TDD saja tetap
-                                // bisa disimpan; A-B/TDD tampil klaim agen).
-                                val trigErrVc301 = SkillJudge.validateSavedTriggerEval(ev)
-                                if (trigErrVc301 != null) trigErrVc301
+                        else run {
+                            // VC303-P1-1 (EV-1/2/5 opsi a): save-by-hash.
+                            // Bila eval memuat trigger_query_hash TANPA
+                            // agent_votes, muat run dari DB dan isi
+                            // trigger_train/test/agent_votes dari run — lalu
+                            // validasi yang sudah ada jalan sebagai re-check.
+                            // Run kedaluwarsa (draf berubah) ditolak dengan
+                            // pesan eksplisit, bukan hash mismatch.
+                            val mdbVc303 = MemoryDb.get(ctx)
+                            val sessVc303 = try { ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).getLong("currentSession", 1) } catch (e: Exception) { 1L }
+                            val hashOnlyErrVc303: String? = run {
+                                val hVc303 = ev.optString("trigger_query_hash", "")
+                                val hasVotesVc303 = (ev.optJSONArray("agent_votes")?.length() ?: 0) > 0
+                                if (hVc303.isBlank() || hasVotesVc303) null
                                 else {
-                                    MemoryDb.get(ctx).setSkillEval(sk.id, ev.toString())
-                                    // vc300 BAGIAN B: eval tersimpan juga di versi
-                                    // terbaru (angka judge sudah terverifikasi cocok
-                                    // oleh validasi hitung-ulang m3 di atas).
-                                    // vc301 SF-A2: backfill EAGER dulu; bila
-                                    // attach tetap gagal, sinyal itu DITAMPILKAN.
-                                    val mdbVc301 = MemoryDb.get(ctx)
-                                    try { mdbVc301.ensureSkillBackfilled(sk.id) } catch (e: Exception) {}
-                                    val attachedVc301 = try { mdbVc301.attachJudgeToLatestVersion(sk.id, judgeVc299.total, judgeVc299.grade, ev.toString()) } catch (e: Exception) { false }
-                                    "Benchmark vc293 tersimpan untuk skill '${sk.name}':" + SkillJudge.evalSummary(ev.toString()) + " (lihat list_skills). judge_total terverifikasi cocok dengan judge_skill atas isi saat ini. Ingat: mengubah deskripsi/instruksi skill MENGHAPUS benchmark ini — evaluasi wajib diulang." + if (!attachedVc301) " ⚠️ Catatan: benchmark TIDAK menempel ke versi manapun — skill ini belum punya versi tersimpan; simpan skill sekali dulu (create_skill nama sama), lalu simpan benchmark ulang." else ""
+                                    val runVc303 = try { mdbVc303.getEvalRun(sk.id, hVc303) } catch (e: Exception) { null }
+                                    if (runVc303 == null) "forge_eval_save ditolak: tidak ada run eval tersimpan untuk skill '${sk.name}' dengan trigger_query_hash $hVc303 — jalankan forge_trigger_eval dengan agent_votes dulu, lalu simpan (cukup kirim trigger_query_hash saja)."
+                                    else {
+                                        val curDescrHashVc303 = descrHashVc303(sk.descr, sk.instruction)
+                                        val curVerNoVc303 = try { mdbVc303.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                                        if (runVc303.descrHash != curDescrHashVc303 || (runVc303.skillVersionNo > 0 && curVerNoVc303 != runVc303.skillVersionNo)) "forge_eval_save ditolak: run kedaluwarsa karena draf berubah, jalankan eval ulang — deskripsi/instruksi skill '${sk.name}' berubah sejak eval (run v${runVc303.skillVersionNo}, kini v$curVerNoVc303); benchmark milik draf lama tidak boleh ditempel ke draf baru."
+                                        else {
+                                            try {
+                                                ev.put("agent_votes", JSONArray(runVc303.votesJson))
+                                                ev.put("trigger_train", runVc303.triggerTrain)
+                                                ev.put("trigger_test", runVc303.triggerTest)
+                                            } catch (e: Exception) {}
+                                            null
+                                        }
+                                    }
+                                }
+                            }
+                            if (hashOnlyErrVc303 != null) hashOnlyErrVc303
+                            // VC303-P1-7 (EV-7): cap naik 8000 -> 16000
+                            // BERSAMAAN dengan MemoryDb.setSkillEval.
+                            else if (ev.toString().length > 16000) "forge_eval_save ditolak: eval ${ev.toString().length} karakter, maks 16000 — ringkas."
+                            else {
+                                // vc299 N6-m3: cross-check deterministik — judge_total/grade
+                                // di eval WAJIB cocok dengan hitung ulang judge_skill atas
+                                // isi skill SAAT INI (judge tidak pernah disimpan, jadi
+                                // tidak ada flag tersimpan yang bisa dicek; hitung ulang
+                                // adalah buktinya). Tidak cocok = judge tidak dijalankan
+                                // atas isi ini (atau angka difabrikasi) -> TOLAK.
+                                val judgeVc299 = SkillJudge.score(sk.name, sk.descr, sk.instruction)
+                                val jtVc299 = ev.optInt("judge_total", -1)
+                                if (jtVc299 < 0 || jtVc299 != judgeVc299.total || ev.optString("grade", "") != judgeVc299.grade) "forge_eval_save ditolak: judge_total/grade di eval (" + (if (jtVc299 < 0) "tidak ada judge_total" else jtVc299.toString() + "/" + ev.optString("grade", "?")) + ") tidak cocok dengan hasil judge_skill atas isi skill saat ini (" + judgeVc299.total + "/120 grade " + judgeVc299.grade + ") — jalankan judge_skill (dan forge_trigger_eval untuk trigger) pada skill ini dulu, lalu simpan angka yang benar. Benchmark model-asserted tanpa judge tidak disimpan."
+                                else {
+                                    // vc301 SF-A10: trigger_* HANYA boleh disimpan
+                                    // dengan agent_votes + trigger_query_hash yang
+                                    // lolos hitung-ulang (mayoritas vote + hash).
+                                    // Tanpa trigger_* di eval, validasi ini lolos
+                                    // (kompatibel: eval judge/A-B/TDD saja tetap
+                                    // bisa disimpan; A-B/TDD tampil klaim agen).
+                                    val trigErrVc301 = SkillJudge.validateSavedTriggerEval(ev)
+                                    if (trigErrVc301 != null) {
+                                        // VC303-P1-3 (LP-1): guard
+                                        // hash-mismatch berulang — kunci =
+                                        // JENIS penolakan (bukan args penuh).
+                                        // Ke-2 beruntun: hard-stop + eval
+                                        // terkoreksi (hash + train/test
+                                        // hitung-ulang dari agent_votes yang
+                                        // sama) agar agen tinggal submit ulang
+                                        // objek yang sama. Ke-3: tolak +
+                                        // minta keputusan user.
+                                        val kindVc303 = evalRejectionKindVc303(trigErrVc301)
+                                        val isTrigKindVc303 = kindVc303.contains("trigger_query_hash") || kindVc303.contains("trigger_train") || kindVc303.contains("trigger_test")
+                                        if (!isTrigKindVc303) trigErrVc301
+                                        else {
+                                            val nVc303 = EvalLoopGuardVc303.noteHashRejection(sessVc303, sk.name, kindVc303)
+                                            if (nVc303 >= 3) trigErrVc301 + " Ini penolakan trigger ke-$nVc303 beruntun untuk skill '${sk.name}' — STOP, jangan panggil forge_trigger_eval lagi dan jangan coba simpan ulang; laporkan ke user dan minta keputusan user."
+                                            else if (nVc303 == 2) {
+                                                val correctedVc303 = try { triggerEvalFromVotesVc303(ev.optJSONArray("agent_votes")) } catch (e: Exception) { null }
+                                                if (correctedVc303 == null) trigErrVc301 + " STOP — jangan panggil forge_trigger_eval lagi; laporkan ke user dan minta keputusan user."
+                                                else {
+                                                    val fixedEvVc303 = JSONObject(ev.toString())
+                                                    fixedEvVc303.put("trigger_query_hash", correctedVc303.first)
+                                                    fixedEvVc303.put("trigger_train", correctedVc303.second)
+                                                    fixedEvVc303.put("trigger_test", correctedVc303.third)
+                                                    "STOP — jangan panggil forge_trigger_eval lagi. forge_eval_save ditolak ke-2 beruntun ($kindVc303) — penyebabnya: $trigErrVc301 Eval yang sudah dikoreksi (hash + trigger_train/test dihitung-ulang dari agent_votes yang sama — votes-mu TIDAK berubah): " + fixedEvVc303.toString() + " — kirim ulang forge_eval_save dengan objek eval ini apa adanya, tanpa eval ulang."
+                                                }
+                                            } else trigErrVc301
+                                        }
+                                    } else {
+                                        // VC303-P1-3/4: save sukses = loop
+                                        // putus — reset counter penolakan +
+                                        // iterasi eval skill ini.
+                                        try { EvalLoopGuardVc303.resetHashRejections(sessVc303, sk.name) } catch (e: Exception) {}
+                                        try { EvalLoopGuardVc303.resetEvalIterations(sk.name) } catch (e: Exception) {}
+                                        MemoryDb.get(ctx).setSkillEval(sk.id, ev.toString())
+                                        // vc300 BAGIAN B: eval tersimpan juga di versi
+                                        // terbaru (angka judge sudah terverifikasi cocok
+                                        // oleh validasi hitung-ulang m3 di atas).
+                                        // vc301 SF-A2: backfill EAGER dulu; bila
+                                        // attach tetap gagal, sinyal itu DITAMPILKAN.
+                                        val mdbVc301 = MemoryDb.get(ctx)
+                                        try { mdbVc301.ensureSkillBackfilled(sk.id) } catch (e: Exception) {}
+                                        val attachedVc301 = try { mdbVc301.attachJudgeToLatestVersion(sk.id, judgeVc299.total, judgeVc299.grade, ev.toString()) } catch (e: Exception) { false }
+                                        // VC303-P1-7 (EV-6): judge-only
+                                        // eksplisit — sukses menyatakan
+                                        // trigger TIDAK tersimpan bila tidak
+                                        // ada trigger_* di eval.
+                                        val trigNoteVc303 = if (!ev.has("trigger_train") && !ev.has("trigger_test")) " trigger TIDAK tersimpan (tidak ada trigger_* di eval — ini save judge-only)." else ""
+                                        "Benchmark vc293 tersimpan untuk skill '${sk.name}':" + SkillJudge.evalSummary(ev.toString()) + " (lihat list_skills). judge_total terverifikasi cocok dengan judge_skill atas isi saat ini. Ingat: mengubah deskripsi/instruksi skill MENGHAPUS benchmark ini — evaluasi wajib diulang." + trigNoteVc303 + if (!attachedVc301) " ⚠️ Catatan: benchmark TIDAK menempel ke versi manapun — skill ini belum punya versi tersimpan; simpan skill sekali dulu (create_skill nama sama), lalu simpan benchmark ulang." else ""
+                                    }
                                 }
                             }
                         }
@@ -3964,7 +4082,7 @@ object Tools {
                 val blockedWhyVc265 = ArrayList<String>()
                 var versionsRestoredVc301 = 0
                 var versionsSkippedVc301 = 0
-                root.optJSONArray("skills")?.let { sk -> for (i in 0 until sk.length()) { val o = sk.getJSONObject(i); val sName = o.optString("name"); if (slugifySkillName(sName) in SYSTEM_SKILL_SLUGS) continue; val specVc265 = SkillSpector.scan(sName, o.optString("descr"), o.optString("instruction")); if (specVc265.blocked) { blockedVc265++; blockedWhyVc265.add(sName + " (skor " + specVc265.score + "/100: " + specVc265.findings.joinToString("; ") + ")"); try { AttentionBudget.noteSkillBlocked(ctx) } catch (e: Exception) {}; try { DecisionLedger.add(ctx, ledgerLane(), "blocked", "sync restore skill '$sName' DITOLAK SkillSpector: " + SkillSpector.verdictText(specVc265)) } catch (e: Exception) {}; continue }; val preVc301 = try { mdb.skillByName(sName)?.let { mdb.latestSkillVersion(it.id) } } catch (e: Exception) { null }; val (sId, _) = mdb.forgeUpsert(sName, o.optString("instruction"), o.optString("descr"), "restore"); if (sId > 0 && o.has("enabled")) mdb.setSkillEnabled(sId, o.optBoolean("enabled")); if (sId > 0 && o.optString("eval").isNotBlank()) mdb.setSkillEval(sId, o.optString("eval")); if (sId > 0 && preVc301 == null) { try { mdb.latestSkillVersion(sId)?.let { if (it.source == "restore") mdb.deleteSkillVersionRow(it.id) } } catch (e: Exception) {} }; if (sId > 0) imported++ } }
+                root.optJSONArray("skills")?.let { sk -> for (i in 0 until sk.length()) { val o = sk.getJSONObject(i); val sName = o.optString("name"); if (slugifySkillName(sName) in SYSTEM_SKILL_SLUGS) continue; val specVc265 = SkillSpector.scan(sName, o.optString("descr"), o.optString("instruction")); if (specVc265.blocked) { blockedVc265++; blockedWhyVc265.add(sName + " (skor " + specVc265.score + "/100: " + specVc265.findings.joinToString("; ") + ")"); try { AttentionBudget.noteSkillBlocked(ctx) } catch (e: Exception) {}; try { DecisionLedger.add(ctx, ledgerLane(), "blocked", "sync restore skill '$sName' DITOLAK SkillSpector: " + SkillSpector.verdictText(specVc265)) } catch (e: Exception) {}; continue }; val preVc301 = try { mdb.skillByName(sName)?.let { mdb.latestSkillVersion(it.id) } } catch (e: Exception) { null }; val (sId, _) = mdb.forgeUpsert(sName, o.optString("instruction"), o.optString("descr"), "restore"); if (sId > 0 && o.has("enabled")) mdb.setSkillEnabled(sId, o.optBoolean("enabled")); if (sId > 0 && o.optString("eval").isNotBlank()) mdb.setSkillEval(sId, SkillJudge.markImportEvalVc303(o.optString("eval"))); /* VC303-P3-21 (EV-9): eval restore divalidasi; bila tidak valid DITANDAI (bukan dibuang). */ if (sId > 0 && preVc301 == null) { try { mdb.latestSkillVersion(sId)?.let { if (it.source == "restore") mdb.deleteSkillVersionRow(it.id) } } catch (e: Exception) {} }; if (sId > 0) imported++ } }
                 root.optJSONArray("skill_versions")?.let { vs -> for (i in 0 until vs.length()) { val o = vs.optJSONObject(i) ?: continue; val sidVc301 = try { mdb.skillByName(o.optString("skill_name"))?.id ?: -1 } catch (e: Exception) { -1 }; if (sidVc301 <= 0) { versionsSkippedVc301++; continue }; if (mdb.importSkillVersion(sidVc301, o.optInt("version_no", -1), o.optString("instruction"), o.optString("descr"), o.optInt("judge_total", -1), o.optString("judge_grade"), o.optString("eval_json"), o.optString("source", "forge"), o.optLong("created_ts", 0))) versionsRestoredVc301++ else versionsSkippedVc301++ } }
                 root.optJSONArray("schedules")?.let { sc -> for (i in 0 until sc.length()) { val o = sc.getJSONObject(i); mdb.addSchedule(o.optInt("hour", 7), o.optInt("minute", 0), o.optString("prompt"), o.optLong("ownerSession", 0)); imported++ } }
                 root.optJSONArray("rules")?.let { ru -> for (i in 0 until ru.length()) { val o = ru.getJSONObject(i); mdb.addRule(o.optString("pkg"), o.optString("needle"), o.optString("action")); imported++ } }

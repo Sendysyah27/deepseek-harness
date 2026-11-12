@@ -58,21 +58,43 @@ object ResultStore {
         return (if (h <= 0) 48 else h).toLong() * 60 * 60 * 1000
     }
 
-    private fun sweep(b: Backend, idx: JSONObject, now: Long, keepId: String? = null) {
+    // VC303-P2-13 (CX-8): R-id yang DIRUJUK catatan kerja / status giliran
+    // aktif (kunci workNotesVc301_* / turnStatusVc301_*, termasuk kunci
+    // ber-namespace room/latar/grup) = PINNED: tidak ikut disapu TTL dan
+    // tidak ikut dieviksi LRU. Dipindai dari prefs backend yang sama
+    // (prod "harness", uji "ujiMandiri") — murah (sekali per put), dan
+    // bila catatan sudah dihapus (wipe sesi / clearSession), pin ikut
+    // lepas di put berikutnya. Regex hanya menangkap pola [R<n>] / R<n>
+    // dari nilai string prefs.
+    fun pinnedIds(b: Backend): Set<String> {
+        return try {
+            val out = HashSet<String>()
+            val re = Regex("R\\d+")
+            for ((k, v) in b.prefs.getAll()) {
+                if (!k.startsWith("workNotesVc301_") && !k.startsWith("turnStatusVc301_")) continue
+                val s = v as? String ?: continue
+                for (m in re.findAll(s)) out.add(m.value)
+            }
+            out
+        } catch (e: Exception) { emptySet() }
+    }
+
+    private fun sweep(b: Backend, idx: JSONObject, now: Long, keepId: String? = null, pinned: Set<String> = emptySet()) {
         val ttl = ttlMs(b)
         val keys = ArrayList<String>()
         val it = idx.keys()
         while (it.hasNext()) keys.add(it.next())
         for (k in keys) {
             val o = try { idx.getJSONObject(k) } catch (e: Exception) { null } ?: continue
-            if (now - o.optLong("ts", 0) > ttl && k != keepId) {
+            // VC303-P2-13 (CX-8): R-id pinned (dirujuk catatan) tidak disapu.
+            if (now - o.optLong("ts", 0) > ttl && k != keepId && k !in pinned) {
                 idx.remove(k)
                 try { dataFile(b, k).delete() } catch (e: Exception) {}
             }
         }
     }
 
-    private fun enforceTotal(b: Backend, idx: JSONObject, keepId: String) {
+    private fun enforceTotal(b: Backend, idx: JSONObject, keepId: String, pinned: Set<String> = emptySet()) {
         var total = 0L
         val items = ArrayList<Pair<String, Long>>()
         val it = idx.keys()
@@ -81,7 +103,8 @@ object ResultStore {
             val o = try { idx.getJSONObject(k) } catch (e: Exception) { null } ?: continue
             val sz = try { dataFile(b, k).length() } catch (e: Exception) { 0L }
             total += sz
-            if (k != keepId) items.add(k to o.optLong("ts", 0))
+            // VC303-P2-13 (CX-8): R-id pinned bukan kandidat eviksi LRU.
+            if (k != keepId && k !in pinned) items.add(k to o.optLong("ts", 0))
         }
         items.sortBy { it.second }
         var i = 0
@@ -109,9 +132,10 @@ object ResultStore {
                 dataFile(b, id).writeText(stored, Charsets.UTF_8)
                 val idx = readIndex(b)
                 val now = System.currentTimeMillis()
-                sweep(b, idx, now, id)
+                val pinnedVc303 = pinnedIds(b) // VC303-P2-13 (CX-8)
+                sweep(b, idx, now, id, pinnedVc303)
                 idx.put(id, JSONObject().put("tool", tool).put("ts", now).put("total", text.length).put("truncated", truncated))
-                enforceTotal(b, idx, id)
+                enforceTotal(b, idx, id, pinnedVc303)
                 writeIndex(b, idx)
                 id
             }
@@ -128,9 +152,14 @@ object ResultStore {
                 val o = try { idx.getJSONObject(id) } catch (e: Exception) { return null }
                 val now = System.currentTimeMillis()
                 if (now - o.optLong("ts", 0) > ttlMs(b)) {
-                    idx.remove(id); writeIndex(b, idx)
-                    try { dataFile(b, id).delete() } catch (e: Exception) {}
-                    return null
+                    // VC303-P2-13 (CX-8): R-id pinned (dirujuk catatan kerja
+                    // aktif) TIDAK dihapus saat dibaca walau TTL lewat —
+                    // kembalikan isinya; pin lepas bila catatannya dihapus.
+                    if (id !in pinnedIds(b)) {
+                        idx.remove(id); writeIndex(b, idx)
+                        try { dataFile(b, id).delete() } catch (e: Exception) {}
+                        return null
+                    }
                 }
                 val f = dataFile(b, id)
                 if (!f.exists()) { idx.remove(id); writeIndex(b, idx); return null }

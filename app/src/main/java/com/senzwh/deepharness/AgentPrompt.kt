@@ -72,7 +72,8 @@ object AgentPrompt {
      *  turnStatusVc301_<id>. "" bila tidak ada baris tersimpan. Cermin PERSIS
      *  workNotesBlock vc301 pada bagian header + baris (retensi terbaru dulu,
      *  cap 4000 char) + status; lalu tambah aturan jangan-ulangi + langkah
-     *  berikut (Vc302). */
+     *  berikut (Vc302). VC303-P2-15 (CX-11): status dicap 1000 char di sini
+     *  (satu-satunya perbedaan dari cermin vc301). */
     fun workNotesBlockFromRawVc302(rawJson: String, status: String): String {
         if (rawJson.isBlank()) return ""
         val arr = try { JSONArray(rawJson) } catch (e: Exception) { return "" }
@@ -87,7 +88,10 @@ object AgentPrompt {
             acc = if (acc.isEmpty()) ln else ln + "\n" + acc
         }
         body.append(acc)
-        if (status.isNotBlank()) body.append("\n").append(status)
+        // VC303-P2-15 (CX-11): status ditempel dengan cap 1000 char —
+        // reason bisa membawa teks klaim panjang; blok tidak lagi tanpa
+        // batas sesudah cap 4000 baris.
+        if (status.isNotBlank()) body.append("\n").append(status.take(1000))
         body.append("\nATURAN CATATAN KERJA (vc302): ").append(WORK_NOTES_NO_REPEAT_RULE_VC302)
         body.append("\nLangkah berikut yang disarankan: ").append(workNotesNextStepVc302(status))
         return body.toString()
@@ -217,11 +221,63 @@ object AgentPrompt {
     // Satu instance = satu tugas/ronde (jangan dipakai lintas tugas).
     class StuckWatch {
         private val map = HashMap<String, Int>()
+        // VC303-P1-3 (LP-1 pelengkap): urutan lintas-tool forge_trigger_eval
+        // -> forge_eval_save(gagal) untuk skill yang sama.
+        private var pendingEvalSlugVc303 = ""
+        private var evalSeqCountVc303 = 0
+        // VC303-P3-17 (LP-3): klaster token argumen per tool (maks 8 klaster
+        // terakhir per tool) untuk kunci kemiripan level-2.
+        private val fuzzySetsVc303 = HashMap<String, MutableList<Set<String>>>()
         fun observe(tool: String, args: JSONObject, result: String): String {
             // vc277 O17: tool polling yang sah dikecualikan dari detektor
             // putaran (pola + hasil identik) — polling memang mengulang
             // call/hasil yang sama sampai tugas selesai.
             if (AgentPrompt.isPollingExemptVc277(tool)) return ""
+            // VC303-P1-3/5: kedua penghitung vc303 HARUS di sini (sebelum
+            // pengecualian baca-ulang/paging di bawah) — penolakan validasi
+            // ("⚠️ PANGGILAN TOOL DITOLAK SISTEM") dan hasil forge_* bukan
+            // baca-ulang sukses; bila blok ini di bawah isRereadSuccess,
+            // rejected read_file tidak pernah terhitung (isRereadSuccess
+            // mendefinisikan sukses read_file secara negatif: semua hasil
+            // yang bukan 3 prefix error-nya).
+            // VC303-P1-3 (LP-1 pelengkap): kunci urutan lintas-tool
+            // forge_trigger_eval -> forge_eval_save(gagal), apa pun
+            // argumennya (kunci args penuh tidak pernah berulang di loop
+            // ini). 2x = peringatan, 3x = kunci giliran. Save sukses
+            // memutus urutan (counter reset); tool lain hanya memutus
+            // pasangan yang sedang menunggu (counter pasangan tetap).
+            if (tool == "forge_trigger_eval") {
+                pendingEvalSlugVc303 = try { args.optString("name").trim().lowercase() } catch (e: Exception) { "" }
+            } else if (tool == "forge_eval_save") {
+                val slugVc303 = try { args.optString("name").trim().lowercase() } catch (e: Exception) { "" }
+                if (slugVc303.isNotBlank() && slugVc303 == pendingEvalSlugVc303 && result.startsWith("forge_eval_save ditolak")) {
+                    evalSeqCountVc303++
+                    pendingEvalSlugVc303 = ""
+                    if (evalSeqCountVc303 >= 3) return "\n\n🛑 SISTEM (StuckDetector): pola forge_trigger_eval → forge_eval_save(gagal) sudah berulang $evalSeqCountVc303 kali untuk skill '$slugVc303' — loop eval-save. BERHENTI. Jangan panggil forge_trigger_eval lagi; laporkan ke user dan minta keputusan user. [Vc303-P1-3]"
+                    if (evalSeqCountVc303 == 2) return "\n\n⚠️ SISTEM (StuckDetector): pola forge_trigger_eval → forge_eval_save(gagal) berulang 2 kali untuk skill '$slugVc303' — kamu mengulang eval lalu save gagal. JANGAN eval ulang; perbaiki angka/hash dari agent_votes yang sama, atau simpan dengan trigger_query_hash saja (run tersimpan). [Vc303-P1-3]"
+                } else if (result.startsWith("forge_eval_save ditolak")) {
+                    pendingEvalSlugVc303 = ""
+                } else {
+                    evalSeqCountVc303 = 0
+                    pendingEvalSlugVc303 = ""
+                }
+            } else {
+                pendingEvalSlugVc303 = ""
+            }
+            // VC303-P1-5 (LP-8): hitung panggilan REJECTED berulang per
+            // (tool, jenis penolakan) — kunci ke-3. Jenis = teks penolakan
+            // (menyebut argumen yang hilang) dengan angka di-strip, jadi
+            // penolakan yang sama jenisnya berkelompok walau detail
+            // angkanya beda. Hanya jalan di lane yang memanggil observe()
+            // untuk rejected (batch/group/tim/latar/room via recordOutcome);
+            // jalur tunggal 1-1 menangani rejected di cabangnya sendiri.
+            if (AgentPrompt.isRejectedVc303(result)) {
+                val rkVc303 = "REJ|" + AgentPrompt.rejectedKindVc303(tool, result)
+                val rnVc303 = (map[rkVc303] ?: 0) + 1
+                map[rkVc303] = rnVc303
+                if (rnVc303 >= 3) return "\n\n🛑 SISTEM (StuckDetector): panggilan '$tool' DITOLAK SISTEM sudah berulang $rnVc303 kali dengan penolakan yang sama — BERHENTI mengulang panggilan ini. Perbaiki argumen yang ditolak (lihat pesan penolakan) atau jawab final ke user. [Vc303-P1-5]"
+                if (rnVc303 == 2) return "\n\n⚠️ SISTEM (StuckDetector): panggilan '$tool' DITOLAK SISTEM sudah berulang 2 kali dengan penolakan yang sama — perbaiki argumennya, jangan kirim ulang yang sama. [Vc303-P1-5]"
+            }
             // vc279 O20(c): baca-ulang sukses TIDAK dihitung (pola +
             // hasil identik) — agen memang perlu membaca ulang potongan
             // hasil yang sama berkali-kali; hanya error yang dihitung.
@@ -230,9 +286,30 @@ object AgentPrompt {
             // idempotent) dikecualikan — menyimpan ulang fakta yang sama
             // atau menarik ulang fakta yang sudah ditarik bukan loop.
             if (AgentPrompt.isIdempotentMemoryResultVc285(tool, result)) return ""
+            // VC303-P3-18 (LP-4): penghitung error IDENTIK yang dikecualikan.
+            // Pengecualian SF-C1(a)/SF-C4 di bawah tetap berlaku untuk
+            // eksplorasi BERVARIASI (args berbeda tetap bebas — tidak pernah
+            // sampai ke penghitung ini), TAPI error yang args-nya identik DAN
+            // teks error-nya identik kini dihitung terpisah: kunci di ke-3
+            // dengan pesan "error yang sama". Tanpa ini, get_result dengan id
+            // kedaluwarsa yang dipanggil identik 50x tidak dihitung siapa
+            // pun. Ditempatkan SEBELUM early-return pengecualian, hanya bila
+            // sig sama persis dengan sebelumnya (kunci = tool + hash args +
+            // hash teks error ternormalisasi).
+            if (AgentPrompt.isPagingErrorVc301(tool, result) || AgentPrompt.isSearchNotFoundVc301(tool, result)) {
+                val errSigVc303 = try { AgentPrompt.normalizeArgsVc277(args) } catch (e: Exception) { "" }
+                val errKeyVc303 = "ERRIDENT|$tool|" + AgentPrompt.hash64Vc277(errSigVc303) + "|" + AgentPrompt.hash64Vc277(result.lowercase().replace(Regex("\\s+"), " ").trim())
+                val enVc303 = (map[errKeyVc303] ?: 0) + 1
+                map[errKeyVc303] = enVc303
+                if (enVc303 >= 3) return "\n\n🛑 SISTEM (StuckDetector): panggilan '$tool' dengan argumen yang sama sudah menghasilkan error yang sama $enVc303 kali — TIDAK ADA PROGRES. BERHENTI mengulang panggilan ini sekarang juga. Jawab final ke user: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user. Jangan panggil tool lagi untuk pendekatan yang sama. [VC303-P3-18]"
+                return ""
+            }
             // vc301 SF-C1(a): hasil error paging (laporan batas offset/
             // total/id kedaluwarsa) BUKAN putaran — lihat
             // AgentPrompt.isPagingErrorVc301. Ambang 3/4/5 TETAP.
+            // (Cabang ini kini hanya tercapai bila LP-4 di atas tidak
+            // mengembalikan — yakni error paging/not-found yang TIDAK
+            // identik dengan sebelumnya; perilaku bebas-nya tidak berubah.)
             if (AgentPrompt.isPagingErrorVc301(tool, result)) return ""
             // vc301 SF-C4: pencarian yang hasilnya "tidak ditemukan"
             // adalah progres (lokasi/pola baru diperiksa), bukan
@@ -273,7 +350,48 @@ object AgentPrompt {
                 }
                 if (loopPart.contains("🛑")) return loopPart
             }
-            if (result.length < 8) return loopPart + identCallPartVc302
+            // VC303-P3-17 (LP-3): kunci kemiripan argumen level-2 — panggilan
+            // yang hanya berbeda 1-2 kata/angka (satu query diubah, satu flag
+            // diubah, angka/path-digit diubah) dihitung sebagai SATU klaster
+            // per tool (Jaccard token >= 0,8 atas argumen ternormalisasi
+            // tanpa angka). Peringatan di ke-3, kunci di ke-4 — selaras
+            // ambang hasil identik/mirip. Pengecualian paging sukses tetap
+            // mendahului (early-return isRereadSuccessVc279 di atas), jadi
+            // offset walk yang sah tidak pernah sampai ke sini; walk yang
+            // hasilnya error identik sudah dihitung LP-4 di atas. Panggilan
+            // IDENTIK persis tetap dikunci jalur identCall (ke-3) duluan.
+            var fuzzyPartVc303 = ""
+            run {
+                val toksVc303 = AgentPrompt.fuzzyTokenSetVc303(args)
+                if (toksVc303.size >= 2) {
+                    val setsVc303 = fuzzySetsVc303.getOrPut(tool) { ArrayList() }
+                    var clusterVc303: String? = null
+                    for (sVc303 in setsVc303) {
+                        if (AgentPrompt.jaccardVc303(toksVc303, sVc303) >= 0.8) {
+                            clusterVc303 = "FUZZY|$tool|" + AgentPrompt.hash64Vc277(sVc303.sorted().joinToString(" "))
+                            break
+                        }
+                    }
+                    if (clusterVc303 != null) {
+                        val cnVc303 = (map[clusterVc303] ?: 0) + 1
+                        map[clusterVc303] = cnVc303
+                        fuzzyPartVc303 = when {
+                            cnVc303 >= 4 -> "\n\n🛑 SISTEM (StuckDetector): panggilan '$tool' dengan argumen MIRIP sudah terulang $cnVc303 kali (hanya berbeda 1-2 kata/angka) — TIDAK ADA PROGRES. BERHENTI mengulang pendekatan ini sekarang juga. Jawab final ke user: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user. Jangan panggil tool lagi untuk pendekatan yang sama. [VC303-P3-17]"
+                            cnVc303 == 3 -> "\n\n⚠️ SISTEM (StuckDetector): panggilan '$tool' dengan argumen MIRIP sudah terulang 3 kali (hanya berbeda 1-2 kata/angka) — indikasi berputar. GANTI pendekatan secara mendasar sekarang; jangan variasi kecil dari perintah yang sama."
+                            else -> ""
+                        }
+                    } else {
+                        setsVc303.add(toksVc303)
+                        // Klaster baru dihitung 1 sejak panggilan pertama
+                        // (cermin penghitung LOOP) — tanpa ini peringatan
+                        // baru muncul di panggilan ke-4, bukan ke-3.
+                        map["FUZZY|$tool|" + AgentPrompt.hash64Vc277(toksVc303.sorted().joinToString(" "))] = 1
+                        while (setsVc303.size > 8) setsVc303.removeAt(0)
+                    }
+                }
+            }
+            if (fuzzyPartVc303.contains("🛑")) return fuzzyPartVc303
+            if (result.length < 8) return loopPart + identCallPartVc302 + fuzzyPartVc303
             val key = tool + "|" + AgentPrompt.hash64Vc277(result)
             val n = (map[key] ?: 0) + 1
             map[key] = n
@@ -293,7 +411,7 @@ object AgentPrompt {
                 ns == 3 -> "\n\n⚠️ SISTEM (StuckDetector): panggilan '$tool' dengan hasil mirip sudah terulang 3 kali (hanya berbeda angka/timestamp) — indikasi berputar. GANTI strategi sekarang (tool lain, jalur lain, sumber lain) atau jelaskan ke user kenapa macet."
                 else -> ""
             }
-            return loopPart + identCallPartVc302 + identPart
+            return loopPart + identCallPartVc302 + identPart + fuzzyPartVc303
         }
         companion object {
             fun isStop(suffix: String): Boolean = suffix.contains("🛑")
@@ -317,6 +435,53 @@ object AgentPrompt {
     }
     fun normalizeArgsVc277(args: JSONObject): String {
         return try { args.toString().lowercase().replace(Regex("\\s+"), " ").trim() } catch (e: Exception) { "" }
+    }
+
+    // VC303-P3-17 (LP-3): token argumen tanpa angka untuk kunci kemiripan
+    // level-2 — digit dihapus (angka/offset/path-digit bukan pembeda),
+    // token dipisah pada non-huruf, token 1 huruf dibuang, maks 64 token.
+    // Dua argumen yang hanya berbeda 1-2 kata menghasilkan Jaccard >= 0,8.
+    fun fuzzyTokenSetVc303(args: JSONObject): Set<String> {
+        return try {
+            args.toString().lowercase().replace(Regex("[0-9]+"), " ").split(Regex("[^a-z]+")).filter { it.length >= 2 }.take(64).toSet()
+        } catch (e: Exception) { emptySet() }
+    }
+    fun jaccardVc303(a: Set<String>, b: Set<String>): Double {
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        val inter = a.intersect(b).size.toDouble()
+        val union = a.union(b).size.toDouble()
+        return if (union == 0.0) 0.0 else inter / union
+    }
+
+    // VC303-P3-16 (LP-2): batas perpanjangan +10 — maks 3x per giliran
+    // (+30 langkah) + opsi keras: dialog hanya ditawarkan bila ada progres
+    // sejak perpanjangan terakhir (>= 1 tool sukses, diukur dari jumlah
+    // WorkItem ok giliran ini; okAtLastExtend = jumlah itu saat perpanjangan
+    // terakhir, 0 di awal giliran — jadi perpanjangan PERTAMA pun menuntut
+    // >= 1 tool sukses dalam giliran ini; giliran tanpa satu pun tool sukses
+    // berhenti jujur, bukan diperpanjang tanpa progres).
+    const val MAX_EXTEND_VC303 = 3
+    fun mayExtendVc303(extendCount: Int, okNow: Int, okAtLastExtend: Int): Boolean {
+        if (extendCount >= MAX_EXTEND_VC303) return false
+        return okNow > okAtLastExtend
+    }
+
+    // VC303-P3-19 (LP-5a): kunci pola terkunci lintas giliran — tool +
+    // hash args penuh ternormalisasi (definisi IDENTIK Vc302 yang sama
+    // dengan StuckWatch); N langkah pertama penolakan = 3.
+    const val LOCKED_PATTERN_FIRST_STEPS_VC303 = 3
+    fun lockedPatternKeyVc303(tool: String, args: JSONObject): String {
+        return try { tool + "|" + hash64Vc277(normalizeArgsVc277(args)) } catch (e: Exception) { tool + "|?" }
+    }
+
+    // VC303-P3-20 (LP-6): sidik jari kalimat klaim — hash atas klaim
+    // ternormalisasi (lowercase + whitespace diratakan); angka DIAWETKAN
+    // (angka adalah isi klaim — "1000 views" vs "2000 views" klaim beda).
+    fun normalizeClaimVc303(claim: String): String {
+        return claim.lowercase().replace(Regex("\\s+"), " ").trim()
+    }
+    fun claimFingerprintVc303(claim: String): String {
+        return try { hash64Vc277(normalizeClaimVc303(claim)) } catch (e: Exception) { normalizeClaimVc303(claim).hashCode().toString() }
     }
     fun stripNumbersVc277(text: String): String {
         return text.lowercase().replace(Regex("[0-9]+"), "#").replace(Regex("\\s+"), " ").trim()
@@ -396,6 +561,19 @@ object AgentPrompt {
     fun isSearchNotFoundVc301(tool: String, result: String): Boolean {
         if (tool != "list_files" && tool != "recall_search" && tool != "grep_result" && tool != "get_result" && tool != "run_terminal") return false
         return result.lowercase().contains("tidak ditemukan")
+    }
+
+    // VC303-P1-5 (LP-8): penolakan validasi sistem (BatchToolVc274.runOne:
+    // "⚠️ PANGGILAN TOOL DITOLAK SISTEM:\n" + pesan validasi O3) — dipakai
+    // StuckWatch.observe untuk menghitung rejected berulang per (tool,
+    // jenis penolakan). Jenis = hash teks penolakan (300 char pertama,
+    // angka di-strip) — teksnya menyebut argumen yang hilang, jadi
+    // penolakan yang sama jenisnya berkelompok.
+    fun isRejectedVc303(result: String): Boolean {
+        return result.startsWith("⚠️ PANGGILAN TOOL DITOLAK SISTEM") || result.startsWith("⚠️ PANGGILAN TOOL DITOLAK")
+    }
+    fun rejectedKindVc303(tool: String, result: String): String {
+        return tool + "|" + hash64Vc277(stripNumbersKeepOffsetVc301(result.take(300)))
     }
 
     // vc285 Fase 0: hasil idempotent memori dikecualikan dari

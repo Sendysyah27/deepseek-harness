@@ -21,6 +21,11 @@ data class SkillVersion(val id: Long, val skillId: Long, val versionNo: Int, val
 // export_skill (nama file, byte, hash isi, waktu) supaya hilangnya file
 // export bisa dideteksi, bukan disadari belakangan.
 data class SkillExportRow(val id: Long, val skillId: Long, val skillName: String, val fileName: String, val bytes: Long, val hash: String, val createdTs: Long)
+// VC303-P1-1 (EV-1/2/5): satu run forge_trigger_eval yang tersimpan —
+// sumber kebenaran save-by-hash. PRIMARY KEY (skill_id, hash): satu hash =
+// satu run per skill. descr_hash + skill_version_no = invalidasi bila draf
+// berubah sesudah eval (run milik draf lama tidak boleh ditempel ke baru).
+data class EvalRun(val skillId: Long, val hash: String, val queriesJson: String, val votesJson: String, val triggerTrain: Int, val triggerTest: Int, val descrHash: String, val skillVersionNo: Int, val createdTs: Long)
 data class Geofence(val id: Long, val name: String, val lat: Double, val lng: Double, val radiusM: Int, val prompt: String, val inside: Boolean, val ownerSession: Long = 0)
 data class FinEntry(val id: Long, val ts: Long, val pkg: String, val amount: Long, val kind: String, val text: String)
 data class ChatSession(val id: Long, val title: String, val createdTs: Long, val pinned: Boolean = false)
@@ -1415,7 +1420,8 @@ class MemoryDb private constructor(ctx: Context) :
                     // vc301 SF-A2c: eval ikut pulih dari payload arsip bila
                     // ada (forgeUpsert menghanguskannya bila isi berubah —
                     // pulihkan sesudahnya, pola restoreSkillVersion).
-                    if (nid > 0 && o.optString("eval").isNotBlank()) setSkillEval(nid, o.optString("eval"))
+                    // VC303-P3-21 (EV-9): eval impor arsip divalidasi; bila tidak valid DITANDAI (bukan dibuang).
+                    if (nid > 0 && o.optString("eval").isNotBlank()) setSkillEval(nid, SkillJudge.markImportEvalVc303(o.optString("eval")))
                 }
                 "schedule" -> addSchedule(o.optInt("hour"), o.optInt("minute"), o.optString("prompt"))
                 "reminder" -> {
@@ -1665,6 +1671,15 @@ class MemoryDb private constructor(ctx: Context) :
                 sessions().firstOrNull()?.id ?: 1L
             }
             for (hid in histIds) deleteEmbedding("hist", "hist:$hid")
+            // VC303-P2-15 (CX-12): hapus juga catatan kerja yatim sesi ini
+            // (WorkNotes + status + rencana) — tanpa ini kunci prefs
+            // workNotesVc301_<id>/turnStatusVc301_<id>/planJson_<id> hidup
+            // selamanya walau riwayat + sesi sudah dihapus. Berlaku juga
+            // bila sesi di-reset jadi "Utama" (riwayatnya ikut dihapus).
+            try {
+                WorkNotesVc301.clearSession(appCtx, id)
+                appCtx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().remove("planJson_" + id).apply()
+            } catch (e: Exception) {}
             r
         } catch (e: Exception) { id }
     }
@@ -2163,13 +2178,17 @@ class MemoryDb private constructor(ctx: Context) :
             val skill = skills().firstOrNull { it.id == skillId } ?: return false
             val (nid, _) = forgeUpsert(skill.name, ver.instruction, ver.descr, "restore")
             if (nid <= 0) return false
-            if (ver.evalJson.isNotBlank()) setSkillEval(skillId, ver.evalJson)
+            // VC303-P3-21 (EV-9): eval versi lama divalidasi saat restore;
+            // bila tidak valid DITANDAI (bukan dibuang) — flag yang sama
+            // ikut ke baris versi terbaru supaya labelnya konsisten.
+            val evalRestoredVc303 = SkillJudge.markImportEvalVc303(ver.evalJson)
+            if (ver.evalJson.isNotBlank()) setSkillEval(skillId, evalRestoredVc303)
             // vc300 koordinator: baris versi BARU hasil forgeUpsert di atas
             // tersnap TANPA eval/judge (isi berubah -> wipe N6-m8), padahal
             // eval live sudah pulih — tempelkan judge+eval versi SUMBER ke
             // baris versi terbaru supaya list_skill_versions tidak menampilkannya
             // "belum dinilai" padahal eval-nya pulih.
-            if (ver.evalJson.isNotBlank()) attachJudgeToLatestVersion(skillId, ver.judgeTotal, ver.judgeGrade, ver.evalJson)
+            if (ver.evalJson.isNotBlank()) attachJudgeToLatestVersion(skillId, ver.judgeTotal, ver.judgeGrade, evalRestoredVc303)
             else if (ver.judgeTotal >= 0) attachJudgeToLatestVersion(skillId, ver.judgeTotal, ver.judgeGrade)
             true
         } catch (e: Exception) { false }
@@ -2305,14 +2324,73 @@ class MemoryDb private constructor(ctx: Context) :
         } catch (e: Exception) {}
     }
 
-    /** vc293: simpan benchmark evaluasi skill (JSON <=8000 char, sudah
+    /** vc293: simpan benchmark evaluasi skill (JSON <=16000 char, sudah
      *  divalidasi pemanggil). Benchmark milik draf itu — JANGAN panggil
-     *  untuk skill yang isinya baru diubah tanpa evaluasi ulang. */
+     *  untuk skill yang isinya baru diubah tanpa evaluasi ulang.
+     *  VC303-P1-7 (EV-7): cap naik 8000 -> 16000 BERSAMAAN dengan
+     *  Tools.kt:2150 — votes tidak boleh dipersingkat (meringkas query
+     *  mengubah hash, EV-3); JSON tersimpan terpotong diam-diam = korup. */
     fun setSkillEval(id: Long, evalJson: String) {
         try {
             ensureSkillCols()
-            val cv = ContentValues(); cv.put("eval", evalJson.take(8000))
+            val cv = ContentValues(); cv.put("eval", evalJson.take(16000))
             writableDatabase.update("skills", cv, "id=?", arrayOf(id.toString()))
+        } catch (e: Exception) {}
+    }
+
+    // VC303-P1-1 (EV-1/2/5): run store eval — tabel lazy mengikuti pola
+    // ensureSkillVersionTable (tanpa bump versi DB).
+    private fun ensureEvalRunTable() {
+        try { writableDatabase.execSQL("CREATE TABLE IF NOT EXISTS eval_runs(skill_id INTEGER, trigger_query_hash TEXT, queries_json TEXT, votes_json TEXT, trigger_train INTEGER, trigger_test INTEGER, descr_hash TEXT, skill_version_no INTEGER, created_ts INTEGER, PRIMARY KEY(skill_id, trigger_query_hash))") } catch (e: Exception) {}
+    }
+
+    /** VC303-P1-1: simpan satu run eval (dipanggil Tools.kt sesudah
+     *  forge_trigger_eval sukses dengan agent_votes). Insert-or-replace
+     *  per (skill_id, hash); sesudah simpan langsung prune (maks 5
+     *  run/skill + TTL 7 hari). Return false bila gagal — kegagalan simpan
+     *  run TIDAK boleh menggagalkan hasil eval (pemanggil mengabaikan). */
+    fun saveEvalRun(skillId: Long, hash: String, queriesJson: String, votesJson: String, triggerTrain: Int, triggerTest: Int, descrHash: String, skillVersionNo: Int): Boolean {
+        return try {
+            ensureEvalRunTable()
+            val cv = ContentValues()
+            cv.put("skill_id", skillId); cv.put("trigger_query_hash", hash)
+            cv.put("queries_json", queriesJson); cv.put("votes_json", votesJson)
+            cv.put("trigger_train", triggerTrain); cv.put("trigger_test", triggerTest)
+            cv.put("descr_hash", descrHash); cv.put("skill_version_no", skillVersionNo)
+            cv.put("created_ts", System.currentTimeMillis())
+            writableDatabase.insertWithOnConflict("eval_runs", null, cv, SQLiteDatabase.CONFLICT_REPLACE) > 0
+            pruneEvalRuns(skillId)
+            true
+        } catch (e: Exception) { false }
+    }
+
+    /** VC303-P1-1: muat run eval berdasarkan hash (save-by-hash di
+     *  forge_eval_save). Return null bila tidak ada run untuk hash itu. */
+    fun getEvalRun(skillId: Long, hash: String): EvalRun? {
+        return try {
+            ensureEvalRunTable()
+            val c = readableDatabase.rawQuery("SELECT skill_id,trigger_query_hash,queries_json,votes_json,trigger_train,trigger_test,descr_hash,skill_version_no,created_ts FROM eval_runs WHERE skill_id=? AND trigger_query_hash=?", arrayOf(skillId.toString(), hash))
+            val r = if (c.moveToFirst()) EvalRun(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getInt(4), c.getInt(5), c.getString(6) ?: "", c.getInt(7), c.getLong(8)) else null
+            c.close(); r
+        } catch (e: Exception) { null }
+    }
+
+    /** VC303-P1-1: prune run eval satu skill — hapus yang lebih tua dari
+     *  TTL 7 hari, lalu sisakan maks 5 run terbaru. Dipanggil tiap
+     *  saveEvalRun; tidak pernah throw. */
+    fun pruneEvalRuns(skillId: Long) {
+        try {
+            ensureEvalRunTable()
+            val cutoff = System.currentTimeMillis() - EvalLoopGuardVc303.EVAL_RUN_TTL_DAYS_VC303 * 24L * 3600L * 1000L
+            writableDatabase.delete("eval_runs", "skill_id=? AND created_ts<?", arrayOf(skillId.toString(), cutoff.toString()))
+            val keep = EvalLoopGuardVc303.MAX_EVAL_RUNS_PER_SKILL_VC303
+            val c = readableDatabase.rawQuery("SELECT trigger_query_hash FROM eval_runs WHERE skill_id=? ORDER BY created_ts DESC, rowid DESC LIMIT -1 OFFSET $keep", arrayOf(skillId.toString()))
+            val old = ArrayList<String>()
+            while (c.moveToNext()) old.add(c.getString(0) ?: "")
+            c.close()
+            for (h in old) {
+                if (h.isNotEmpty()) writableDatabase.delete("eval_runs", "skill_id=? AND trigger_query_hash=?", arrayOf(skillId.toString(), h))
+            }
         } catch (e: Exception) {}
     }
 
@@ -2388,6 +2466,8 @@ class MemoryDb private constructor(ctx: Context) :
         try {
             writableDatabase.delete("skills", "id=?", arrayOf(id.toString()))
             try { writableDatabase.delete("skill_versions", "skill_id=?", arrayOf(id.toString())) } catch (e: Exception) {}
+            // VC303-P1-1: run eval skill itu ikut dihapus (tidak yatim).
+            try { writableDatabase.delete("eval_runs", "skill_id=?", arrayOf(id.toString())) } catch (e: Exception) {}
             deleteEmbedding("skill", "skill:$id")
         } catch (e: Exception) {}
     }

@@ -364,7 +364,10 @@ object SkillJudge {
     /** Akurasi TRAIN/TEST dari mayoritas vote atas split 60/40 yang sama
      *  dengan sinyal (urut String.hashCode query). */
     private fun voteAccuracies(votes: List<TrigVote>): Pair<Int, Int> {
-        val sorted = votes.sortedBy { it.query.hashCode() }
+        // VC303-P1-6 (EV-4): sort memakai query TERNORMALISASI (sama seperti
+        // hash kanonik :344-346) — hash dan partisi sepakat selalu; dua set
+        // yang hanya beda kapitalisasi tidak lagi menghasilkan split beda.
+        val sorted = votes.sortedBy { normalizeQuery(it.query).hashCode() }
         val nTrain = (sorted.size * 60) / 100
         fun acc(rows: List<TrigVote>): Int {
             if (rows.isEmpty()) return 0
@@ -397,7 +400,8 @@ object SkillJudge {
         val noContent = list.filter { contentWords(it.query).isEmpty() }
         if (noContent.isNotEmpty())
             return "forge_trigger_eval: query tanpa kata konten ditolak (semua kata <4 huruf atau stopword, tidak terlihat sinyal): " + noContent.joinToString("; ") { "\"${it.query}\"" } + ". Tulis ulang query dengan kata kunci >=4 huruf."
-        val sorted = list.sortedBy { it.query.hashCode() }
+        // VC303-P1-6 (EV-4): lihat voteAccuracies di atas — sort ternormalisasi.
+        val sorted = list.sortedBy { normalizeQuery(it.query).hashCode() }
         val nTrain = (sorted.size * 60) / 100
         val train = sorted.subList(0, nTrain)
         val test = sorted.subList(nTrain, sorted.size)
@@ -468,7 +472,12 @@ object SkillJudge {
         } else {
             val vl = voteList
             sb.append("Vote agen 3x (mayoritas, dihitung tool): TRAIN ").append(voteTrain).append("% — TEST ").append(voteTest).append("% (ambang lolos sama: TEST >=80% DAN TRAIN >=80%).\n")
-            sb.append("Simpan ke forge_eval_save: trigger_train=").append(voteTrain).append(" trigger_test=").append(voteTest).append(" + agent_votes (apa adanya) + trigger_query_hash=").append(setHash).append(".\n")
+            // VC303-P1-2 (EV-2 opsi b): blok JSON verbatim di AWAL output
+            // (disisipkan saat return, sebelum daftar gagal) — salin apa
+            // adanya ke forge_eval_save, jangan ketik ulang. Run yang sama
+            // juga tersimpan di DB (vc303 opsi a); blok ini jalan verifikasi
+            // manual + transparansi.
+            sb.append("Simpan ke forge_eval_save: trigger_train=").append(voteTrain).append(" trigger_test=").append(voteTest).append(" + agent_votes (apa adanya) + trigger_query_hash=").append(setHash).append(". ATAU cukup kirim trigger_query_hash saja — votes diambil dari run eval tersimpan (vc303); bila draf berubah sejak eval, run kedaluwarsa dan eval wajib diulang.\n")
             val failedVotes = sorted.filter { tq -> vl.first { p -> normalizeQuery(p.query) == normalizeQuery(tq.query) }.let { majorityTrigger(it.votes) != tq.should } }
             if (failedVotes.isNotEmpty()) {
                 sb.append("Query yang diprediksi SALAH oleh mayoritas vote (").append(failedVotes.size).append("):\n")
@@ -491,7 +500,17 @@ object SkillJudge {
         val passVote = voteList == null || (voteTest >= 80 && voteTrain >= 80)
         sb.append(if (passSignal && passVote) "Verdict: LOLOS." else "Verdict: PERBAIKI deskripsi (tambah/kurangi kata pemicu, maks 5 iterasi, pilih by TEST — bukan train).")
         sb.append(" Split deterministik (urut String.hashCode query) untuk set query yang SAMA — tapi set query dipilih agen/model sendiri; angka ini sinyal atas pilihan itu, bukan benchmark independen.")
-        return sb.toString()
+        // VC303-P1-2 (EV-2 opsi b): blok JSON verbatim di AWAL output —
+        // sebelum daftar gagal, agar selamat dari cap 9000 char hasil tool
+        // (Tools.kt:3080) yang memotong ekor. Hanya bila ada vote (tanpa
+        // vote tidak ada angka trigger yang sah untuk disalin).
+        if (voteList == null || agentVotes == null) return sb.toString()
+        val blockVc303 = JSONObject()
+        blockVc303.put("trigger_query_hash", setHash)
+        blockVc303.put("trigger_train", voteTrain)
+        blockVc303.put("trigger_test", voteTest)
+        blockVc303.put("agent_votes", agentVotes)
+        return "BLOK JSON EVAL (vc303) — salin blok ini apa adanya ke forge_eval_save, jangan ketik ulang; atau cukup kirim trigger_query_hash saja (run tersimpan):\n" + blockVc303.toString() + "\n" + sb.toString()
     }
 
     /** vc301 SF-A10 — validasi eval trigger yang hendak disimpan (forge_eval_save).
@@ -505,6 +524,13 @@ object SkillJudge {
     fun validateSavedTriggerEval(eval: JSONObject): String? {
         val hasTrain = eval.has("trigger_train")
         val hasTest = eval.has("trigger_test")
+        // VC303-P1-7 (EV-6): agent_votes tanpa trigger_* = payload
+        // inkonsisten — vote tanpa angka TRAIN/TEST tidak bisa disimpan
+        // sebagai benchmark trigger; tolak eksplisit, jangan lolos diam-diam
+        // sebagai save judge-only.
+        val votesEarlyVc303 = eval.optJSONArray("agent_votes")
+        if (!hasTrain && !hasTest && votesEarlyVc303 != null && votesEarlyVc303.length() > 0)
+            return "forge_eval_save ditolak: eval memuat agent_votes tanpa trigger_train/trigger_test — payload inkonsisten (vote tanpa angka TRAIN/TEST tidak bisa disimpan sebagai benchmark trigger). Sertakan trigger_train/trigger_test + trigger_query_hash dari hasil forge_trigger_eval, atau hapus agent_votes bila hanya menyimpan judge/A-B/TDD."
         if (!hasTrain && !hasTest) return null
         val votesArr = eval.optJSONArray("agent_votes")
         if (votesArr == null || votesArr.length() == 0)
@@ -552,6 +578,28 @@ object SkillJudge {
      *  identik = false (eval dipertahankan). */
     fun evalWipeNeededVc299(oldContent: List<String>, newContent: List<String>): Boolean = oldContent != newContent
 
+    // VC303-P3-21 (EV-9): eval yang masuk lewat restore/impor TIDAK
+    // dibuang bila gagal validasi save (restore tidak boleh kehilangan
+    // data) — sebagai gantinya eval itu DITANDAI di dalam JSON-nya sendiri
+    // (flag + alasan), supaya evalSummary bisa memberi label
+    // impor/tidak-tervalidasi. Eval yang lolos validasi (null) atau yang
+    // judge-only (tanpa trigger_*, validasi dilewati — lihat EV-6)
+    // dikembalikan APA ADANYA tanpa flag. JSON rusak dikembalikan apa adanya.
+    // Dipakai Tools.kt (sync-restore) + MemoryDb.kt (impor arsip +
+    // restoreSkillVersion). Varian yang dibangun: validasi + label impor
+    // (bukan tolak/buang).
+    fun markImportEvalVc303(evalJson: String): String {
+        if (evalJson.isBlank()) return evalJson
+        return try {
+            val o = JSONObject(evalJson)
+            if (o.optBoolean("import_unvalidated", false)) return evalJson
+            val err = validateSavedTriggerEval(o) ?: return evalJson
+            o.put("import_unvalidated", true)
+            o.put("import_unvalidated_reason", err.take(200))
+            o.toString()
+        } catch (e: Exception) { evalJson }
+    }
+
     // ---------- Ringkasan benchmark (list_skills / forge_eval_save) ----------
     fun evalSummary(evalJson: String): String {
         if (evalJson.isBlank()) return ""
@@ -570,7 +618,142 @@ object SkillJudge {
                 val voteNote = if (o.has("agent_votes")) ", vote 3x tercatat" else ""
                 parts.add("trigger TEST " + o.optInt("trigger_test") + "% [klaim agen" + voteNote + "]")
             }
+            // VC303-P3-21 (EV-9): label impor/tidak-tervalidasi — eval ini
+            // masuk lewat restore/impor dan TIDAK lolos validateSavedTriggerEval;
+            // datanya dipertahankan, tapi jangan dibaca sebagai hasil save resmi.
+            // EV-8 TIDAK DIUBAH: [terverifikasi] tetap HANYA untuk judge,
+            // A/B/TDD/trigger tetap [klaim agen] (baris di atas).
+            if (o.optBoolean("import_unvalidated", false)) parts.add("[impor — tidak tervalidasi]")
             if (parts.isEmpty()) " \u00b7 eval tersimpan" else " \u00b7 eval vc293: " + parts.joinToString(" \u00b7 ")
         } catch (e: Exception) { " \u00b7 eval tersimpan" }
     }
+}
+
+// ---------- vc303 P1 — pembunuh loop eval-save (EV-1/2/5, LP-1, LP-7) ----------
+// Helper + penghitung di file ini (bukan Tools.kt) supaya logika murni bisa
+// diuji JVM tanpa Android: SkillJudge.kt hanya bergantung pada org.json +
+// java.security. Tools.kt memanggil helper ini dari cabang forge_*.
+// Batasan jujur: penghitung EvalLoopGuardVc303 IN-MEMORY per proses app —
+// reset bila proses app mati/restart. Itu cukup untuk membunuh loop di
+// dalam satu sesi (skenario v11: loop terjadi dalam hitungan detik di
+// giliran yang sama), tapi bukan penghitung lintas-restart; bila butuh
+// persistensi, pindahkan map-nya ke prefs/MemoryDb tanpa mengubah API.
+object EvalLoopGuardVc303 {
+    const val MAX_EVAL_ITERATIONS_VC303 = 5
+    const val MAX_EVAL_RUNS_PER_SKILL_VC303 = 5
+    const val EVAL_RUN_TTL_DAYS_VC303 = 7L
+
+    // LP-1: penolakan trigger_query_hash beruntun, kunci = (sesi, slug) +
+    // JENIS penolakan (bukan args penuh).
+    private val hashReject = HashMap<String, Pair<String, Int>>()
+    fun noteHashRejection(sessionId: Long, slug: String, kind: String): Int {
+        val k = sessionId.toString() + "|" + slug
+        val cur = hashReject[k]
+        val n = if (cur != null && cur.first == kind) cur.second + 1 else 1
+        hashReject[k] = Pair(kind, n)
+        return n
+    }
+    fun resetHashRejections(sessionId: Long, slug: String) {
+        hashReject.remove(sessionId.toString() + "|" + slug)
+    }
+
+    // LP-7: iterasi eval per skill-slug (naik tiap forge_trigger_eval tanpa
+    // eval_save sukses; reset saat eval_save sukses / draf ditulis ulang).
+    private val evalIter = HashMap<String, Int>()
+    fun noteEvalIteration(slug: String): Int {
+        val n = (evalIter[slug] ?: 0) + 1
+        evalIter[slug] = n
+        return n
+    }
+    fun evalIterationCount(slug: String): Int = evalIter[slug] ?: 0
+    fun resetEvalIterations(slug: String) {
+        evalIter.remove(slug)
+        evalBest.remove(slug)
+    }
+
+    // LP-7: snapshot deskripsi + TEST terbaik sejauh ini per skill.
+    private val evalBest = HashMap<String, Pair<String, Int>>()
+    fun noteEvalBest(slug: String, descrSnapshot: String, test: Int) {
+        val cur = evalBest[slug]
+        if (cur == null || test > cur.second) evalBest[slug] = Pair(descrSnapshot.take(500), test)
+    }
+    fun bestEval(slug: String): Pair<String, Int>? = evalBest[slug]
+
+    // LP-7: create_skill yang ditolak D1 per skill per giliran.
+    private val d1Reject = HashMap<String, Int>()
+    fun noteD1Rejection(slug: String, turnNo: Int): Int {
+        val k = slug + "|" + turnNo
+        val n = (d1Reject[k] ?: 0) + 1
+        d1Reject[k] = n
+        return n
+    }
+}
+
+// VC303-P1-1: hash kanonik isi draf (descr + instruction) — sidik jari run
+// eval; run kedaluwarsa bila hash ini berubah (draf diubah sesudah eval).
+fun descrHashVc303(descr: String, instruction: String): String {
+    return try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val bytes = md.digest((descr.trim() + "\n" + instruction.trim()).toByteArray(Charsets.UTF_8))
+        bytes.joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) { (descr.trim() + "\n" + instruction.trim()).hashCode().toString() }
+}
+
+// VC303-P1-1/3: hitung (trigger_query_hash, trigger_train, trigger_test)
+// dari agent_votes — dipakai Tools.kt untuk (a) menyimpan run sesudah eval
+// sukses, (b) menyusun eval terkoreksi pada penolakan hash ke-2 (LP-1).
+// Return null bila votes malformed (bukan objek / bukan tepat 3 suara /
+// suara tak terbaca) — pemanggil memakai jalur tolak biasa.
+fun triggerEvalFromVotesVc303(agentVotes: JSONArray?): Triple<String, Int, Int>? {
+    if (agentVotes == null || agentVotes.length() == 0) return null
+    return try {
+        val pairs = ArrayList<Pair<String, Boolean>>()
+        val votes = ArrayList<Triple<String, Boolean, List<Boolean>>>()
+        for (i in 0 until agentVotes.length()) {
+            val o = agentVotes.optJSONObject(i) ?: return null
+            val q = o.optString("query").trim()
+            if (q.isEmpty() || !o.has("should_trigger")) return null
+            val arr = o.optJSONArray("votes") ?: return null
+            if (arr.length() != 3) return null
+            val vs = ArrayList<Boolean>()
+            for (j in 0 until 3) {
+                val pv = when (val v = arr.opt(j)) {
+                    is Boolean -> v
+                    is String -> when (v.trim().lowercase()) {
+                        "trigger", "true" -> true
+                        "tidak", "false" -> false
+                        else -> return null
+                    }
+                    else -> return null
+                }
+                vs.add(pv)
+            }
+            pairs.add(Pair(q, o.optBoolean("should_trigger", false)))
+            votes.add(Triple(q, o.optBoolean("should_trigger", false), vs))
+        }
+        // Hash kanonik + split ternormalisasi — rumus SAMA dengan
+        // SkillJudge.triggerQuerySetHash / voteAccuracies (EV-4): normalisasi
+        // lowercase+trim, "query|should" terurut; split sort by hashCode
+        // query ternormalisasi.
+        val canon = pairs.map { (q, s) -> q.trim().lowercase() + "|" + s }.sorted().joinToString("\n")
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = md.digest(canon.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        val sorted = votes.sortedBy { it.first.trim().lowercase().hashCode() }
+        val nTrain = (sorted.size * 60) / 100
+        fun acc(rows: List<Triple<String, Boolean, List<Boolean>>>): Int {
+            if (rows.isEmpty()) return 0
+            var ok = 0
+            for (r in rows) if ((r.third.count { it } >= 2) == r.second) ok++
+            return ok * 100 / rows.size
+        }
+        Triple(hash, acc(sorted.subList(0, nTrain)), acc(sorted.subList(nTrain, sorted.size)))
+    } catch (e: Exception) { null }
+}
+
+// VC303-P1-3 (LP-1): jenis penolakan = prefix pesan sebelum angka/hash —
+// kunci stabil untuk counter beruntun (angka klaim vs hitung-ulang selalu
+// beda, jadi pesan penuh tidak pernah sama).
+fun evalRejectionKindVc303(msg: String): String {
+    val beforeParen = msg.substringBefore(" (").trim()
+    return beforeParen.replace(Regex("[0-9a-f]{8,}"), "#").replace(Regex("[0-9]+"), "#").trim()
 }

@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.util.Base64
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.concurrent.Executors
@@ -41,7 +42,10 @@ object OcCoord {
         "chain_batt_min" to "20",
         "quiet_hours" to "",
         "task_timeout_min" to "20",
-        "perm_timeout_min" to "30"
+        "perm_timeout_min" to "30",
+        // VC303-P3-22 (LP-9): anggaran langkah tugas koordinator — jumlah
+        // pesan asisten OpenCode per tugas (default 200, cermin cap tool).
+        "oc_task_max_steps_vc303" to "200"
     )
 
     const val APPROVAL_NOTIF_ID = 7711
@@ -265,6 +269,58 @@ object OcCoord {
         }
     }
 
+    // VC303-P3-22 (LP-9): detektor spinning atas output INKREMENTAL —
+    // pendamping spinningPatternVc277 (yang pasca-hoc atas teks hasil).
+    // observe() dipanggil tiap poll dengan potongan teks BARU saja; baris
+    // ternormalisasi (angka dihapus, <20 char diabaikan) yang sama >= 3x
+    // mengembalikan cuplikan baris itu. Baris yang terpotong di tengah
+    // chunk ditahan di buffer sampai baris lengkap (newline) tiba.
+    class OcSpinWatchVc303 {
+        private val counts = HashMap<String, Int>()
+        private val firstSeen = HashMap<String, String>()
+        private var pending = ""
+        fun observe(chunk: String): String? {
+            if (chunk.isEmpty()) return null
+            pending += chunk
+            val lines = pending.split("\n")
+            pending = lines.last()
+            for (i in 0 until lines.size - 1) {
+                val raw = lines[i]
+                val norm = raw.lowercase().replace(Regex("[0-9]+"), "#").replace(Regex("\\s+"), " ").trim()
+                if (norm.length < 20) continue
+                val n = (counts[norm] ?: 0) + 1
+                counts[norm] = n
+                if (!firstSeen.containsKey(norm)) firstSeen[norm] = raw.trim()
+                if (n >= 3) return firstSeen[norm]?.take(120)
+            }
+            return null
+        }
+        // Baris terakhir tanpa newline ikut dihitung saat tugas selesai.
+        fun flush(): String? {
+            if (pending.isBlank()) return null
+            val raw = pending
+            pending = ""
+            val norm = raw.lowercase().replace(Regex("[0-9]+"), "#").replace(Regex("\\s+"), " ").trim()
+            if (norm.length < 20) return null
+            val n = (counts[norm] ?: 0) + 1
+            counts[norm] = n
+            if (!firstSeen.containsKey(norm)) firstSeen[norm] = raw.trim()
+            return if (n >= 3) firstSeen[norm]?.take(120) else null
+        }
+        fun reset() { counts.clear(); firstSeen.clear(); pending = "" }
+    }
+
+    // VC303-P3-22 (LP-9): anggaran langkah tugas koordinator — jumlah pesan
+    // asisten OpenCode sejak baseline (tiap pesan ≈ 1 langkah agen).
+    // Default 200 (cermin cap tool 200); bisa diubah lewat aturan
+    // oc_task_max_steps_vc303. Polling delegate_wait/delegate_status tetap
+    // dikecualikan dari StuckDetector (AgentPrompt.isPollingExemptVc277 —
+    // tidak disentuh); anggaran ini menghitung pesan ASISTEN serve, bukan
+    // poll Harness, jadi tidak menghukum polling yang sah.
+    class OcTaskBudgetVc303(val maxSteps: Int = 200) {
+        fun overSteps(assistantMessages: Int): Boolean = assistantMessages > maxSteps
+    }
+
     // vc277 O17(d): OcCoord tetap tanpa StuckDetector proses (OpenCode
     // punya loop sendiri) — tetapi finishTask menolak hasil yang
     // terdeteksi berputar: satu pola (baris ternormalisasi, angka
@@ -418,6 +474,10 @@ object OcCoord {
         var finishedSeen = false
         val loopStart = System.currentTimeMillis()
         var lastChangeAt = loopStart
+        // VC303-P3-22 (LP-9): anggaran langkah + deteksi spinning inkremental.
+        val budgetVc303 = OcTaskBudgetVc303(ruleInt(ctx, "oc_task_max_steps_vc303", 200))
+        val spinWatchVc303 = OcSpinWatchVc303()
+        var checkedCharsVc303 = 0
         while (System.currentTimeMillis() < deadline) {
             // vc265 N2-m7: cek F1 tiap iterasi poll — rantai yang sedang
             // menunggu agen selesai berhenti di sini, bukan sampai timeout.
@@ -436,9 +496,11 @@ object OcCoord {
             val msgs = OcClient.messages(base, sid)
             if (msgs.length() == lastCount) stable++ else { stable = 0; lastCount = msgs.length(); lastChangeAt = System.currentTimeMillis() }
             var agentError: String? = null
+            var asstCountVc303 = 0
             for (i in baseline until msgs.length()) {
                 val info = msgs.optJSONObject(i)?.optJSONObject("info") ?: continue
                 if (info.optString("role") != "assistant") continue
+                asstCountVc303++
                 if (info.optString("finish") == "stop") finishedSeen = true
                 // v3.3.3: pesan asisten ber-error (mis. endpoint model HTTP 402
                 // "Endpoint is unavailable" dari opencode.ai) = tugas GAGAL
@@ -454,6 +516,29 @@ object OcCoord {
             }
             if (agentError != null) {
                 return Outcome("failed", "❌ Agen OpenCode error dari serve: $agentError\nIni gangguan di sisi opencode.ai/model-nya, bukan harness. Tugas bisa dikirim ulang nanti.", 0)
+            }
+            // VC303-P3-22 (LP-9): anggaran langkah koordinator — jumlah pesan
+            // asisten OpenCode sejak baseline (tiap pesan ≈ 1 langkah agen).
+            // Bukan gate approval: hanya menghentikan tugas yang berputar
+            // tanpa selesai sebelum timeout 20 menit menghabiskan waktu.
+            if (budgetVc303.overSteps(asstCountVc303)) {
+                OcClient.abort(base, sid)
+                return Outcome("failed", "⛔ Anggaran langkah koordinator tercapai: agen OpenCode sudah mengirim $asstCountVc303 pesan asisten (maks ${budgetVc303.maxSteps}) tanpa selesai — tugas dihentikan, bukan ditunggu sampai timeout. Cek sesi langsung di serve/Termux.", 0)
+            }
+            // VC303-P3-22 (LP-9): deteksi spinning atas output INKREMENTAL
+            // (bukan hanya hasil akhir) — baris yang sama >= 3x di tengah
+            // jalan sudah menghentikan tugas. Hanya potongan BARU yang
+            // diperiksa tiap poll (checkedCharsVc303); spinningPatternVc277
+            // pasca-hoc di finishTask tetap jadi jaring pengaman akhir.
+            val incTextVc303 = try { incrementalAssistantTextVc303(msgs, baseline) } catch (e: Exception) { "" }
+            if (incTextVc303.length > checkedCharsVc303) {
+                val newChunkVc303 = incTextVc303.substring(checkedCharsVc303)
+                checkedCharsVc303 = incTextVc303.length
+                val spinVc303 = spinWatchVc303.observe(newChunkVc303)
+                if (spinVc303 != null) {
+                    OcClient.abort(base, sid)
+                    return Outcome("failed", "⛔ Koordinator berputar (output inkremental mengulang pola yang sama >= 3x): \"$spinVc303\" — tugas dihentikan di tengah jalan; hasil parsial bisa dicek di sesi serve.", 0)
+                }
             }
             val busy = OcClient.statusMap(base).optJSONObject(sid)?.optString("type") == "busy"
             if (finishedSeen && (!busy || stable >= 3)) break
@@ -473,6 +558,31 @@ object OcCoord {
             else -> txt
         }
         return Outcome(if (timedOut) "failed" else "done", body, ctxSize)
+    }
+
+    // VC303-P3-22 (LP-9): teks jawaban asisten sejak baseline dari JSONArray
+    // pesan yang SUDAH diambil (tanpa fetch ulang) — cermin collectResult
+    // tanpa cap 3000 char, supaya deteksi spinning inkremental melihat
+    // seluruh output, bukan hanya 3000 char pertama.
+    private fun incrementalAssistantTextVc303(msgs: JSONArray, baseline: Int): String {
+        val sb = StringBuilder()
+        for (i in baseline until msgs.length()) {
+            val m = msgs.optJSONObject(i) ?: continue
+            val info = m.optJSONObject("info") ?: continue
+            if (info.optString("role") != "assistant") continue
+            val parts = m.optJSONArray("parts") ?: continue
+            for (j in 0 until parts.length()) {
+                val part = parts.optJSONObject(j) ?: continue
+                if (part.optString("type") == "text") {
+                    val t = part.optString("text").trim()
+                    if (t.isNotEmpty() && !t.startsWith("## Objective")) {
+                        if (sb.isNotEmpty()) sb.append("\n\n")
+                        sb.append(t)
+                    }
+                }
+            }
+        }
+        return sb.toString()
     }
 
     /** Gabung teks jawaban asisten setelah baseline; lewati ringkasan "## Objective". */

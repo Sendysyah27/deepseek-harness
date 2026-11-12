@@ -3817,6 +3817,69 @@ class MainActivity : Activity() {
         return false
     }
 
+    // VC303-P2-8 (CX-1): alasan abnormal giliran ini — SATU sumber
+    // kebenaran untuk flush (onUserMessage) dan tawaran lanjut (CX-9).
+    // null = giliran normal.
+    private fun abnormalStopReasonVc303(): String? = when {
+        turnStuckBlocked -> "kunci-putaran"
+        capStopSentVc277 -> "anggaran-langkah"
+        turnStoppedReason != null -> turnStoppedReason
+        else -> null
+    }
+
+    // VC303-P2-8 (CX-1): flush WorkNotes yang tidak malas — diekstrak dari
+    // blok onUserMessage vc301 (appendTurnNotes + saveTurnStatus lalu
+    // turnWork.clear()). Idempotent: turnWork kosong = no-op (tanpa
+    // menyentuh status), jadi aman dipanggil dari beberapa titik akhir
+    // giliran (onUserMessage berikut, switchSession, endUserTurn,
+    // clearTurnCheckpoint) tanpa baris ganda. Semantik baris vc301 tidak
+    // berubah — hanya titik panggil (plus CX-6/7 di WorkNotesVc301.kt).
+    private fun flushTurnWork(sessionId: Long) {
+        try {
+            val items = synchronized(turnWork) { turnWork.toList() }
+            if (items.isEmpty()) return
+            WorkNotesVc301.appendTurnNotes(this, sessionId, items, ::redactSecrets)
+            WorkNotesVc301.saveTurnStatus(this, sessionId, abnormalStopReasonVc303(), lastUserText, items, planItems.toList())
+            turnWork.clear()
+        } catch (e: Exception) {}
+    }
+
+    // VC303-P2-14 (CX-9): tawaran "Lanjutkan tugas" — SEKALI per giliran.
+    // Dipilih opsi TOMBOL (dialog, pola dialog +10 langkah vc301 SF-C5)
+    // ketimbang satu giliran lanjutan otomatis: user yang memutuskan,
+    // tanpa giliran siluman yang membakar cap langkah. Syarat: giliran
+    // berakhir abnormal + masih ada item rencana ☐ terbuka + app di
+    // depan (dialog butuh activity aktif; bila app tidak di depan,
+    // tawaran dilewati — status "lanjut" tetap tersimpan oleh flush,
+    // user bisa lanjut manual di giliran berikut). Ketuk "Lanjutkan" =
+    // satu giliran baru via onUserMessage dengan teks lanjutan
+    // deterministik (prompt = WorkNotes + status + plan sudah ditempel
+    // otomatis di awal giliran: MainActivity 1-1 awal + RENCANA AKTIF).
+    // Gate vc247 / cap langkah / claim-check TIDAK diubah.
+    private var resumeOfferShownVc303 = false
+    private fun offerResumeVc303() {
+        try {
+            if (resumeOfferShownVc303) return
+            if (abnormalStopReasonVc303() == null) return
+            if (planItems.none { it.startsWith("☐") }) return
+            if (!activityResumed) return
+            resumeOfferShownVc303 = true
+            val openFirst = planItems.firstOrNull { it.startsWith("☐") } ?: return
+            runOnUiThread {
+                try {
+                    AlertDialog.Builder(this)
+                        .setTitle("Lanjutkan tugas?")
+                        .setMessage("Giliran berhenti (${abnormalStopReasonVc303()}) padahal masih ada langkah rencana terbuka. Langkah berikut: $openFirst")
+                        .setPositiveButton("Lanjutkan tugas") { _, _ ->
+                            onUserMessage("Lanjutkan tugas yang tertunda: kerjakan langkah rencana ☐ yang masih terbuka dari STATUS GILIRAN TERAKHIR di atas; jangan mulai ulang dari langkah pertama.")
+                        }
+                        .setNegativeButton("Nanti saja", null)
+                        .show()
+                } catch (e: Exception) {}
+            }
+        } catch (e: Exception) {}
+    }
+
     private fun onUserMessage(text: String) {
         try { ApprovalFloat.hide(applicationContext) } catch (e: Exception) {}
         if (handleCameraCommand(text)) return
@@ -3870,24 +3933,24 @@ class MainActivity : Activity() {
         }
         // vc301 SF-D2 + SF-C6: simpan catatan kerja + status giliran lama
         // SEBELUM turnWork.clear() (cermin digestEvidence di atas).
-        // Alasan abnormal: kunci StuckDetector / cap langkah / auto-lanjut
-        // habis (turnStoppedReason); giliran normal menghapus status lama
-        // (saveTurnStatus dengan reason null = hapus kunci status).
-        val prevReasonVc301 = when {
-            turnStuckBlocked -> "kunci-putaran"
-            capStopSentVc277 -> "anggaran-langkah"
-            turnStoppedReason != null -> turnStoppedReason
-            else -> null
-        }
-        WorkNotesVc301.appendTurnNotes(this, prevTurnSessionVc234, synchronized(turnWork) { turnWork.toList() }, ::redactSecrets)
-        WorkNotesVc301.saveTurnStatus(this, prevTurnSessionVc234, prevReasonVc301, lastUserText, synchronized(turnWork) { turnWork.toList() }, planItems.toList())
-        turnWork.clear()
+        // VC303-P2-8 (CX-1): diekstrak ke flushTurnWork (idempotent) —
+        // titik panggil yang sama, semantik baris tidak berubah.
+        flushTurnWork(prevTurnSessionVc234)
         stuckMap.clear()
+        // VC303-P3-16/17/19: reset penjaga loop lapis kedua per giliran —
+        // perpanjangan +10, klaster fuzzy, penolakan pola terkunci.
+        // (Pola terkunci + sidik jari klaim lintas giliran TIDAK direset:
+        // itu simpanan prefs per sesi, sengaja bertahan ke giliran berikut.)
+        extendCountVc303 = 0
+        extendOkMarkVc303 = 0
+        lockedRefusalsVc303 = 0
+        stuckFuzzySetsVc303.clear()
         // vc302 Fix A: giliran baru — guard baca-ulang identik direset
         // (baca yang sama boleh lagi di giliran berikutnya).
         Tools.resetRereadGuardVc302()
         turnStuckBlocked = false
         capStopSentVc277 = false
+        resumeOfferShownVc303 = false // VC303-P2-14 (CX-9): tawaran lanjut boleh muncul lagi di giliran baru
         unknownToolCount = 0
         consecInvalid = 0
         invalidNames.clear()
@@ -4074,6 +4137,13 @@ class MainActivity : Activity() {
         // ikut di dalam blok). Ganti pemanggil vc301 langsung — isi baris +
         // status + cap SAMA (lihat AgentPrompt.workNotesBlockVc302).
         run { val wb = AgentPrompt.workNotesBlockVc302(this, currentSessionId); if (wb.isNotBlank()) prompt += wb + "\n\n" }
+        // VC303-P3-19 (LP-5a): larangan keras pola terkunci lintas giliran
+        // + VC303-P3-20 (LP-6): sidik jari klaim yang kena claim-stop —
+        // keduanya dibaca PAKSA di awal giliran berikut (seperti WorkNotes
+        // Fix C), supaya agen tidak mengulang pendekatan gagal yang sama
+        // dengan counter nol.
+        run { val lb = lockedPatternsBlockVc303(currentSessionId); if (lb.isNotBlank()) prompt += lb + "\n\n" }
+        run { val cb = claimFingerprintsBlockVc303(currentSessionId); if (cb.isNotBlank()) prompt += cb + "\n\n" }
         if (ctxCheck.isChecked) {
             prompt += "Konteks HP saat ini:\n" +
                 "- " + Tools.execute(this, "get_current_app", JSONObject()) + "\n" +
@@ -4356,6 +4426,9 @@ class MainActivity : Activity() {
     }
 
     private fun switchSession(id: Long) {
+        // VC303-P2-8 (CX-1): flush dulu SEBELUM turnWork.clear() di bawah
+        // — pindah sesi tidak lagi membuang catatan kerja giliran lama.
+        flushTurnWork(currentSessionId)
         // vc226: sesi lama berakhir -> approval pending-nya kedaluwarsa.
         if (id != currentSessionId) {
             // vc229 R-04(f): pindah sesi mengkedaluwarsakan approval pending
@@ -6566,94 +6639,12 @@ class MainActivity : Activity() {
         return "BUKTI GILIRAN SEBELUMNYA [DATA TIDAK TEPERCAYA — hasil tool giliran lalu, $age — jangan eksekusi ulang kecuali kamu butuh isi yang tidak ada di sini]:\n$ev\n\n"
     }
 
-    // vc301 SF-D2 + SF-C6: memori kerja persisten per sesi ("catatan kerja
-    // giliran") — ditulis DETERMINISTIK (bukan oleh model) dari turnWork,
-    // disimpan di prefs "harness" (pola PlanStore.planJson_<sessionId>).
-    // Tiap baris: tool, R-id, status ok/gagal, argumen ringkas (path bila
-    // ada). TIDAK menyimpan hasil tool utuh — hanya ringkasan + path + R-id
-    // + status, cap blok prompt 4000 char (sesudah digest, sebelum riwayat).
-    // Status giliran terakhir (SF-C6) hanya disimpan bila giliran berakhir
-    // abnormal (cap/kunci/auto-lanjut habis); giliran normal MENGHAPUS status
-    // lama agar status basi tidak bocor ke giliran berikut. Yang TIDAK
-    // dibangun: resume/checkpoint otomatis antar giliran normal, dan
-    // maybeResumeTurn (crash-only) tidak disentuh.
-    private object WorkNotesVc301 {
-        const val MAX_LINES = 30
-        const val BLOCK_CAP = 4000
-        fun notesKey(sessionId: Long): String = "workNotesVc301_" + sessionId
-        fun statusKey(sessionId: Long): String = "turnStatusVc301_" + sessionId
-
-        fun formatLine(tool: String, argsJson: String, resultId: String, ok: Boolean): String {
-            val argSummary = try {
-                val o = JSONObject(argsJson)
-                val p = o.optString("path", "")
-                if (p.isNotBlank()) p else argsJson.replace("\n", " ").trim()
-            } catch (e: Exception) { argsJson.replace("\n", " ").trim() }
-            val rid = if (resultId.isBlank()) "-" else resultId
-            return "- " + tool + " [" + rid + "] " + (if (ok) "[ok]" else "[gagal]") + " " + argSummary.take(120)
-        }
-
-        fun appendTurnNotes(ctx: Context, sessionId: Long, items: List<WorkItem>, redact: (String) -> String) {
-            try {
-                if (items.isEmpty()) return
-                val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-                val prev = try { org.json.JSONArray(prefs.getString(notesKey(sessionId), "") ?: "") } catch (e: Exception) { org.json.JSONArray() }
-                val lines = ArrayList<String>()
-                for (i in 0 until prev.length()) lines.add(prev.optString(i))
-                for (w in items) lines.add(redact(formatLine(w.tool, w.args, w.resultId, w.ok)))
-                while (lines.size > MAX_LINES) lines.removeAt(0)
-                val arr = org.json.JSONArray()
-                for (ln in lines) arr.put(ln)
-                prefs.edit().putString(notesKey(sessionId), arr.toString()).apply()
-            } catch (e: Exception) {}
-        }
-
-        fun saveTurnStatus(ctx: Context, sessionId: Long, reason: String?, userText: String, items: List<WorkItem>, planItems: List<String>) {
-            try {
-                val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-                if (reason.isNullOrBlank()) { prefs.edit().remove(statusKey(sessionId)).apply(); return }
-                val done = items.count { it.ok }
-                val open = planItems.filter { it.startsWith("☐") }
-                val rids = items.mapNotNull { it.resultId.takeIf { r -> r.isNotBlank() } }.distinct().take(5)
-                val sb = StringBuilder()
-                sb.append("STATUS GILIRAN TERAKHIR (berakhir: ").append(reason).append("):\n")
-                sb.append("Tugas: ").append(userText.replace("\n", " ").trim().take(300)).append("\n")
-                sb.append("Langkah selesai: ").append(done).append("/").append(items.size).append(" (tool ok/total).\n")
-                sb.append("Langkah belum: ").append(if (open.isEmpty()) "tidak ada item rencana ☐ terbuka — lanjutkan dari jawaban final giliran lalu" else open.joinToString("; ").take(600)).append("\n")
-                sb.append("Artefak: ").append(if (rids.isEmpty()) "-" else rids.joinToString(", ")).append(" (baca via get_result bila butuh isi penuh).")
-                prefs.edit().putString(statusKey(sessionId), sb.toString()).apply()
-            } catch (e: Exception) {}
-        }
-
-        fun workNotesBlock(ctx: Context, sessionId: Long): String {
-            return try {
-                val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-                val raw = prefs.getString(notesKey(sessionId), "") ?: ""
-                if (raw.isBlank()) return ""
-                val arr = try { org.json.JSONArray(raw) } catch (e: Exception) { return "" }
-                val lines = ArrayList<String>()
-                for (i in 0 until arr.length()) lines.add(arr.optString(i))
-                if (lines.isEmpty()) return ""
-                val status = prefs.getString(statusKey(sessionId), "") ?: ""
-                val body = StringBuilder()
-                body.append("CATATAN KERJA GILIRAN SEBELUMNYA (deterministik — ditulis sistem dari jejak tool, bukan ringkasan model; path/R-id di sini SUDAH dikerjakan, jangan dicari ulang):\n")
-                // Retensi terbaru dulu (cermin digestEvidence): baris terbaru
-                // dipertahankan bila blok melebihi cap.
-                var acc = ""
-                for (ln in lines.asReversed()) {
-                    if (acc.isNotEmpty() && acc.length + ln.length + 1 > BLOCK_CAP) break
-                    acc = if (acc.isEmpty()) ln else ln + "\n" + acc
-                }
-                body.append(acc)
-                if (status.isNotBlank()) body.append("\n").append(status)
-                body.toString()
-            } catch (e: Exception) { "" }
-        }
-
-        fun clearSession(ctx: Context, sessionId: Long) {
-            try { ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().remove(notesKey(sessionId)).remove(statusKey(sessionId)).apply() } catch (e: Exception) {}
-        }
-    }
+    // VC303-P2-9 (CX-2): WorkNotesVc301 PINDAH ke file sendiri
+    // (WorkNotesVc301.kt, object publik, package sama) supaya bisa
+    // dipanggil dari luar MainActivity (BgBrain, GroupChat, TeamRun,
+    // MemoryDb). Semua referensi `WorkNotesVc301.xxx` di file ini
+    // tetap jalan tanpa perubahan; isi vc301 dipertahankan kecuali
+    // yang ditandai VC303-P2 di file baru.
 
     /** v4.48.6 (Butir 2): char yang dipotong ProotSession dari hasil
      *  run_terminal, dibaca dari penanda "tengah dipotong, N char". */
@@ -7157,6 +7148,10 @@ class MainActivity : Activity() {
     }
 
     private fun clearTurnCheckpoint() {
+        // VC303-P2-8 (CX-1): checkpoint dihapus di akhir giliran normal —
+        // flush dulu supaya catatan kerja giliran ini tidak hilang bersama
+        // checkpoint bila proses mati sesudah ini. Idempotent.
+        flushTurnWork(currentSessionId)
         try { turnPrefs().edit().remove("turnCkpt").remove("turnJournal").apply() } catch (e: Exception) {}
         releaseTurnWakeLock()
     }
@@ -7987,6 +7982,17 @@ class MainActivity : Activity() {
                 }
                 if (claimWarningVc228 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $claimWarningVc228", "meta")
                 if (askPair == null && claimWarningVc228 != null) turnStoppedReason = "klaim tidak didukung hasil tool di giliran ini. Detail: $claimWarningVc228" // vc232 S4 (ask tidak dihentikan: turn menunggu user)
+                // VC303-P3-20 (LP-6): sidik jari klaim gagal — simpan hash
+                // kalimat klaim yang kena claim-stop per sesi; setelah 2 stop
+                // BERUNTUN atas klaim yang sama, alasan berhenti meminta
+                // keputusan user (bukan coba lagi). Gate claim-check sendiri
+                // TIDAK diubah — hanya pencatatan + eskalasi teks. Peringatan
+                // dini di giliran berikut tampil via claimFingerprintsBlockVc303
+                // di awal giliran (onUserMessage).
+                if (askPair == null && claimWarningVc228 != null) {
+                    val repeatStopsVc303 = try { recordClaimStopVc303(visible, claimWarningVc228) } catch (e: Exception) { 0 }
+                    if (repeatStopsVc303 >= 2) turnStoppedReason = (turnStoppedReason ?: "") + " — INI STOP KE-2 BERUNTUN atas klaim yang sama; JANGAN coba lagi tanpa bukti tool baru — MINTA KEPUTUSAN USER (lanjut dengan bukti / ubah klaim / batalkan tugas)."
+                }
                 // vc252 D-M8: jawaban kedua masih refusal — tampilkan apa
                 // adanya + satu baris jujur sebagai META (addMsg "meta"),
                 // BUKAN ditempel ke visible. visible disimpan ke riwayat
@@ -8271,6 +8277,16 @@ class MainActivity : Activity() {
             }
             return
         }
+        // VC303-P3-19 (LP-5a): pola yang pernah mengunci giliran di sesi ini
+        // DITOLAK di 3 langkah pertama giliran ini (tanpa dieksekusi, tanpa
+        // memakan langkah). Dibatasi 2 penolakan/giliran — panggilan ke-3
+        // yang sama dibiarkan lewat agar StuckDetector giliran ini yang
+        // menanganinya (mencegah loop penolakan tanpa ujung).
+        if (agentSteps < AgentPrompt.LOCKED_PATTERN_FIRST_STEPS_VC303 && lockedRefusalsVc303 < 2 && isLockedPatternVc303(tool, args)) {
+            lockedRefusalsVc303++
+            sendContinuation("⛔ POLA TERKUNCI (vc303 P3): panggilan '$tool' dengan argumen ini pernah mengunci giliran sebelumnya di sesi ini — DILARANG di 3 langkah pertama giliran ini. Pakai tool/argumen/strategi yang BERBEDA, atau jawab final ke user. Jangan panggil ulang pola yang sama.")
+            return
+        }
         // vc272 O3: validasi skema SEBELUM anggaran langkah — penolakan
         // validasi tidak memakan langkah tool (agentSteps tidak naik di
         // sini) dan tidak dihitung StuckDetector (tanpa stuckSuffix).
@@ -8303,14 +8319,23 @@ class MainActivity : Activity() {
                 // kembali). Syarat lama `!GATES_DISABLED && askExtendSteps`
                 // membuat dialog ini mati total sejak vc247.
                 val ask = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("askExtendSteps", true)
-                if (ask) {
+                // VC303-P3-16 (LP-2): dialog +10 maks 3x per giliran (+30)
+                // + opsi keras (mayExtendVc303): hanya bila ada progres
+                // sejak perpanjangan terakhir (>= 1 tool sukses). Bila
+                // tidak ditawarkan, alur jatuh ke cabang else-if di bawah
+                // (berhenti jujur seperti ask=false) — dialognya sendiri
+                // DIPERTAHANKAN (garis SF-C5), hanya dibatasi.
+                if (ask && AgentPrompt.mayExtendVc303(extendCountVc303, okCountVc303(), extendOkMarkVc303)) {
                     runOnUiThread {
                         var floatHandledS = false
                         if (!activityResumed) {
                             val shownS = ApprovalFloat.show(applicationContext, "Batas langkah tercapai",
-                                "Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi?",
+                                "Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})",
                                 "Tambah 10 langkah", "Berhenti", false,
                                 onApprove = {
+                                    // VC303-P3-16: catat perpanjangan + progres saat ini.
+                                    extendCountVc303++
+                                    extendOkMarkVc303 = okCountVc303()
                                     stepBudget += 10
                                     val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
                                     if (p != null) proceedTool(p.first, p.second, true, cVc272)
@@ -8333,8 +8358,11 @@ class MainActivity : Activity() {
                         if (!floatHandledS) {
                         AlertDialog.Builder(this)
                             .setTitle("Batas langkah tercapai")
-                            .setMessage("Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi?")
+                            .setMessage("Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})")
                             .setPositiveButton("Tambah 10 langkah") { _, _ ->
+                                // VC303-P3-16: catat perpanjangan + progres saat ini.
+                                extendCountVc303++
+                                extendOkMarkVc303 = okCountVc303()
                                 stepBudget += 10
                                 val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
                                 if (p != null) proceedTool(p.first, p.second, true, cVc272)
@@ -8677,12 +8705,23 @@ class MainActivity : Activity() {
         TurnMetrics.finish(this, pendingEndReason ?: "final")
         pendingEndReason = null
         persistPlan()
+        // VC303-P2-8 (CX-1): flush di akhir giliran (sesudah jawaban
+        // final) — catatan tidak lagi menunggu pesan 1-1 berikut; proses
+        // mati / pindah sesi sesudah ini tidak menghilangkan turnWork.
+        // Idempotent: bila clearTurnCheckpoint sudah flush lebih dulu,
+        // panggilan ini no-op.
+        flushTurnWork(currentSessionId)
+        // VC303-P2-14 (CX-9): tawaran lanjut hanya bila TIDAK ada giliran
+        // antrean yang akan jalan (auto/follow-up) — dicek SEBELUM antrean
+        // dikonsumsi, karena consumeAutoQueue jalan async via UI thread.
+        val noQueuedVc303 = synchronized(followQueue) { followQueue.isEmpty() } && autoQueue.isEmpty()
         turnActive = false
         userTurnActive = false
         refreshLiveCard()
         refreshQueueChips()
         consumeAutoQueue()
         if (!turnActive) drainFollowQueue()
+        if (noQueuedVc303 && !turnActive) offerResumeVc303()
     }
 
     private fun drainFollowQueue() {
@@ -9166,7 +9205,12 @@ class MainActivity : Activity() {
                             val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
                             photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, true)
                             photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: " + ActivityTitle.resultTail(answer, 600)
-                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, answer.take(120), evidence = answer.take(600), args = args.toString().take(4000)))
+                            // VC303-P2-15 (CX-12): simpan jawaban ke ResultStore seperti
+                            // tool lain — baris WorkNotes analyze_photo kini punya R-id
+                            // (bukan [-]) + total char; args sudah memuat path foto
+                            // (formatLine memakai path bila ada).
+                            val ridPhotoVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", answer) } catch (e: Exception) { "" }
+                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, answer.take(120), evidence = answer.take(600), args = args.toString().take(4000), resultId = ridPhotoVc303, totalChars = answer.length))
                             sendContinuation("Hasil tool analyze_photo (via API internal, sesi yang sama):\n" + answer + "\n\nSampaikan hasil analisa ini ke user dan lanjutkan tugasmu.")
                         }
                     }, { err ->
@@ -9209,7 +9253,11 @@ class MainActivity : Activity() {
             val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
             photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, true)
             photoRowVc254?.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", photoArgsVc254) + "\nHasil: Foto dianalisis — hasilnya ada di jawaban agen berikut."
-            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, "Foto dianalisis", evidence = "Analisis selesai — hasilnya di jawaban agen berikut.", args = photoArgsVc254.toString().take(4000)))
+            // VC303-P2-15 (CX-12): jalur Web juga menyimpan jawaban ke
+            // ResultStore (resp = jawaban agen atas foto) supaya baris
+            // WorkNotes punya R-id + evidence, seperti jalur API.
+            val ridPhotoWebVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", resp) } catch (e: Exception) { "" }
+            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, "Foto dianalisis", evidence = resp.take(600), args = photoArgsVc254.toString().take(4000), resultId = ridPhotoWebVc303, totalChars = resp.length))
             handleAgentResponse(resp)
         }, { err ->
             endStreamBubble()
@@ -9230,6 +9278,24 @@ class MainActivity : Activity() {
     // 2026-10-23). 3x: catatan replan disisipkan ke hasil yang kembali
     // ke model. 5x: perintah berhenti & lapor. Peta direset tiap giliran.
     private val stuckMap = HashMap<String, Int>()
+    // VC303-P3-17 (LP-3): klaster token argumen per tool untuk kunci
+    // kemiripan level-2 di stuckSuffix (cermin StuckWatch.observe);
+    // direset tiap giliran bersama stuckMap di onUserMessage.
+    private val stuckFuzzySetsVc303 = HashMap<String, MutableList<Set<String>>>()
+    // VC303-P3-16 (LP-2): penghitung perpanjangan +10 per giliran (maks 3)
+    // + jumlah WorkItem ok saat perpanjangan terakhir (opsi keras: dialog
+    // hanya bila ada progres sejak itu). Direset di onUserMessage.
+    private var extendCountVc303 = 0
+    private var extendOkMarkVc303 = 0
+    // VC303-P3-19 (LP-5a): penolakan pola terkunci dibatasi 2x per giliran
+    // (panggilan ke-3 yang sama dibiarkan lewat — StuckDetector giliran ini
+    // yang menanganinya — agar agen tidak terjebak loop penolakan).
+    private var lockedRefusalsVc303 = 0
+    // VC303-P3-19 (LP-5b): jejak "sudah dibaca ronde ini" PER AGEN room
+    // (kunci = roomId|effSess|agentName) + agen terakhir yang memegang
+    // guard baca-ulang (guard direset tiap agen berganti).
+    private val roomReadTraceVc303 = HashMap<String, MutableList<String>>()
+    private var roomLastAgentVc303 = ""
     // 4.48.9: ambang berhenti unknown-tool — dipakai jalur giliran DAN
     // Uji Mandiri (Cek 1) supaya keduanya menguji konstanta yang sama
     // (bukan literal terpisah). Teks gelembung "3x" di cabang berhenti
@@ -9245,6 +9311,165 @@ class MainActivity : Activity() {
         2 -> "\n\n⚠️ SISTEM (Tool tidak dikenal 2/3): kamu sudah 2x berturut-turut memakai nama tool yang tidak ada (nama: " + tried.joinToString(", ") + "). " + (if (groupTxt.isNotBlank()) groupTxt else "Pilih PERSIS dari daftar nama valid di hasil tool di atas.") + " Satu kesalahan lagi dan giliran ini BERHENTI."
         else -> ""
     }
+    // VC303-P3 — Penjaga loop lapis kedua + integritas: semua helper murni
+    // penyimpanan prefs per sesi (SharedPreferences "harness"). Sengaja
+    // TIDAK memakai WorkNotesVc301/formatLine (wilayah P1/P2) dan TIDAK
+    // mengubah gate claim-check / StuckWatch itu sendiri.
+    private fun okCountVc303(): Int {
+        return try { synchronized(turnWork) { turnWork.count { it.ok } } } catch (e: Exception) { 0 }
+    }
+    private fun readLockedPatternsVc303(sessionId: Long): List<Triple<String, String, String>> {
+        val out = ArrayList<Triple<String, String, String>>()
+        try {
+            val raw = getSharedPreferences("harness", MODE_PRIVATE).getString("lockedPatternsVc303_" + sessionId, "") ?: ""
+            for (line in raw.lines()) {
+                if (line.isBlank()) continue
+                val p = line.split("|", limit = 3)
+                if (p.size < 3) continue
+                out.add(Triple(p[0], p[1], p[2]))
+            }
+        } catch (e: Exception) {}
+        return out
+    }
+    // VC303-P3-19 (LP-5a): simpan (tool, hash-args) yang pernah mengunci
+    // giliran — dipanggil di 2 situs turnStuckBlocked = true (jalur tunggal
+    // + batch 1-1). Maks 10 pola/sesi, yang terbaru dipertahankan.
+    private fun recordLockedPatternVc303(tool: String, args: JSONObject) {
+        try {
+            val key = AgentPrompt.lockedPatternKeyVc303(tool, args)
+            val hash = key.substringAfter("|", "?")
+            val preview = try { AgentPrompt.normalizeArgsVc277(args).take(120) } catch (e: Exception) { "" }
+            val cur = readLockedPatternsVc303(currentSessionId).filter { it.second != hash }.toMutableList()
+            cur.add(Triple(tool, hash, preview.replace("|", "/").replace("\n", " ")))
+            val trimmed = cur.takeLast(10)
+            getSharedPreferences("harness", MODE_PRIVATE).edit().putString("lockedPatternsVc303_" + currentSessionId, trimmed.joinToString("\n") { it.first + "|" + it.second + "|" + it.third }).apply()
+        } catch (e: Exception) {}
+    }
+    private fun isLockedPatternVc303(tool: String, args: JSONObject): Boolean {
+        return try {
+            val hash = AgentPrompt.lockedPatternKeyVc303(tool, args).substringAfter("|", "?")
+            readLockedPatternsVc303(currentSessionId).any { it.first == tool && it.second == hash }
+        } catch (e: Exception) { false }
+    }
+    private fun lockedPatternsBlockVc303(sessionId: Long): String {
+        val entries = readLockedPatternsVc303(sessionId)
+        if (entries.isEmpty()) return ""
+        val sb = StringBuilder()
+        sb.append("⛔ LARANGAN KERAS — POLA YANG PERNAH MENGUNCI GILIRAN (vc303 P3, lintas giliran — sesi ini):\n")
+        for ((tool, _, preview) in entries.takeLast(5)) {
+            sb.append("- ").append(tool).append(" ").append(preview).append("\n")
+        }
+        sb.append("JANGAN panggil tool+argumen di atas di ").append(AgentPrompt.LOCKED_PATTERN_FIRST_STEPS_VC303).append(" langkah pertama giliran ini — sistem akan menolaknya. Pakai tool/argumen/strategi yang BERBEDA, atau jawab final ke user.")
+        return sb.toString()
+    }
+    private fun readClaimEntriesVc303(sessionId: Long): LinkedHashMap<String, Pair<Int, String>> {
+        val out = LinkedHashMap<String, Pair<Int, String>>()
+        try {
+            val raw = getSharedPreferences("harness", MODE_PRIVATE).getString("claimFingerprintsVc303_" + sessionId, "") ?: ""
+            for (line in raw.lines()) {
+                if (line.isBlank()) continue
+                val p = line.split("|", limit = 3)
+                if (p.size < 3) continue
+                out[p[0]] = (p[1].toIntOrNull() ?: 1) to p[2]
+            }
+        } catch (e: Exception) {}
+        return out
+    }
+    // VC303-P3-20 (LP-6): sidik jari klaim yang kena claim-stop. Return
+    // jumlah stop BERUNTUN atas klaim yang sama (stop dihitung beruntun
+    // hanya bila klaim-stop sebelumnya — giliran mana pun — adalah klaim
+    // yang sama; klaim lain di antaranya mereset ke 1). Gate claim-check
+    // sendiri TIDAK diubah — fungsi ini hanya mencatat + menghitung.
+    private fun recordClaimStopVc303(visible: String, warning: String?): Int {
+        return try {
+            val claims = AgentPrompt.splitClaims(visible).take(5)
+            if (claims.isEmpty()) return 0
+            val fps = claims.map { AgentPrompt.claimFingerprintVc303(it) to it }
+            val prefs = getSharedPreferences("harness", MODE_PRIVATE)
+            val stored = readClaimEntriesVc303(currentSessionId)
+            val lastHash = prefs.getString("lastClaimStopHashVc303_" + currentSessionId, "") ?: ""
+            val nums = warning?.let { Regex("[0-9][0-9,.]*").findAll(it).map { m -> m.value }.toList() } ?: emptyList()
+            val pick = fps.firstOrNull { (_, c) -> nums.any { n -> c.contains(n) } }
+                ?: fps.firstOrNull { (h, _) -> h in stored }
+                ?: fps.first()
+            val (hash, preview) = pick
+            val prevStops = stored[hash]?.first ?: 0
+            val stops = if (hash == lastHash && prevStops > 0) prevStops + 1 else 1
+            stored.remove(hash)
+            stored[hash] = stops to preview.take(120).replace("|", "/").replace("\n", " ")
+            val trimmed = LinkedHashMap<String, Pair<Int, String>>()
+            stored.entries.toList().takeLast(10).forEach { trimmed[it.key] = it.value }
+            val text = trimmed.entries.joinToString("\n") { (h, v) -> h + "|" + v.first + "|" + v.second }
+            prefs.edit().putString("claimFingerprintsVc303_" + currentSessionId, text).putString("lastClaimStopHashVc303_" + currentSessionId, hash).apply()
+            stops
+        } catch (e: Exception) { 0 }
+    }
+    private fun claimFingerprintsBlockVc303(sessionId: Long): String {
+        val entries = readClaimEntriesVc303(sessionId)
+        if (entries.isEmpty()) return ""
+        val sb = StringBuilder()
+        sb.append("⚠️ KLAIM YANG PERNAH KENA CLAIM-STOP (vc303 P3, lintas giliran — sesi ini):\n")
+        for ((_, v) in entries.entries.toList().takeLast(5)) {
+            sb.append("- \"").append(v.second).append("\" (stop ").append(v.first).append("x)\n")
+        }
+        sb.append("Bila klaim yang sama muncul lagi TANPA hasil tool pendukung baru, WAJIB sertakan bukti (nama tool + hasil/R-id) atau nyatakan sebagai dugaan — jangan ulangi klaim itu apa adanya. Setelah 2 stop beruntun atas klaim yang sama, MINTA KEPUTUSAN USER sebelum mencoba lagi.")
+        return sb.toString()
+    }
+    // VC303-P3-19 (LP-5b): jejak baca per agen room + pola terkunci room.
+    private fun roomAgentKeyVc303(roomId: String, effSess: String, agentName: String): String = roomId + "|" + effSess + "|" + agentName
+    private fun noteRoomReadVc303(roomId: String, effSess: String, agentName: String, tool: String, args: JSONObject, result: String) {
+        try {
+            if (!AgentPrompt.isRereadSuccessVc279(tool, result)) return
+            val key = roomAgentKeyVc303(roomId, effSess, agentName)
+            val list = roomReadTraceVc303.getOrPut(key) { ArrayList() }
+            val sig = tool + "|" + AgentPrompt.normalizeArgsVc277(args).take(100)
+            if (sig !in list) list.add(sig)
+            while (list.size > 20) list.removeAt(0)
+        } catch (e: Exception) {}
+    }
+    private fun roomReadTraceBlockVc303(roomId: String, sessId: String, agentName: String): String {
+        val list = roomReadTraceVc303[roomAgentKeyVc303(roomId, sessId, agentName)] ?: return ""
+        if (list.isEmpty()) return ""
+        return "JEJAK BACA RONDE INI — agen " + agentName + " (vc303 P3, per agen, bukan global):\n" + list.takeLast(10).joinToString("\n") { "- sudah dibaca: $it" } + "\nYang sudah dibaca agen ini di ronde ini JANGAN dibaca ulang — pakai hasil yang sudah ada di konteks ronde ini."
+    }
+    private fun recordRoomLockedPatternVc303(roomId: String, effSess: String, agentName: String, tool: String, args: JSONObject) {
+        try {
+            val key = AgentPrompt.lockedPatternKeyVc303(tool, args)
+            val hash = key.substringAfter("|", "?")
+            val preview = try { AgentPrompt.normalizeArgsVc277(args).take(120) } catch (e: Exception) { "" }
+            val pkey = "lockedPatternsVc303_room_" + roomId + "_" + effSess + "_" + agentName
+            val prefs = getSharedPreferences("harness", MODE_PRIVATE)
+            val cur = ArrayList<Triple<String, String, String>>()
+            val raw = prefs.getString(pkey, "") ?: ""
+            for (line in raw.lines()) {
+                if (line.isBlank()) continue
+                val p = line.split("|", limit = 3)
+                if (p.size < 3) continue
+                cur.add(Triple(p[0], p[1], p[2]))
+            }
+            val kept = cur.filter { it.second != hash }.toMutableList()
+            kept.add(Triple(tool, hash, preview.replace("|", "/").replace("\n", " ")))
+            prefs.edit().putString(pkey, kept.takeLast(10).joinToString("\n") { it.first + "|" + it.second + "|" + it.third }).apply()
+        } catch (e: Exception) {}
+    }
+    private fun isRoomLockedPatternVc303(roomId: String, effSess: String, agentName: String, tool: String, args: JSONObject): Boolean {
+        return try {
+            val hash = AgentPrompt.lockedPatternKeyVc303(tool, args).substringAfter("|", "?")
+            val pkey = "lockedPatternsVc303_room_" + roomId + "_" + effSess + "_" + agentName
+            val raw = getSharedPreferences("harness", MODE_PRIVATE).getString(pkey, "") ?: ""
+            raw.lines().any { line -> val p = line.split("|", limit = 3); p.size >= 2 && p[0] == tool && p[1] == hash }
+        } catch (e: Exception) { false }
+    }
+    private fun roomLockedPatternsBlockVc303(roomId: String, effSess: String, agentName: String): String {
+        return try {
+            val pkey = "lockedPatternsVc303_room_" + roomId + "_" + effSess + "_" + agentName
+            val raw = getSharedPreferences("harness", MODE_PRIVATE).getString(pkey, "") ?: ""
+            val lines = raw.lines().filter { it.isNotBlank() }.takeLast(5)
+            if (lines.isEmpty()) return ""
+            "⛔ LARANGAN KERAS — POLA ROOM YANG PERNAH MENGUNCI (vc303 P3, agen " + agentName + ", sesi ini):\n" + lines.joinToString("\n") { "- " + it.substringBefore("|") + " " + it.substringAfter("|").substringAfter("|", "") } + "\nJANGAN panggil pola di atas di 3 langkah pertama ronde ini — pakai pendekatan berbeda."
+        } catch (e: Exception) { "" }
+    }
+
     // v4.48.3: pengunci giliran — StuckDetector kini menegakkan, bukan menempel teks.
     private var turnStuckBlocked = false
     private var capStopSentVc277 = false // vc277 O15(b): jawaban jujur cap langkah sudah diminta sekali giliran ini
@@ -9265,8 +9490,22 @@ class MainActivity : Activity() {
         // idempotent) TIDAK dihitung — lihat AgentPrompt
         // .isIdempotentMemoryResultVc285. Ambang 3/4/5 TETAP.
         if (AgentPrompt.isIdempotentMemoryResultVc285(tool, result)) return ""
+        // VC303-P3-18 (LP-4): penghitung error IDENTIK yang dikecualikan —
+        // cermin StuckWatch.observe: eksplorasi bervariasi tetap bebas,
+        // error identik (args + teks error sama persis) dikunci di ke-3.
+        if (AgentPrompt.isPagingErrorVc301(tool, result) || AgentPrompt.isSearchNotFoundVc301(tool, result)) {
+            val errSigVc303 = try { AgentPrompt.normalizeArgsVc277(args) } catch (e: Exception) { "" }
+            val errKeyVc303 = "ERRIDENT|$tool|" + AgentPrompt.hash64Vc277(errSigVc303) + "|" + AgentPrompt.hash64Vc277(result.lowercase().replace(Regex("\\s+"), " ").trim())
+            val enVc303 = (stuckMap[errKeyVc303] ?: 0) + 1
+            stuckMap[errKeyVc303] = enVc303
+            if (enVc303 >= 3) return "\n\n🛑 SISTEM (StuckDetector): panggilan '$tool' dengan argumen yang sama sudah menghasilkan error yang sama $enVc303 kali — TIDAK ADA PROGRES. BERHENTI mengulang panggilan ini sekarang juga. Jawab final ke user: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user. Jangan panggil tool lagi untuk pendekatan yang sama. [VC303-P3-18]"
+            return ""
+        }
         // vc301 SF-C1(a): hasil error paging BUKAN putaran — lihat
         // AgentPrompt.isPagingErrorVc301. Ambang 3/4/5 TETAP.
+        // (Kini hanya tercapai bila LP-4 di atas tidak mengembalikan —
+        // yakni error paging/not-found yang TIDAK identik dengan
+        // sebelumnya; perilaku bebas-nya tidak berubah.)
         if (AgentPrompt.isPagingErrorVc301(tool, result)) return ""
         // vc301 SF-C4: pencarian "tidak ditemukan" adalah progres — lihat
         // AgentPrompt.isSearchNotFoundVc301. Ambang 3/4/5 TETAP.
@@ -9305,11 +9544,46 @@ class MainActivity : Activity() {
             }
             if (loopPart.contains("🛑")) return loopPart
         }
+        // VC303-P3-17 (LP-3): kunci kemiripan argumen level-2 — cermin
+        // StuckWatch.observe (Jaccard token >= 0,8; peringatan ke-3,
+        // kunci ke-4). Berjalan juga bila countIdent=false (hasil
+        // unknown-tool tidak dihitung, tapi pola argumen tetap jalan).
+        var fuzzyPartVc303 = ""
+        run {
+            val toksVc303 = AgentPrompt.fuzzyTokenSetVc303(args)
+            if (toksVc303.size >= 2) {
+                val setsVc303 = stuckFuzzySetsVc303.getOrPut(tool) { ArrayList() }
+                var clusterVc303: String? = null
+                for (sVc303 in setsVc303) {
+                    if (AgentPrompt.jaccardVc303(toksVc303, sVc303) >= 0.8) {
+                        clusterVc303 = "FUZZY|$tool|" + AgentPrompt.hash64Vc277(sVc303.sorted().joinToString(" "))
+                        break
+                    }
+                }
+                if (clusterVc303 != null) {
+                    val cnVc303 = (stuckMap[clusterVc303] ?: 0) + 1
+                    stuckMap[clusterVc303] = cnVc303
+                    fuzzyPartVc303 = when {
+                        cnVc303 >= 4 -> "\n\n🛑 SISTEM (StuckDetector): panggilan '$tool' dengan argumen MIRIP sudah terulang $cnVc303 kali (hanya berbeda 1-2 kata/angka) — TIDAK ADA PROGRES. BERHENTI mengulang pendekatan ini sekarang juga. Jawab final ke user: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user. Jangan panggil tool lagi untuk pendekatan yang sama. [VC303-P3-17]"
+                        cnVc303 == 3 -> "\n\n⚠️ SISTEM (StuckDetector): panggilan '$tool' dengan argumen MIRIP sudah terulang 3 kali (hanya berbeda 1-2 kata/angka) — indikasi berputar. GANTI pendekatan secara mendasar sekarang; jangan variasi kecil dari perintah yang sama."
+                        else -> ""
+                    }
+                } else {
+                    setsVc303.add(toksVc303)
+                    // Klaster baru dihitung 1 sejak panggilan pertama
+                    // (cermin penghitung LOOP) — tanpa ini peringatan
+                    // baru muncul di panggilan ke-4, bukan ke-3.
+                    stuckMap["FUZZY|$tool|" + AgentPrompt.hash64Vc277(toksVc303.sorted().joinToString(" "))] = 1
+                    while (setsVc303.size > 8) setsVc303.removeAt(0)
+                }
+            }
+        }
+        if (fuzzyPartVc303.contains("🛑")) return fuzzyPartVc303
         // v4.48.6 (Butir 1): hasil "Tool tidak dikenal" TIDAK dihitung di
         // penghitung hasil-identik (countIdent=false dari pemanggil) —
         // penghitung putaran (loop) di atas tetap jalan.
-        if (!countIdent) return loopPart + identCallPartVc302
-        if (result.length < 8) return loopPart + identCallPartVc302
+        if (!countIdent) return loopPart + identCallPartVc302 + fuzzyPartVc303
+        if (result.length < 8) return loopPart + identCallPartVc302 + fuzzyPartVc303
         val key = tool + "|" + AgentPrompt.hash64Vc277(result)
         val n = (stuckMap[key] ?: 0) + 1
         stuckMap[key] = n
@@ -9328,7 +9602,7 @@ class MainActivity : Activity() {
             ns == 3 -> "\n\n⚠️ SISTEM (StuckDetector): panggilan '$tool' dengan hasil mirip sudah terulang 3 kali (hanya berbeda angka/timestamp) — indikasi berputar. GANTI strategi sekarang (tool lain, jalur lain, sumber lain) atau jelaskan ke user kenapa macet."
             else -> ""
         }
-        return loopPart + identCallPartVc302 + identPart
+        return loopPart + identCallPartVc302 + identPart + fuzzyPartVc303
     }
 
     // vc273 O6: batch hanya untuk giliran 1-1 biasa. Tool jalur-khusus
@@ -9621,7 +9895,7 @@ class MainActivity : Activity() {
         turnUsedTools = true
         val displayResult = RedactSecrets.redact(oc.result)
         val evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((oc.resultId ?: "").isNotBlank()) ", pakai get_result[" + oc.resultId + "] untuk sisanya" else "") + ")…" else displayResult
-        turnWork.add(WorkItem(oc.tool, oc.ms, oc.ok, displayResult.take(120), evidence = evidence, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", callId = oc.callId))
+        turnWork.add(WorkItem(oc.tool, oc.ms, oc.ok, displayResult.take(120), evidence = evidence, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", callId = oc.callId, totalChars = oc.resultTotal)) // VC303-P2-12 (CX-6): total char dibawa ke baris WorkNotes
         EventDb.get(this).add("tool", packageName, oc.tool + " -> " + displayResult.take(200))
         val isUnknown = oc.result.startsWith("Tool tidak dikenal")
         // vc282: pembatalan timeout BUKAN putaran — tidak dihitung
@@ -9630,6 +9904,8 @@ class MainActivity : Activity() {
         val stuck = if (oc.prereqFailed) "" else stuckSuffix(oc.tool, oc.args, oc.result, countIdent = !isUnknown, skipStuckVc278 = ApiToolLayer.isTimeoutResult(oc.result))
         if (stuck.isNotBlank()) turnSystemNotesVc282.add(stuck)
         if (stuck.contains("🛑")) turnStuckBlocked = true
+        // VC303-P3-19 (LP-5a): kunci giliran = pola ini disimpan lintas giliran.
+        if (stuck.contains("🛑")) try { recordLockedPatternVc303(oc.tool, oc.args) } catch (e: Exception) {}
         TurnMetrics.recordStep(oc.tool, isUnknown, prootCutOf(oc.result), argsHash(oc.args), false)
         var invalidSuffix = ""
         if (isUnknown) {
@@ -9783,7 +10059,7 @@ class MainActivity : Activity() {
             EventDb.get(this).add("tool", packageName, "$tool -> ${displayResult.take(200)}")
             val secs = String.format(java.util.Locale.US, "%.1f", (System.currentTimeMillis() - t0) / 1000.0).replace('.', ',')
             val durMsVc254 = System.currentTimeMillis() - t0
-            turnWork.add(WorkItem(tool, System.currentTimeMillis() - t0, !WorkLog.isFailed(result), displayResult.take(120), evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…" else displayResult, args = args.toString().take(4000), resultId = resultId ?: "", callId = callId)) // v4.48.5 (P2): evidence 800 char/langkah + penanda vc230 R-07(a) — cap eksplisit — jalur PoW tanpa limit token; summary tetap 120 untuk UI/footer.
+            turnWork.add(WorkItem(tool, System.currentTimeMillis() - t0, !WorkLog.isFailed(result), displayResult.take(120), evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…" else displayResult, args = args.toString().take(4000), resultId = resultId ?: "", callId = callId, totalChars = resultTotal)) // VC303-P2-12 (CX-6): total char dibawa ke baris WorkNotes; v4.48.5 (P2): evidence 800 char/langkah + penanda vc230 R-07(a) — cap eksplisit — jalur PoW tanpa limit token; summary tetap 120 untuk UI/footer.
         if (tool == "use_skill" && result.startsWith("PROSEDUR SKILL")) {
             val nmSk = Regex("PROSEDUR SKILL '([^']+)'").find(result)?.groupValues?.get(1) ?: ""
             addMsg("🧩 Skill '$nmSk' dimuat — prosedurnya diikuti untuk tugas ini.", "meta")
@@ -9842,7 +10118,16 @@ class MainActivity : Activity() {
                     invalidNames.clear()
                     TurnMetrics.recordStep(tool, false, prootCutOf(result), argsHash(args), isAutoRetry)
                     sendContinuation("Hasil tool $tool" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + (if (resultId != null) " [id=$resultId, total $resultTotal char]" else "") + " DITOLAK SISTEM:\n$displayResult\n\nPERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: keluarkan ULANG blok json tool '$tool' yang sama, kali ini dengan argumen TERISI LENGKAP dari perintah user terakhir (task/command/title sesuai tool-nya). DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.", hasToolResult = true)
-                } else if (failed && !timedOutVc278 && retriedTools.add(tool) && agentSteps < stepBudget) {
+                // VC303-P1-5 (LP-8 + residual LP-10): JANGAN auto-retry
+                // penolakan deterministik — hasil yang diawali nama tool +
+                // "ditolak" (mis. "forge_eval_save ditolak: ...": gagal
+                // selama args tidak diperbaiki, retry hanya mengulang
+                // kegagalan yang sama) — dan JANGAN auto-retry
+                // artifact_bundle yang GAGAL (build Vite mahal diulang).
+                // Penolakan masuk cabang rejected di atas (bukan ke sini);
+                // yang dicegah di sini adalah retry hasil-gagal biasa yang
+                // teksnya penolakan deterministik tool.
+                } else if (failed && !timedOutVc278 && !result.lowercase().startsWith(tool.lowercase() + " ditolak") && tool != "artifact_bundle" && retriedTools.add(tool) && agentSteps < stepBudget) {
                     autoRetryTools.add(tool)
                     consecInvalid = 0
                     invalidNames.clear()
@@ -9859,6 +10144,8 @@ class MainActivity : Activity() {
                     // bukti reviewer (prioritas 6).
                     if (stuck.isNotBlank()) turnSystemNotesVc282.add(stuck)
                     if (stuck.contains("🛑")) turnStuckBlocked = true
+                    // VC303-P3-19 (LP-5a): kunci giliran = pola ini disimpan lintas giliran.
+                    if (stuck.contains("🛑")) try { recordLockedPatternVc303(tool, args) } catch (e: Exception) {}
                     TurnMetrics.recordStep(tool, isUnknown, prootCutOf(result), argsHash(args), isAutoRetry)
                     var invalidSuffix = ""
                     if (isUnknown) {
@@ -13425,14 +13712,31 @@ private fun showApiTokenDialog() {
             if (memBlock.isNotBlank()) sb.append(memBlock).append("\n")
             val overview = try { GraphDb.get(this).overviewText(roomNow.optString("title")) } catch (e: Exception) { "" }
             if (overview.isNotBlank()) sb.append(overview).append("\n")
+            // VC303-P2-9 (CX-2): catatan kerja ROOM ini (kunci
+            // ber-namespace per room+sesi) DITEMPEL SEBELUM catatan 1-1 —
+            // giliran room berikut melihat hasil tool room sebelumnya
+            // (termasuk votes eval), bukan hanya tail 10 pesan. Isolasi:
+            // kunci room tidak dicampur ke kunci 1-1.
+            run {
+                val roomSessVc303 = sess?.optString("id") ?: ""
+                if (roomSessVc303.isNotBlank()) {
+                    val rbVc303 = WorkNotesVc301.blockForKey(this, WorkNotesVc301.roomNotesKey(room.optString("id"), roomSessVc303))
+                    if (rbVc303.isNotBlank()) sb.append("[CATATAN KERJA ROOM INI]\n").append(rbVc303).append("\n\n")
+                }
+            }
             // vc302 Fix C: catatan kerja sesi 1-1 aktif DITEMPEL ke prompt
-            // room (sebelum riwayat room). Room tidak menulis turnWork, jadi
-            // tidak ada catatan "milik room" — yang dibaca = catatan sesi
-            // 1-1 yang aktif saat room dibuka (konsisten dengan room yang
-            // sudah menarik fakta/skill/goals user); baris berlabel jelas
-            // "GILIRAN SEBELUMNYA" dan agen boleh mengabaikan yang tidak
-            // relevan dengan tugas room ini.
+            // room (sebelum riwayat room). Room kini menulis catatan
+            // SENDIRI (kunci ber-namespace, CX-2 vc303) — yang dibaca di
+            // sini = catatan sesi 1-1 yang aktif saat room dibuka
+            // (konsisten dengan room yang sudah menarik fakta/skill/goals
+            // user); baris berlabel jelas "GILIRAN SEBELUMNYA" dan agen
+            // boleh mengabaikan yang tidak relevan dengan tugas room ini.
             run { val wb = AgentPrompt.workNotesBlockVc302(this, currentSessionId); if (wb.isNotBlank()) sb.append(wb).append("\n\n") }
+            // VC303-P3-19 (LP-5): larangan pola room yang pernah mengunci +
+            // jejak baca ronde ini per agen (bukan global).
+            val roomSessVc303 = sess?.optString("id").orEmpty().ifBlank { curSess.optString("id") }
+            run { val rb = roomLockedPatternsBlockVc303(roomId, roomSessVc303, ag.name); if (rb.isNotBlank()) sb.append(rb).append("\n\n") }
+            run { val rt = roomReadTraceBlockVc303(roomId, roomSessVc303, ag.name); if (rt.isNotBlank()) sb.append(rt).append("\n\n") }
             val msgs = Automation.loadMessages(this, room.optString("id"))
             val recent = ArrayList<org.json.JSONObject>()
             for (i in 0 until msgs.length()) {
@@ -13489,6 +13793,11 @@ private fun showApiTokenDialog() {
         // vc277 O17(c): pengunci giliran room per (sesi, agen) — sekali 🛑,
         // tool berikutnya ditolak tanpa eksekusi dan tanpa memakan langkah.
         val roomStuckLocksVc277 = HashMap<String, Boolean>()
+        // VC303-P2-9 (CX-2): jejak tool giliran room per (sesi, agen) —
+        // dikumpulkan tiap eksekusi tool room, ditulis ke kunci
+        // ber-namespace saat giliran room berakhir (toolObj == null).
+        // Cermin pola roomStuckWatchesVc263 di atas (kunci sama).
+        val roomTurnWorkVc303 = HashMap<String, ArrayList<WorkItem>>()
 
 
         // vc206 T5: persetujuan REVIEW khusus create_subroom di room.
@@ -13549,6 +13858,8 @@ private fun showApiTokenDialog() {
                 val t0RoomVc254 = System.currentTimeMillis()
                 val res = try { Tools.execute(this, tool, args) } catch (e: Exception) { "Gagal: ${e.message}" }
                 val msRoomVc254 = System.currentTimeMillis() - t0RoomVc254
+                // VC303-P2-9 (CX-2): jejak tool room (jalur REVIEW-disetujui).
+                roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(tool, msRoomVc254, !WorkLog.isFailed(res), RedactSecrets.redact(res).take(120), evidence = res, args = args.toString().take(4000), resultId = Tools.lastResultId() ?: "", totalChars = Tools.lastFullLength(), callId = ""))
                 Automation.appendMessage(this, roomNow.optString("id"), roomSub, "sistem", ActivityTitle.formatText(tool, args, res, msRoomVc254, !WorkLog.isFailed(res)), effSess)
                 Automation.logAction(this, roomNow.optString("id"), agentName, "eksekusi tool", tool + " → " + res.take(120), effSess)
                 renderMessages(); scrollBottom()
@@ -13594,6 +13905,22 @@ private fun showApiTokenDialog() {
             // — penyimpangan kecil yang didokumentasikan: 1-1 merender ask
             // setelah tool, room merendernya langsung agar tidak hilang bila
             // tool ditahan/ditolak).
+            // VC303-P3-19 (LP-5b): guard baca-ulang Fix A adalah singleton
+            // GLOBAL — di-reset tiap giliran agen room BERGANTI (bukan tiap
+            // pesan), supaya bacaan agen A di ronde lalu tidak memblokir
+            // bacaan identik yang sah agen B di ronde ini (pesan guard lama
+            // mengklaim hasil "sudah ada di konteks giliran ini" padahal
+            // konteksnya beda). Dalam giliran agen yang sama guard tetap
+            // mengakumulasi seperti semula. Jejak "sudah dibaca ronde ini"
+            // disimpan PER AGEN di roomReadTraceVc303 (bukan global) dan
+            // ditampilkan di buildRoomPrompt. Varian yang dipilih: reset per
+            // giliran-agen + jejak per agen (bukan ubah pesan guard — teks
+            // itu ada di GuardHeaderVc302.kt, di luar file P3).
+            val roomKeyVc303 = roomAgentKeyVc303(room.optString("id"), effSess, agentName)
+            if (roomLastAgentVc303 != roomKeyVc303) {
+                try { Tools.resetRereadGuardVc302() } catch (e: Exception) {}
+                roomLastAgentVc303 = roomKeyVc303
+            }
             val askPairVc246 = try { AgentPrompt.extractAsk(answer) } catch (e: Exception) { null }
             val answerNoAskVc246 = askPairVc246?.second ?: answer
             val (visible, toolObj) = AgentPrompt.extractToolCall(answerNoAskVc246)
@@ -13671,12 +13998,19 @@ private fun showApiTokenDialog() {
                         recordOutcome = { oc ->
                             try { val bpRoomVc274 = getSharedPreferences("harness", MODE_PRIVATE); bpRoomVc274.edit().putInt(roomBudgetKeyVc274, bpRoomVc274.getInt(roomBudgetKeyVc274, 0) + 1).apply() } catch (e: Exception) {}
                             Automation.logAction(this, room.optString("id"), agentName, "eksekusi tool", oc.tool + " → " + oc.result.take(120), effSess)
+                            // VC303-P2-9 (CX-2): kumpulkan jejak tool room (jalur batch).
+                            roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(oc.tool, oc.ms, oc.ok, RedactSecrets.redact(oc.result).take(120), evidence = oc.result, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", totalChars = oc.resultTotal, callId = oc.callId))
                             if (oc.result.startsWith("Gagal:")) {
                                 val hkRoomVc274 = agentName + "|" + oc.tool
                                 val hcRoomVc274 = (healCounts[hkRoomVc274] ?: 0) + 1; healCounts[hkRoomVc274] = hcRoomVc274
                                 Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool " + oc.tool + " gagal — agen dapat mencoba pendekatan lain pada pesan berikutnya.", effSess)
                                 if (hcRoomVc274 >= 3) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool " + oc.tool + " sudah gagal identik " + hcRoomVc274 + " kali (pola StuckDetector) — jangan ulangi pendekatan yang sama.", effSess)
                             }
+                            // VC303-P3-19 (LP-5b): jejak baca batch per agen
+                            // (diletakkan SEBELUM observe — nilai balik lambda
+                            // ini adalah teks stuck dari observe, jadi baris
+                            // ini tidak boleh jadi ekspresi terakhir).
+                            try { noteRoomReadVc303(room.optString("id"), effSess, agentName, oc.tool, oc.args, oc.result) } catch (e: Exception) {}
                             if (oc.prereqFailed) "" else roomWatchVc274.observe(oc.tool, oc.args, oc.result)
                         }
                     )
@@ -13685,6 +14019,8 @@ private fun showApiTokenDialog() {
                     // (sesi, agen) — tool berikutnya ditolak tanpa eksekusi.
                     if (reportRoomVc274.outcomes.any { AgentPrompt.StuckWatch.isStop(it.stuckText) }) {
                         roomStuckLocksVc277[effSess + "|" + agentName] = true
+                        // VC303-P3-19 (LP-5a room): simpan pola pertama yang mengunci.
+                        try { reportRoomVc274.outcomes.firstOrNull { AgentPrompt.StuckWatch.isStop(it.stuckText) }?.let { recordRoomLockedPatternVc303(room.optString("id"), effSess, agentName, it.tool, it.args) } } catch (e: Exception) {}
                         Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⛔ Giliran room dikunci StuckDetector — tool berikutnya ditolak tanpa dieksekusi (tidak memakan langkah).", effSess)
                     }
                     renderMessages(); scrollBottom()
@@ -13812,6 +14148,15 @@ private fun showApiTokenDialog() {
                     renderMessages(); scrollBottom()
                     return
                 }
+                // VC303-P3-19 (LP-5a room): pola yang pernah mengunci di room
+                // ini DITOLAK di 3 langkah pertama sesi (tanpa eksekusi,
+                // tanpa memakan langkah).
+                if (roomStepsVc263 < AgentPrompt.LOCKED_PATTERN_FIRST_STEPS_VC303 && isRoomLockedPatternVc303(room.optString("id"), effSess, agentName, tool, args)) {
+                    Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⛔ Tool $tool ditolak — pola ini pernah mengunci giliran room sebelumnya (vc303 P3) dan dilarang di 3 langkah pertama sesi ini. Pakai pendekatan berbeda.", effSess)
+                    Automation.logAction(this, room.optString("id"), agentName, "tool ditolak pola-terkunci", tool, effSess)
+                    renderMessages(); scrollBottom()
+                    return
+                }
                 val blocked = ArrayList<String>()
                 val blArr = roomNow.optJSONArray("blocklist") ?: org.json.JSONArray()
                 for (i in 0 until blArr.length()) blocked.add(blArr.optString(i))
@@ -13833,6 +14178,10 @@ private fun showApiTokenDialog() {
                         val t0RoomVc254 = System.currentTimeMillis()
                         val res = try { Tools.execute(this, tool, args, toolObj?.optString("id") ?: "") } catch (e: Exception) { "Gagal: ${e.message}" }
                         val msRoomVc254 = System.currentTimeMillis() - t0RoomVc254
+                        // VC303-P2-9 (CX-2): kumpulkan jejak tool room (jalur tunggal).
+                        // execute() membersihkan ThreadLocal R-id di awal, jadi
+                        // lastResultId() sesudah ini = R-id tool ini (atau null).
+                        roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(tool, msRoomVc254, !WorkLog.isFailed(res), RedactSecrets.redact(res).take(120), evidence = res, args = args.toString().take(4000), resultId = Tools.lastResultId() ?: "", totalChars = Tools.lastFullLength(), callId = toolObj?.optString("id") ?: ""))
                         Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", ActivityTitle.formatText(tool, args, res, msRoomVc254, !WorkLog.isFailed(res)), effSess)
                         // vc263 (N-m21): detektor putaran room — peringatan/
                         // berhenti ditempel sebagai pesan sistem (model
@@ -13840,6 +14189,10 @@ private fun showApiTokenDialog() {
                         val roomWatchVc263 = roomStuckWatchesVc263.getOrPut(effSess + "|" + agentName) { AgentPrompt.StuckWatch() }
                         val stuckRoomVc263 = roomWatchVc263.observe(tool, args, res)
                         if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) roomStuckLocksVc277[effSess + "|" + agentName] = true
+                        // VC303-P3-19 (LP-5): catat bacaan sukses ronde ini per
+                        // agen + simpan pola room yang mengunci giliran.
+                        try { noteRoomReadVc303(room.optString("id"), effSess, agentName, tool, args, res) } catch (e: Exception) {}
+                        if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) try { recordRoomLockedPatternVc303(room.optString("id"), effSess, agentName, tool, args) } catch (e: Exception) {}
                         if (stuckRoomVc263.isNotBlank()) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "StuckDetector room: tool $tool berputar (pola/hasil sama berulang)." + stuckRoomVc263, effSess)
                         Automation.logAction(this, room.optString("id"), agentName, "eksekusi tool", tool + " → " + res.take(120), effSess)
                         if (res.startsWith("Gagal:")) {
@@ -13868,6 +14221,16 @@ private fun showApiTokenDialog() {
             if (toolObj == null && multiRoomVc249.isEmpty()) {
                 roomStuckWatchesVc263.remove(effSess + "|" + agentName)
                 roomStuckLocksVc277.remove(effSess + "|" + agentName)
+                // VC303-P3-19 (LP-5b): jejak baca ronde ini per agen dibuang
+                // saat ronde berakhir (ronde berikut mulai bersih).
+                roomReadTraceVc303.remove(roomKeyVc303)
+                // VC303-P2-9 (CX-2): giliran room berakhir — tulis jejak
+                // tool giliran ini ke kunci ber-namespace room (bukan kunci
+                // 1-1). Map dikosongkan supaya giliran berikut mulai bersih.
+                val itemsRoomVc303 = roomTurnWorkVc303.remove(effSess + "|" + agentName)
+                if (itemsRoomVc303 != null && itemsRoomVc303.isNotEmpty()) {
+                    WorkNotesVc301.appendToKey(this, WorkNotesVc301.roomNotesKey(room.optString("id"), effSess), itemsRoomVc303, ::redactSecrets)
+                }
             }
             renderMessages(); scrollBottom()
         }
