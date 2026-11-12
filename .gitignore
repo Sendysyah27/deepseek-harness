@@ -1,0 +1,42 @@
+# Build output & artefak
+*.apk
+*.apk.idsig
+*.aab
+*.dex
+*.class
+build-manual/
+build/
+out/
+
+# Signing & rahasia
+*.keystore
+*.jks
+*.pem
+*.key
+*.p12
+.env
+*.env
+
+# Arsip & backup
+*.zip
+*.tar.gz
+*.tgz
+backup-vc*/
+vc*-work/
+*.bak
+*.orig
+
+# Log
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/

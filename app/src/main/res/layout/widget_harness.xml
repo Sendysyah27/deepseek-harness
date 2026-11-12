@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="#1E1E1E"
+    android:padding="8dp">
+
+    <TextView
+        android:id="@+id/btnWidgetChat"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:text="💬 Chat Asisten"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:background="#222222" />
+
+    <TextView
+        android:id="@+id/btnWidgetVoice"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_marginStart="8dp"
+        android:text="🎤 Perintah Suara"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:background="#4D8CFF" />
+</LinearLayout>
