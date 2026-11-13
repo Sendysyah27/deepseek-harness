@@ -242,8 +242,12 @@ object BrainBackup {
                 // legacy ke prefs — hapus eksplisit sesudah restore,
                 // supaya H-K1 tidak bangkit lagi lewat state lama.
                 // Ini pembersihan state, bukan gate/dialog.
+                // vc305 H-K1: kunci antrean baru "bgPendingQueue" +
+                // counter "bgNotifSeq" ikut dihapus; penghapusan DB
+                // durable dilakukan tanpa syarat di akhir restore
+                // (lihat blok vc305 di bawah).
                 ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit()
-                    .remove("bgPending").remove("bgSecondConfirm").apply()
+                    .remove("bgPending").remove("bgPendingQueue").remove("bgNotifSeq").remove("bgSecondConfirm").apply()
             }
             // vc245 GELOMBANG 4 (K-09): impor memory-db.json bila ada.
             // Semantik sama dengan restore sync_memory: fakta di-upsert,
@@ -314,7 +318,36 @@ object BrainBackup {
                     ed2.apply(); mcpRestoredVc246 = mcpApplied > 0
                 } catch (e: Exception) { mcpRestoredVc246 = false }
             }
-            "Pulih selesai: $files berkas otak dipulihkan" + (if (skippedMd > 0) " ($skippedMd berkas .md dilewati — redaksi gagal, tidak disalin mentah)" else "") + (if (settingsJson != null) " + pengaturan diterapkan" + (if (skippedSettings > 0) " ($skippedSettings kunci dilewati — tidak diizinkan restore)" else "") else "") + (if (memoryDbJson != null) (if (dbImported >= 0) " + memori DB diimpor ($dbImported item: fakta/skill/jadwal/aturan" + (if (versionsRestoredVc301 > 0 || versionsSkippedVc301 > 0) "; riwayat versi skill: $versionsRestoredVc301 dipulihkan, $versionsSkippedVc301 dilewati (sudah ada / skill tidak ditemukan)" else "; riwayat versi skill: tidak ada di backup ini (zip lama — versi TIDAK ikut pulih)") + ")" + (if (skillsBlockedVc265 > 0) " ($skillsBlockedVc265 skill DITOLAK SkillSpector — skor risiko >= 80, tidak diimpor)" else "") else " + memori DB GAGAL diimpor") else " + TANPA memori DB (zip lama tanpa memory-db.json — fakta/skill tidak ikut pulih)") + (if (mcpRestoredVc246) " + Client ID/daftar server MCP dipulihkan" else " + TANPA data server MCP (zip lama)") + (if (mcpSkipped > 0) " ($mcpSkipped entri MCP dilewati — tidak valid)" else "") + ". Semantik restore: pengaturan DITIMPA per kunci (hanya allowlist); memori DB DIGABUNG (upsert — item lama yang tidak ada di backup tetap ada). Graph/riwayat chat/goal TIDAK dipulihkan oleh backup ini. Restart app agar semua kebaca bersih. Login DeepSeek/slot isi ulang manual (token tidak ikut backup)."
+            // vc305 H-K1 (pilihan: HAPUS DB dari backup/restore):
+            // parkir yang dibangkitkan dari restore lama TIDAK BOLEH
+            // hidup kembali sebagai PENDING yang bisa dieksekusi. DB
+            // parked_approvals.db memang TIDAK ikut backup (bukan
+            // filesDir/otak*, bukan settings.json), jadi DB apa pun yang
+            // ada saat restore adalah state live pra-restore — dihapus
+            // total (bukan ditandai EXPIRED: tidak ada baris yang boleh
+            // bertahan dari restore). Alternatif yang ditolak: menandai
+            // semua entri hasil restore sebagai EXPIRED — ditolak karena
+            // DB tidak pernah masuk zip, jadi "hasil restore" tidak
+            // terdefinisi; penghapusan total adalah satu-satunya
+            // semantik yang konsisten. Notifikasi parkir yang menggantung
+            // ikut dibatalkan (ID dinamis dibaca dari DB SEBELUM DB
+            // dihapus — lihat blok di bawah).
+            try {
+                // Batalkan dulu notifikasi tiap parkir aktif (ID dinamis
+                // 20000..24999 hanya diketahui dari DB — sesudah DB
+                // dihapus daftarnya hilang), baru hapus DB.
+                try {
+                    val nmVc305 = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                    for (rowVc305 in ParkedApprovalStoreVc305.get(ctx).listActive()) {
+                        try { nmVc305.cancel(rowVc305.notifId) } catch (e: Exception) {}
+                    }
+                    try { nmVc305.cancel(7704) } catch (e: Exception) {}
+                } catch (e: Exception) {}
+                ParkedApprovalStoreVc305.deleteDatabase(ctx)
+                ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit()
+                    .remove("bgPending").remove("bgPendingQueue").remove("bgNotifSeq").remove("bgSecondConfirm").apply()
+            } catch (e: Exception) {}
+            "Pulih selesai: $files berkas otak dipulihkan" + (if (skippedMd > 0) " ($skippedMd berkas .md dilewati — redaksi gagal, tidak disalin mentah)" else "") + (if (settingsJson != null) " + pengaturan diterapkan" + (if (skippedSettings > 0) " ($skippedSettings kunci dilewati — tidak diizinkan restore)" else "") else "") + (if (memoryDbJson != null) (if (dbImported >= 0) " + memori DB diimpor ($dbImported item: fakta/skill/jadwal/aturan" + (if (versionsRestoredVc301 > 0 || versionsSkippedVc301 > 0) "; riwayat versi skill: $versionsRestoredVc301 dipulihkan, $versionsSkippedVc301 dilewati (sudah ada / skill tidak ditemukan)" else "; riwayat versi skill: tidak ada di backup ini (zip lama — versi TIDAK ikut pulih)") + ")" + (if (skillsBlockedVc265 > 0) " ($skillsBlockedVc265 skill DITOLAK SkillSpector — skor risiko >= 80, tidak diimpor)" else "") else " + memori DB GAGAL diimpor") else " + TANPA memori DB (zip lama tanpa memory-db.json — fakta/skill tidak ikut pulih)") + (if (mcpRestoredVc246) " + Client ID/daftar server MCP dipulihkan" else " + TANPA data server MCP (zip lama)") + (if (mcpSkipped > 0) " ($mcpSkipped entri MCP dilewati — tidak valid)" else "") + ". Semantik restore: pengaturan DITIMPA per kunci (hanya allowlist); memori DB DIGABUNG (upsert — item lama yang tidak ada di backup tetap ada). Graph/riwayat chat/goal TIDAK dipulihkan oleh backup ini. Antrean parkir persetujuan DIHAPUS saat restore (vc305 H-K1 — parkir lama tidak bisa bangkit). Restart app agar semua kebaca bersih. Login DeepSeek/slot isi ulang manual (token tidak ikut backup)."
         } catch (e: Exception) {
             "Pulih GAGAL: ${e.message}"
         }

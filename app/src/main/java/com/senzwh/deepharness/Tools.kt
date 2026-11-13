@@ -1676,6 +1676,18 @@ object Tools {
                     else {
                         val end = minOf(off + lim, e.text.length)
                         val slice = e.text.substring(off, end)
+                        // vc304 B3: get_result yang mengembalikan potongan
+                        // tersimpan dari live read yang memenuhi syarat
+                        // DIHITUNG sebagai bukti baca gate — HANYA bila
+                        // R-id dibuat di giliran yang SAMA dan tool asalnya
+                        // qualifying (noteRidReadVc304 menolak lintas
+                        // giliran + tool non-qualifying + entri lama tanpa
+                        // epoch). Cabang error di atas (id tidak ada /
+                        // offset di luar total / tersimpan terpotong)
+                        // TIDAK mencatat apa pun: agen tidak menerima isi.
+                        // grep_result TIDAK dihitung (hanya cuplikan).
+                        // Tidak pernah menggagalkan tool.
+                        try { LiveReadGateVc302.noteRidReadVc304(e.tool, e.turn, e.slug, TurnMetrics.currentTurnNo()) } catch (ex: Exception) {}
                         // vc302 Fix B: header total terstruktur di baris
                         // KEDUA (baris pertama "[DATA TIDAK TEPERCAYA …]:"
                         // TIDAK diubah — isRereadSuccessVc279 memakai
@@ -3174,7 +3186,39 @@ object Tools {
             // get_result konsisten dengan isi file.
             val toStore = if (name == "run_terminal") lastProotFullTL.get() ?: rawVc276 else storeOverrideTL.get() ?: rawVc276
             if (name != "get_result" && name != "grep_result" && toStore.isNotBlank() && skipStoreTL.get() != true) {
-                val rid = ResultStore.put(ctx, name, toStore)
+                // vc304 B3: R-id dari live read yang memenuhi syarat
+                // dicatat beserta epoch giliran + slug, supaya get_result
+                // atas R-id itu bisa dihitung sebagai bukti baca gate
+                // (hanya segiliran). Sukses = handler SUDAH mencatat bukti
+                // baca untuk slug ini di giliran ini
+                // (LiveReadGateVc302.hasProofForVc304) — satu-satunya
+                // sumber kebenaran sukses, tanpa menebak dari teks hasil.
+                // Gagal / bukan qualifying read / store di-skip = turn
+                // -1 + slug "" (tidak pernah jadi bukti). Untuk
+                // list_skills, slug "" + turn giliran (katalog berlaku
+                // untuk semua slug). Tidak pernah menggagalkan tool.
+                var turnVc304 = -1
+                var slugVc304 = ""
+                try {
+                    val curVc304 = TurnMetrics.currentTurnNo()
+                    if (curVc304 >= 0) {
+                        when (name) {
+                            "export_skill", "read_skill_version" -> {
+                                val sVc304 = try {
+                                    val nVc304 = slugifySkillName(args.optString("name").trim())
+                                    if (nVc304.isNotBlank()) nVc304 else resolveSkillVc300(ctx, args)?.name ?: ""
+                                } catch (e: Exception) { "" }
+                                if (sVc304.isNotBlank() && LiveReadGateVc302.hasProofForVc304(sVc304, curVc304)) {
+                                    turnVc304 = curVc304; slugVc304 = sVc304
+                                }
+                            }
+                            "list_skills" -> {
+                                if (LiveReadGateVc302.hasProofForVc304(null, curVc304)) turnVc304 = curVc304
+                            }
+                        }
+                    }
+                } catch (e: Exception) { turnVc304 = -1; slugVc304 = "" }
+                val rid = ResultStore.put(ctx, name, toStore, turnVc304, slugVc304)
                 if (rid.isNotEmpty()) { lastResultIdTL.set(rid); lastFullLengthTL.set(toStore.length) }
             }
         } catch (e: Exception) { /* store tidak boleh menggagalkan tool */ }

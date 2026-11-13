@@ -817,65 +817,123 @@ object BgBrain {
     private const val PARK_QUEUE_KEY = "bgPendingQueue"
     private val parkLock = Any()
 
+    // vc305 H-K1: sumber kebenaran parkir = SQLite durable
+    // (ParkedApprovalStoreVc305), BUKAN lagi JSONArray prefs
+    // "bgPendingQueue" (tanpa field status, ts==0 abadi).
+    // loadParkQueue di bawah dipertahankan sebagai ADAPTER baca saja
+    // (dipakai parkedList + migrasi legacy) — tidak ada lagi penulis
+    // prefs antrean. notifIdForPid (hashCode % 5000, bisa tabrakan)
+    // DIGANTI counter persisten store.nextNotifId().
     fun parkedList(ctx: Context): List<Triple<String, String, String>> {
         val out = ArrayList<Triple<String, String, String>>()
         try {
-            val arr = loadParkQueue(ctx)
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                out.add(Triple(o.optString("pid"), o.optString("tool"), o.optString("args")))
+            for (row in ParkedApprovalStoreVc305.get(ctx).listActive()) {
+                out.add(Triple(row.pid, row.tool, row.args))
             }
         } catch (e: Exception) {}
         return out
     }
 
-    private fun notifIdForPid(pid: String): Int =
-        20000 + ((pid.hashCode() and 0x7fffffff) % 5000)
+    /** Render ulang kartu parkir yang sudah diputuskan / sedang
+     *  diproses sebagai notifikasi "Processing" TANPA tombol aksi.
+     *  Dipakai BgApprovalReceiver + resumeApproval saat ketukan
+     *  datang untuk pid yang bukan PENDING lagi. */
+    fun renderParkedProcessing(ctx: Context, pid: String) {
+        try {
+            val row = ParkedApprovalStoreVc305.get(ctx).get(pid) ?: return
+            val statusTxt = when (row.status) {
+                "PROCESSING" -> "sedang diproses"
+                "APPROVED" -> "sudah disetujui dan dieksekusi"
+                "REJECTED" -> "sudah ditolak"
+                "EXPIRED" -> "sudah kedaluwarsa"
+                else -> "sudah diputuskan"
+            }
+            notify(ctx, row.notifId, "\u23f3 Persetujuan $statusTxt",
+                "Tool ${row.tool} $statusTxt — ketukan ulang tidak mengeksekusi ulang.",
+                "Persetujuan tool ${row.tool} (id: $pid) $statusTxt. Keputusan sudah dicatat secara durable; ketukan notifikasi lama tidak akan mengeksekusi tool apa pun.")
+        } catch (e: Exception) {}
+    }
 
     private fun loadParkQueue(ctx: Context): JSONArray {
-        return try {
+        // vc305 H-K1: adapter kompat — baca dari store durable.
+        // Bila prefs legacy masih berisi entri, impor SEKALI lewat
+        // store.migrateLegacy (ts<=0 -> kedaluwarsa, tidak diimpor),
+        // batalkan notif entri kedaluwarsa, lalu KOSONGKAN prefs agar
+        // tidak ganda. Migrasi kunci tunggal pra-vc242 ("bgPending")
+        // dipertahankan di jalur yang sama.
+        try {
             val raw = prefs(ctx).getString(PARK_QUEUE_KEY, "") ?: ""
-            if (raw.isNotBlank()) return JSONArray(raw)
-            // Migrasi satu kali dari kunci tunggal pra-vc242.
-            val legacy = prefs(ctx).getString("bgPending", "") ?: ""
-            if (legacy.isBlank()) return JSONArray()
-            val o = JSONObject(legacy)
-            if (!o.has("pid")) o.put("pid", o.optString("job").ifBlank { "legacy-" + o.optLong("ts", System.currentTimeMillis()) })
-            if (!o.has("notifId")) o.put("notifId", notifIdForPid(o.optString("pid")))
-            val arr = JSONArray().put(o)
-            prefs(ctx).edit().putString(PARK_QUEUE_KEY, arr.toString()).remove("bgPending").remove("bgPendingTool").apply()
+            if (raw.isNotBlank()) {
+                val arr = JSONArray(raw)
+                val (imported, expired) = ParkedApprovalStoreVc305.get(ctx).migrateLegacy(arr)
+                for (o in expired) {
+                    try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(o.optInt("notifId", APPROVAL_NOTIF_ID)) } catch (e: Exception) {}
+                }
+                prefs(ctx).edit().remove(PARK_QUEUE_KEY).apply()
+                if (imported > 0 || expired.isNotEmpty()) {
+                    try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Migrasi parkir legacy vc305: $imported diimpor ke store durable, ${expired.size} entri ts<=0 kedaluwarsa") } catch (e: Exception) {}
+                }
+            } else {
+                val legacy = prefs(ctx).getString("bgPending", "") ?: ""
+                if (legacy.isNotBlank()) {
+                    val o = JSONObject(legacy)
+                    if (!o.has("pid")) o.put("pid", o.optString("job").ifBlank { "legacy-" + o.optLong("ts", System.currentTimeMillis()) })
+                    if (!o.has("notifId")) o.put("notifId", ParkedApprovalStoreVc305.get(ctx).nextNotifId(ctx))
+                    ParkedApprovalStoreVc305.get(ctx).migrateLegacy(JSONArray().put(o))
+                    prefs(ctx).edit().remove("bgPending").remove("bgPendingTool").apply()
+                }
+            }
+        } catch (e: Exception) {}
+        // Kembalikan JSONArray dari store (bentuk lama, + field status)
+        // agar pembaca lama (parkedList dsb.) tetap jalan.
+        return try {
+            val arr = JSONArray()
+            for (row in ParkedApprovalStoreVc305.get(ctx).listActive()) arr.put(row.toJson())
             arr
         } catch (e: Exception) { JSONArray() }
     }
 
-    private fun saveParkQueue(ctx: Context, arr: JSONArray) {
-        try { prefs(ctx).edit().putString(PARK_QUEUE_KEY, arr.toString()).apply() } catch (e: Exception) {}
-    }
-
     private fun park(ctx: Context, task: String, origin: String, notifTitle: String?,
                      transcript: StringBuilder, steps: Int, tool: String, args: JSONObject, visible: String, jobId: String? = null, jobTools: Set<String>? = null, ownerSessionId: Long = 0): Boolean {
-        val pid: String
+        var pid: String
         val notifId: Int
+        val nowMs = System.currentTimeMillis()
         synchronized(parkLock) {
             try {
-                val arr = loadParkQueue(ctx)
-                if (arr.length() >= PARK_QUEUE_MAX) {
-                    try { notify(ctx, 7703, "⏰ Antrean persetujuan penuh", "Antrean persetujuan Otak Latar penuh (maks $PARK_QUEUE_MAX) — tool $tool tidak diparkir. Setujui/tolak parkir yang menggantung dulu.") } catch (e: Exception) {}
-                    EventDb.get(ctx).add("bgbrain", ctx.packageName, "Parkir DITOLAK (antrean penuh $PARK_QUEUE_MAX): $tool ($origin) — parkir lama tidak ditimpa")
+                val store = ParkedApprovalStoreVc305.get(ctx)
+                // Migrasi legacy dulu supaya hitungan antrean akurat.
+                loadParkQueue(ctx)
+                if (store.listActive().size >= PARK_QUEUE_MAX) {
+                    try { notify(ctx, 7703, "\u23f0 Antrean persetujuan penuh", "Antrean persetujuan Otak Latar penuh (maks $PARK_QUEUE_MAX) \u2014 tool $tool tidak diparkir. Setujui/tolak parkir yang menggantung dulu.") } catch (e: Exception) {}
+                    EventDb.get(ctx).add("bgbrain", ctx.packageName, "Parkir DITOLAK (antrean penuh $PARK_QUEUE_MAX): $tool ($origin) \u2014 parkir lama tidak ditimpa")
                     return false
                 }
-                pid = if (jobId.isNullOrBlank()) ("park-" + System.currentTimeMillis() + "-" + arr.length()) else jobId
-                notifId = notifIdForPid(pid)
-                val p = JSONObject()
-                    .put("task", task).put("origin", origin).put("title", notifTitle ?: "")
-                    .put("transcript", transcript.toString()).put("steps", steps)
-                    // vc260 H-K1: simpan label risiko STATIS (level() selalu SAFE sejak vc247, jadi label lama selalu "SAFE" dan tidak berguna untuk staleness).
-                    .put("tool", tool).put("args", args.toString()).put("risk", if (ToolGate.isHighStatic(tool, args, ctx)) "HIGH" else "SAFE")
-                    .put("ts", System.currentTimeMillis())
-                    .put("job", jobId ?: "").put("tools", jobTools?.joinToString(",") ?: "")
-                    .put("pid", pid).put("notifId", notifId).put("ownerSession", ownerSessionId)
-                arr.put(p)
-                saveParkQueue(ctx, arr)
+                pid = if (jobId.isNullOrBlank()) ("park-" + nowMs + "-" + store.listActive().size) else jobId
+                // vc305 H-K1: notifId UNIK dari counter persisten (bukan
+                // hashCode % 5000); entri legacy yang sudah punya notifId
+                // tersimpan tetap dipakai apa adanya (di migrasi).
+                notifId = store.nextNotifId(ctx)
+                val risk = if (ToolGate.isHighStatic(tool, args, ctx)) "HIGH" else "SAFE"
+                val row = ParkedApprovalStoreVc305.Row(
+                    pid = pid, sessionId = ownerSessionId.toString(), tool = tool,
+                    args = args.toString(), risk = risk, status = "PENDING",
+                    decision = null, decidedAtMs = 0,
+                    createdAtMs = if (nowMs > 0) nowMs else 1L,
+                    timeoutMs = ParkedApprovalMachineVc305.staleMsFor(risk),
+                    timeoutOwnerMs = 0, notifId = notifId,
+                    task = task, origin = origin, title = notifTitle ?: "",
+                    transcript = transcript.toString(), steps = steps,
+                    job = jobId ?: "", tools = jobTools?.joinToString(",") ?: "",
+                    ownerSession = ownerSessionId
+                )
+                var ok = store.insertIfAbsent(row)
+                if (!ok) {
+                    // pid bentrok (jobId dipakai ulang): coba sekali
+                    // dengan pid unik; bila masih gagal, tolak parkir.
+                    pid = pid + "-" + nowMs
+                    ok = store.insertIfAbsent(row.copy(pid = pid))
+                    if (!ok) return false
+                }
             } catch (e: Exception) { return false }
         }
         notifyApproval(ctx, tool, args, task, pid, notifId)
@@ -891,118 +949,165 @@ object BgBrain {
     }
 
     /** Dipanggil BgApprovalReceiver saat user mengetuk Setujui/Tolak.
-     *  vc242 K-03: pid mengikat ketukan ke parkirnya — tanpa pid dan antrean
-     *  berisi >1 parkir, TIDAK ADA parkir yang diselesaikan (menghindari
-     *  salah sasaran Setujui A mengeksekusi B). Setiap parkir yang keluar
-     *  dari antrean lewat jalur ini selalu berakhir dengan deliver
-     *  (lanjut loop -> deliver, atau dibatalkan -> deliver di bawah). */
+     *  vc305 H-K1 (DURABLE state machine): SEBELUM Tools.execute apa
+     *  pun, status durable dibaca + diklaim atomik PENDING->PROCESSING.
+     *  - Bukan PENDING (PROCESSING/APPROVED/REJECTED/EXPIRED/tidak ada)
+     *    -> render ulang "Processing" TANPA tombol + return TANPA eksekusi.
+     *  - Kedaluwarsa (HIGH 15 mnt / lain 24 jam, ts<=0 selalu expired)
+     *    -> status=EXPIRED + deliver "dibatalkan" + return.
+     *  - HIGH (risk tersimpan == HIGH atau isHighStatic) + disetujui
+     *    -> TIDAK PERNAH dieksekusi langsung: isi slot "bgSecondConfirm"
+     *    + notif 7704; eksekusi hanya dari resumeSecondConfirm sesudah
+     *    konfirmasi kedua lolos (verifikasi ulang status PROCESSING).
+     *  - SAFE + disetujui -> eksekusi langsung seperti sebelumnya,
+     *    lalu status=APPROVED; ditolak -> status=REJECTED.
+     *  Setiap parkir yang keluar dari antrean lewat jalur ini selalu
+     *  berakhir dengan deliver (lanjut loop -> deliver, atau dibatalkan
+     *  -> deliver di bawah). */
     fun resumeApproval(ctx: Context, approved: Boolean, pid: String? = null) {
         val app = ctx.applicationContext
         executor.execute {
-            val o: JSONObject
-            val jobIdForCancel: String?
-            val sessionIdForCancel: Long
-            synchronized(parkLock) {
-                val arr = loadParkQueue(app)
-                var idx = -1
-                if (pid != null) {
-                    for (i in 0 until arr.length()) if (arr.optJSONObject(i)?.optString("pid") == pid) { idx = i; break }
-                } else if (arr.length() == 1) idx = 0
-                if (idx < 0) {
-                    if (arr.length() > 1) {
-                        try { notify(app, 7703, "⏳ Banyak parkir menunggu", "Ada ${arr.length()} persetujuan Otak Latar yang menggantung — buka app dan putuskan dari daftar parkir (Monitor), jangan dari notifikasi lama.") } catch (e: Exception) {}
+            val store = ParkedApprovalStoreVc305.get(app)
+            // Migrasi legacy bila ada (sekali, idempotent).
+            loadParkQueue(app)
+            val nowMs = System.currentTimeMillis()
+            val row: ParkedApprovalStoreVc305.Row?
+            if (pid != null) {
+                row = store.get(pid)
+                if (row == null) return@execute
+            } else {
+                val actives = store.listActive()
+                if (actives.size == 1) row = actives[0]
+                else {
+                    if (actives.size > 1) {
+                        try { notify(app, 7703, "\u23f3 Banyak parkir menunggu", "Ada ${actives.size} persetujuan Otak Latar yang menggantung \u2014 buka app dan putuskan dari daftar parkir (Monitor), jangan dari notifikasi lama.") } catch (e: Exception) {}
                     }
                     return@execute
                 }
-                o = arr.optJSONObject(idx) ?: return@execute
-                arr.remove(idx)
-                saveParkQueue(app, arr)
-                try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(o.optInt("notifId", APPROVAL_NOTIF_ID)) } catch (e: Exception) {}
             }
-            jobIdForCancel = o.optString("job").ifBlank { null }
-            // vc243 GELOMBANG 2 (AG-M4): deliver pembatalan ke sesi pemilik
-            // parkir; parkir lama tanpa ownerSession jatuh ke sesi aktif.
-            sessionIdForCancel = o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
-            val tool = o.optString("tool")
-            val args = try { JSONObject(o.optString("args", "{}")) } catch (e: Exception) { JSONObject() }
-            // vc229 R-04(g): staleness per risiko — HIGH hanya 15 menit,
-            // lainnya 24 jam. Persetujuan basi TIDAK PERNAH dieksekusi.
-            // vc242 K-03: parkir basi berakhir dengan deliver dibatalkan.
-            // vc260 H-K1: level() selalu SAFE sejak vc247, jadi risiko
-            // ditentukan dari label "risk" yang tersimpan saat parkir
-            // (pra-vc247, saat level() masih hidup) ATAU klasifikasi
-            // statis ToolGate.isHighStatic — bukan dari level().
-            val isHighVc260 = o.optString("risk", "") == "HIGH" || ToolGate.isHighStatic(tool, args, app)
-            val staleMsVc229 = if (isHighVc260) 15 * 60_000L else 24 * 3600_000L
-            val parkTs = o.optLong("ts", 0)
-            if (parkTs > 0 && System.currentTimeMillis() - parkTs > staleMsVc229) {
-                deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, sessionIdForCancel, "⛔ Tugas latar dibatalkan: persetujuan tool $tool sudah KEDALUWARSA (melewati batas " + (if (isHighVc260) "15 menit (HIGH)" else "24 jam") + ") — tidak dieksekusi.", jobIdForCancel, "dibatalkan")
+            val pidVc305 = row.pid
+            // Bukan PENDING -> render Processing tanpa tombol, tanpa eksekusi.
+            if (row.status != "PENDING") {
+                try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(row.notifId) } catch (e: Exception) {}
+                renderParkedProcessing(app, pidVc305)
                 return@execute
             }
-            // vc229 R-04(g): HIGH dari parkir notifikasi TIDAK dieksekusi dari
+            // Klaim atomik: tap kedua / balapan kalah -> Processing, tanpa eksekusi.
+            if (!store.claim(pidVc305, nowMs)) {
+                renderParkedProcessing(app, pidVc305)
+                return@execute
+            }
+            val claimed = store.get(pidVc305) ?: return@execute
+            val jobIdForCancel: String? = claimed.job.ifBlank { null }
+            val sessionIdForCancel = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val tool = claimed.tool
+            val args = try { JSONObject(claimed.args) } catch (e: Exception) { JSONObject() }
+            // Staleness via machine (ts<=0 SELALU expired — lubang vc304 ditutup).
+            if (ParkedApprovalMachineVc305.isExpired(claimed.createdAtMs, claimed.risk, nowMs)) {
+                store.markExpired(pidVc305, nowMs)
+                try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(claimed.notifId) } catch (e: Exception) {}
+                val isHighVc305 = claimed.risk == "HIGH" || ToolGate.isHighStatic(tool, args, app)
+                deliver(app, claimed.origin, claimed.title.ifBlank { null }, sessionIdForCancel, "\u26d4 Tugas latar dibatalkan: persetujuan tool $tool sudah KEDALUWARSA (melewati batas " + (if (isHighVc305) "15 menit (HIGH)" else "24 jam") + ") \u2014 tidak dieksekusi.", jobIdForCancel, "dibatalkan")
+                return@execute
+            }
+            // vc305 H-K1: HIGH dari parkir notifikasi TIDAK dieksekusi dari
             // ketukan notifikasi saja — butuh konfirmasi kedua dalam-app
             // (dialog argumen lengkap + PIN, lihat MainActivity
             // showBgSecondConfirmVc229 + resumeSecondConfirm di bawah).
-            // vc242 K-03: bila slot konfirmasi kedua sedang dipakai tugas
-            // lain, parkir ini dibatalkan dengan deliver, bukan ditimpa.
-            // vc260: cabang ini SENGAJA dibiarkan mati (level() selalu SAFE di bawah GATES_DISABLED) — menghidupkannya lagi berarti membangun ulang checkpoint PIN, dilarang vc247.
-            if (approved && ToolGate.level(tool, args, app) == RiskLevel.HIGH) {
+            // Berbeda dengan vc304, cabang ini HIDUP: gerbangnya klasifikasi
+            // statis isHighStatic + label risk tersimpan (BUKAN level()
+            // yang selalu SAFE di bawah GATES_DISABLED — GATES_DISABLED
+            // sendiri TIDAK disentuh).
+            val isHighVc305 = claimed.risk == "HIGH" || ToolGate.isHighStatic(tool, args, app)
+            if (approved && isHighVc305) {
                 val busy = (prefs(app).getString("bgSecondConfirm", "") ?: "").isNotBlank()
                 if (busy) {
-                    deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, sessionIdForCancel, "⛔ Tugas latar dibatalkan: konfirmasi kedua HIGH sedang dipakai tugas lain — tool $tool tidak dieksekusi.", jobIdForCancel, "dibatalkan")
+                    store.decide(pidVc305, "REJECTED", nowMs)
+                    try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(claimed.notifId) } catch (e: Exception) {}
+                    deliver(app, claimed.origin, claimed.title.ifBlank { null }, sessionIdForCancel, "\u26d4 Tugas latar dibatalkan: konfirmasi kedua HIGH sedang dipakai tugas lain \u2014 tool $tool tidak dieksekusi.", jobIdForCancel, "dibatalkan")
                     return@execute
                 }
                 val sc = JSONObject()
-                sc.put("tool", tool); sc.put("args", args.toString()); sc.put("task", o.optString("task"))
-                sc.put("origin", o.optString("origin")); sc.put("title", o.optString("title"))
-                sc.put("transcript", o.optString("transcript")); sc.put("steps", o.optInt("steps", 0))
-                sc.put("job", o.optString("job")); sc.put("tools", o.optString("tools")); sc.put("ownerSession", sessionIdForCancel)
-                sc.put("ts", System.currentTimeMillis())
+                sc.put("tool", tool); sc.put("args", args.toString()); sc.put("task", claimed.task)
+                sc.put("origin", claimed.origin); sc.put("title", claimed.title)
+                sc.put("transcript", claimed.transcript); sc.put("steps", claimed.steps)
+                sc.put("job", claimed.job); sc.put("tools", claimed.tools); sc.put("ownerSession", sessionIdForCancel)
+                sc.put("ts", nowMs); sc.put("pid", pidVc305); sc.put("notifId", claimed.notifId)
+                sc.put("risk", claimed.risk)
                 prefs(app).edit().putString("bgSecondConfirm", sc.toString()).apply()
-                notify(app, 7704, "🛡️ Konfirmasi kedua diperlukan", "Tool HIGH $tool disetujui dari notifikasi — buka app untuk konfirmasi kedua (argumen lengkap + PIN) sebelum dieksekusi.")
+                try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(claimed.notifId) } catch (e: Exception) {}
+                notify(app, 7704, "\ud83d\udee1\ufe0f Konfirmasi kedua diperlukan", "Tool HIGH $tool disetujui dari notifikasi \u2014 buka app untuk konfirmasi kedua (argumen lengkap + PIN) sebelum dieksekusi.")
                 return@execute
             }
+            // SAFE (atau HIGH yang DITOLAK): putuskan set-once, lalu jalankan.
+            store.decide(pidVc305, if (approved) "APPROVED" else "REJECTED", nowMs)
+            try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(claimed.notifId) } catch (e: Exception) {}
             val result = if (approved) Tools.execute(app, tool, args)
                 else "User MENOLAK tool $tool dari notifikasi persetujuan Otak Latar. Jangan ulangi tool itu; selesaikan tugas tanpanya atau laporkan keterbatasannya dengan jujur."
-            val transcript = StringBuilder(o.optString("transcript"))
+            val transcript = StringBuilder(claimed.transcript)
             transcript.append("\n[HASIL TOOL] $tool (persetujuan notifikasi: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
-            val sessionId = o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val sessionId = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
             val api = ensureClient(app) ?: run {
-                MemoryDb.enqueuePrompt(app, o.optString("task")); return@execute
+                MemoryDb.enqueuePrompt(app, claimed.task); return@execute
             }
-            val jobId = o.optString("job").ifBlank { null }
-            val jobTools = o.optString("tools").split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
-            loop(app, api, o.optString("task"), o.optString("origin"),
-                o.optString("title").ifBlank { null }, sessionId, transcript, o.optInt("steps", 0), null, jobId, jobTools)
+            val jobId = claimed.job.ifBlank { null }
+            val jobTools = claimed.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
+            loop(app, api, claimed.task, claimed.origin,
+                claimed.title.ifBlank { null }, sessionId, transcript, claimed.steps, null, jobId, jobTools)
         }
     }
 
     /** vc229 R-04(g): konfirmasi kedua dalam-app untuk tool HIGH yang
      *  disetujui dari notifikasi. MainActivity memanggil ini SETELAH user
-     *  menyetujui dialog argumen lengkap + PIN (atau menolaknya). */
+     *  menyetujui dialog argumen lengkap + PIN (atau menolaknya).
+     *  vc305 H-K1: SEBELUM Tools.execute, verifikasi ulang status durable
+     *  masih PROCESSING + belum expired (klaim tidak kedaluwarsa).
+     *  Slot tanpa pid (legacy pra-vc305) TIDAK dieksekusi — tidak ada
+     *  baris durable yang bisa diverifikasi. Keputusan ditulis set-once
+     *  di sini (pemilik tunggal decision); MainActivity hanya menghapus
+     *  slot prefs + membatalkan notif 7704. */
     fun resumeSecondConfirm(ctx: Context, approved: Boolean, stored: JSONObject) {
         val app = ctx.applicationContext
         executor.execute {
             val o = stored
-            val tool = o.optString("tool")
-            val args = try { JSONObject(o.optString("args", "{}")) } catch (e: Exception) { JSONObject() }
-            if (System.currentTimeMillis() - o.optLong("ts", 0) > 15 * 60_000L) {
-                // vc242 K-03: konfirmasi kedua basi berakhir dengan deliver.
-                deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L), "⛔ Tugas latar dibatalkan: konfirmasi kedua tool $tool lewat 15 menit — tidak dieksekusi.", o.optString("job").ifBlank { null }, "dibatalkan")
+            val pidVc305 = o.optString("pid", "")
+            if (pidVc305.isBlank()) {
+                // Slot legacy tanpa pid: tidak ada status durable yang
+                // bisa diverifikasi -> TIDAK PERNAH dieksekusi.
+                deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tanpa identitas parkir durable (slot lama pra-vc305) \u2014 tidak dieksekusi.", o.optString("job").ifBlank { null }, "dibatalkan")
                 return@execute
             }
+            val store = ParkedApprovalStoreVc305.get(app)
+            val row = store.get(pidVc305)
+            if (row == null || row.status != "PROCESSING") {
+                // Sudah diputuskan / kedaluwarsa / hilang: render Processing,
+                // jangan eksekusi ulang.
+                renderParkedProcessing(app, pidVc305)
+                return@execute
+            }
+            val nowMs = System.currentTimeMillis()
+            val tool = row.tool
+            val args = try { JSONObject(row.args) } catch (e: Exception) { JSONObject() }
+            if (ParkedApprovalMachineVc305.isExpired(row.createdAtMs, row.risk, nowMs) ||
+                ParkedApprovalMachineVc305.isClaimExpired(row.toState(), nowMs) ||
+                nowMs - o.optLong("ts", 0) > 15 * 60_000L) {
+                store.markExpired(pidVc305, nowMs)
+                deliver(app, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool $tool lewat 15 menit \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
+                return@execute
+            }
+            store.decide(pidVc305, if (approved) "APPROVED" else "REJECTED", nowMs)
             val result = if (approved) Tools.execute(app, tool, args)
                 else "User MENOLAK tool $tool pada konfirmasi kedua dalam-app. Jangan ulangi tool itu; selesaikan tugas tanpanya atau laporkan keterbatasannya dengan jujur."
-            val transcript = StringBuilder(o.optString("transcript"))
+            val transcript = StringBuilder(row.transcript)
             transcript.append("\n[HASIL TOOL] $tool (konfirmasi kedua dalam-app: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
-            val sessionId = o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val sessionId = row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
             val api = ensureClient(app) ?: run {
-                MemoryDb.enqueuePrompt(app, o.optString("task")); return@execute
+                MemoryDb.enqueuePrompt(app, row.task); return@execute
             }
-            val jobId = o.optString("job").ifBlank { null }
-            val jobTools = o.optString("tools").split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
-            loop(app, api, o.optString("task"), o.optString("origin"),
-                o.optString("title").ifBlank { null }, sessionId, transcript, o.optInt("steps", 0), null, jobId, jobTools)
+            val jobId = row.job.ifBlank { null }
+            val jobTools = row.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
+            loop(app, api, row.task, row.origin,
+                row.title.ifBlank { null }, sessionId, transcript, row.steps, null, jobId, jobTools)
         }
     }
 
@@ -1022,39 +1127,61 @@ object BgBrain {
     // ada state (antrean parkir tidak kosong ATAU bgSecondConfirm tidak
     // kosong); bila keduanya kosong, no-op diam-diam tanpa notifikasi
     // dan tanpa jejak EventDb supaya tick tidak men-spam.
+    // vc305 H-K1: sapu legacy — SEKARANG pemilik timeout, bukan
+    // penghapus buta. vc260/vc265 menghapus SELURUH antrean tiap tick;
+    // itu akan membunuh store durable yang baru dibangun (resume
+    // sesudah restart tidak pernah sampai). Penggantinya: migrasi
+    // legacy + sapu kedaluwarsa (sweepExpired) + bersihkan slot
+    // konfirmasi kedua yang tidak lagi berpasangan dengan baris
+    // PROCESSING. Entri legacy pra-vc247 tetap tidak bisa dieksekusi:
+    // semuanya sudah lewat jendela 15 mnt / 24 jam sejak dibuat
+    // (berbulan-bulan lalu), jadi sweepExpired men-EXPIRED-kan mereka;
+    // entri ts<=0 ikut EXPIRED. Dijalankan dari tick HarnessService.
     fun sweepLegacyParkedOnce(ctx: Context) {
-        val p = prefs(ctx)
         var removed = 0
         var hadSecondConfirm = false
         try {
-            synchronized(parkLock) {
-                val arr = loadParkQueue(ctx)
-                removed = arr.length()
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(o.optInt("notifId", APPROVAL_NOTIF_ID)) } catch (e: Exception) {}
-                }
-                if (removed > 0) saveParkQueue(ctx, JSONArray())
+            loadParkQueue(ctx)
+            val expired = ParkedApprovalStoreVc305.get(ctx).sweepExpired(System.currentTimeMillis())
+            for (row in expired) {
+                removed++
+                try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(row.notifId) } catch (e: Exception) {}
+                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
             }
-            val sc = p.getString("bgSecondConfirm", "") ?: ""
+            val sc = prefs(ctx).getString("bgSecondConfirm", "") ?: ""
             if (sc.isNotBlank()) {
-                hadSecondConfirm = true
-                p.edit().remove("bgSecondConfirm").apply()
-                try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(7704) } catch (e: Exception) {}
+                val so = try { JSONObject(sc) } catch (e: Exception) { null }
+                val pidSc = so?.optString("pid", "") ?: ""
+                val rowSc = if (pidSc.isNotBlank()) ParkedApprovalStoreVc305.get(ctx).get(pidSc) else null
+                val staleSc = so == null || System.currentTimeMillis() - so.optLong("ts", 0) > 15 * 60_000L ||
+                    rowSc == null || rowSc.status != "PROCESSING"
+                if (staleSc) {
+                    hadSecondConfirm = true
+                    prefs(ctx).edit().remove("bgSecondConfirm").apply()
+                    try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(7704) } catch (e: Exception) {}
+                    if (rowSc != null && rowSc.status == "PROCESSING") {
+                        ParkedApprovalStoreVc305.get(ctx).markExpired(pidSc, System.currentTimeMillis())
+                    }
+                }
             }
-            try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(APPROVAL_NOTIF_ID) } catch (e: Exception) {}
+            if (removed == 0) {
+                try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(APPROVAL_NOTIF_ID) } catch (e: Exception) {}
+            }
         } catch (e: Exception) {}
         if (removed == 0 && !hadSecondConfirm) return
-        try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Sapu parkir legacy vc260/vc265 (jalan-ulang): $removed parkir pra-vc247 dihapus + notifikasi persetujuan lama dibatalkan" + (if (hadSecondConfirm) " + slot konfirmasi kedua legacy dibersihkan" else "") + " — parkir lama TIDAK bisa dieksekusi lagi") } catch (e: Exception) {}
+        try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Sapu parkir vc305 (pemilik timeout): $removed parkir kedaluwarsa di-EXPIRED-kan + notifikasi persetujuan lama dibatalkan" + (if (hadSecondConfirm) " + slot konfirmasi kedua legacy dibersihkan" else "") + " \u2014 parkir lama TIDAK bisa dieksekusi lagi") } catch (e: Exception) {}
         if (removed > 0 || hadSecondConfirm) {
-            try { notify(ctx, 7703, "🧹 Parkir persetujuan lama dibersihkan", "Parkir persetujuan pra-upgrade ($removed item) dihapus demi keamanan — ketukan notifikasi persetujuan lama tidak akan mengeksekusi tool apa pun.", "Parkir persetujuan dari sebelum upgrade ($removed item) sudah dibersihkan saat upgrade vc260 — notifikasi persetujuan lama tidak akan mengeksekusi tool apa pun bila diketuk.") } catch (e: Exception) {}
+            try { notify(ctx, 7703, "\ud83e\uddf9 Parkir persetujuan lama dibersihkan", "Parkir persetujuan pra-upgrade ($removed item) dihapus demi keamanan \u2014 ketukan notifikasi persetujuan lama tidak akan mengeksekusi tool apa pun.", "Parkir persetujuan dari sebelum upgrade ($removed item) sudah dibersihkan saat upgrade vc305 \u2014 notifikasi persetujuan lama tidak akan mengeksekusi tool apa pun bila diketuk.") } catch (e: Exception) {}
         }
     }
 
     /** F2: sapu parkir kedaluwarsa — dipanggil tiap tick service.
-     *  Persetujuan basi TIDAK PERNAH dieksekusi. vc242 K-03: sapu berjalan
-     *  per entri antrean, dan tiap parkir basi berakhir dengan deliver
-     *  dibatalkan (bukan sekadar notifikasi). */
+     *  Persetujuan basi TIDAK PERNAH dieksekusi. vc305: pemilik
+     *  timeout adalah store durable (sweepExpired) — PENDING lewat
+     *  batas -> EXPIRED, PROCESSING yang klaimnya kedaluwarsa ->
+     *  EXPIRED, ts<=0 -> EXPIRED. Tiap parkir basi berakhir dengan
+     *  deliver dibatalkan (bukan sekadar notifikasi). Slot konfirmasi
+     *  kedua yang kedaluwarsa tetap disapu seperti sebelumnya. */
     fun sweepParked(ctx: Context) {
         try {
             // vc229: sapu konfirmasi kedua yang kedaluwarsa (HIGH, 15 menit).
@@ -1063,32 +1190,21 @@ object BgBrain {
                 val so = JSONObject(sc)
                 if (System.currentTimeMillis() - so.optLong("ts", 0) > 15 * 60_000L) {
                     prefs(ctx).edit().remove("bgSecondConfirm").apply()
-                    deliver(ctx, so.optString("origin"), so.optString("title").ifBlank { null }, so.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "⛔ Tugas latar dibatalkan: konfirmasi kedua tool ${so.optString("tool")} lewat 15 menit — tidak dieksekusi.", so.optString("job").ifBlank { null }, "dibatalkan")
+                    val pidSc = so.optString("pid", "")
+                    if (pidSc.isNotBlank()) {
+                        ParkedApprovalStoreVc305.get(ctx).markExpired(pidSc, System.currentTimeMillis())
+                    }
+                    deliver(ctx, so.optString("origin"), so.optString("title").ifBlank { null }, so.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool ${so.optString("tool")} lewat 15 menit \u2014 tidak dieksekusi.", so.optString("job").ifBlank { null }, "dibatalkan")
                 }
             }
         } catch (e: Exception) {}
         try {
-            val arr: JSONArray
-            synchronized(parkLock) {
-                arr = loadParkQueue(ctx)
-                var changed = false
-                var i = 0
-                while (i < arr.length()) {
-                    val o = arr.optJSONObject(i)
-                    if (o == null) { i++; continue }
-                    val ts = o.optLong("ts", 0)
-                    val sweepArgs = try { JSONObject(o.optString("args", "{}")) } catch (e: Exception) { JSONObject() }
-                    // vc260 H-K1: level() selalu SAFE sejak vc247 — pakai label tersimpan atau klasifikasi statis, seperti resumeApproval.
-                    val staleSweepVc229 = if (o.optString("risk", "") == "HIGH" || ToolGate.isHighStatic(o.optString("tool"), sweepArgs, ctx)) 15 * 60_000L else 24 * 3600_000L
-                    if (ts > 0 && System.currentTimeMillis() - ts > staleSweepVc229) {
-                        arr.remove(i)
-                        changed = true
-                        try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(o.optInt("notifId", APPROVAL_NOTIF_ID)) } catch (e: Exception) {}
-                        deliver(ctx, o.optString("origin"), o.optString("title").ifBlank { null }, o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "⛔ Tugas latar dibatalkan: persetujuan tool ${o.optString("tool")} sudah KEDALUWARSA (melewati batas staleness) — tidak dieksekusi.", o.optString("job").ifBlank { null }, "dibatalkan")
-                        EventDb.get(ctx).add("bgbrain", ctx.packageName, "Parkir kedaluwarsa dibatalkan: ${o.optString("tool")} (id: ${o.optString("pid")})")
-                    } else i++
-                }
-                if (changed) saveParkQueue(ctx, arr)
+            loadParkQueue(ctx)
+            val expired = ParkedApprovalStoreVc305.get(ctx).sweepExpired(System.currentTimeMillis())
+            for (row in expired) {
+                try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(row.notifId) } catch (e: Exception) {}
+                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA (melewati batas staleness) \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
+                EventDb.get(ctx).add("bgbrain", ctx.packageName, "Parkir kedaluwarsa dibatalkan: ${row.tool} (id: ${row.pid})")
             }
         } catch (e: Exception) {}
     }
@@ -1307,7 +1423,10 @@ object BgBrain {
                     .setData(android.net.Uri.parse("harness://bgapproval/$pid"))
                     .putExtra("pid", pid).putExtra("notifId", notifId),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val rejectPi = PendingIntent.getBroadcast(ctx, notifId + 1,
+            // vc305 H-K1: requestCode Tolak = notifId + 5000 (rentang
+            // 25000..29999, disjoin dari Setujui 20000..24999). notifId+1
+            // lama bisa menabrak requestCode Setujui parkir lain.
+            val rejectPi = PendingIntent.getBroadcast(ctx, notifId + 5000,
                 Intent(ctx, BgApprovalReceiver::class.java).setAction(BgApprovalReceiver.ACTION_REJECT)
                     .setData(android.net.Uri.parse("harness://bgapproval/$pid"))
                     .putExtra("pid", pid).putExtra("notifId", notifId),

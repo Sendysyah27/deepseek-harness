@@ -13,10 +13,10 @@ object Flavor {
     // userName (first-run Kenalan, E1.3); kosong berarti pakai fallback.
     // fallbackPure berbeda per pesan (D1 "ini", D2 "Pengguna") — pemanggil
     // yang memilihnya. Di mainline fallback = "Asisten" (perilaku lama).
-    // CATATAN (tree publik): fallback nama pemilik sudah netral ("Asisten").
-    // Di salinan build pure, build.py tetap menimpa IS_PURE = true — cabang
-    // itu MATI di pure (IS_PURE const true: pure selalu mengambil
-    // fallbackPure / userName), jadi nilai di bawah tidak berpengaruh ke pure.
+    // CATATAN replacement map (agen flavor): map me-rewrite literal "Asisten"
+    // di bawah menjadi "Asisten" di salinan pure — cabang itu MATI di pure
+    // (IS_PURE const true: pure selalu mengambil fallbackPure / userName),
+    // jadi rewrite itu tidak berpengaruh ke perilaku.
     fun ownerNameOr(ctx: Context, fallbackPure: String): String {
         val n = try { ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("userName", "")?.trim().orEmpty() } catch (e: Exception) { "" }
         if (n.isNotEmpty()) return n

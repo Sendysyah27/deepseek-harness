@@ -98,6 +98,26 @@ open class SlotBrowserActivity : Activity() {
     private val jsToken =
         "(function(){try{var t=localStorage.getItem('userToken');if(!t)return '';try{var o=JSON.parse(t);return o.value||t;}catch(e){return t;}}catch(e){return '';}})()"
 
+    /** vc309 Worker A — tema gelap SlotBrowser, pola sama seperti
+     *  MainActivity.isDarkTheme(): prefs "themeMode" + night mode OS untuk
+     *  mode "sistem". Dipakai onCreate + onResume (bar ikut tema app). */
+    private fun slotIsDarkVc309(): Boolean {
+        val slotMode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
+        return when (slotMode) {
+            "terang" -> false
+            "sistem" -> (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+            else -> true
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // vc309 Worker A — bar ikut tema bila night mode OS berubah saat
+        // SlotBrowser di latar (mode "sistem"). Listener inset tidak
+        // dipasang ulang (tetap hidup dari onCreate).
+        try { SystemBarsVc309.applySystemBars(window, slotIsDarkVc309()) } catch (e: Exception) {}
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         slot = intent.getIntExtra("slot", 0)
@@ -108,12 +128,7 @@ open class SlotBrowserActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 28) {
             try { WebView.setDataDirectorySuffix("slot$slot") } catch (e: Exception) {}
         }
-        val slotMode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
-        val slotDark = when (slotMode) {
-            "terang" -> false
-            "sistem" -> (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
-            else -> true
-        }
+        val slotDark = slotIsDarkVc309()
         val cBg = if (slotDark) Color.rgb(0, 0, 0) else Color.rgb(244, 246, 251)
         val cCard = if (slotDark) Color.rgb(28, 28, 28) else Color.rgb(255, 255, 255)
         val cStroke = if (slotDark) Color.rgb(72, 72, 72) else Color.rgb(226, 232, 240)
@@ -198,6 +213,12 @@ open class SlotBrowserActivity : Activity() {
         }
         root.addView(webView)
         setContentView(root)
+        // vc309 Worker A — bar ikut tema app (§2) + edge-to-edge penuh:
+        // bar judul turun di bawah status bar, WebView terangkat di atas
+        // nav bar / keyboard saat login. Warna konten SlotBrowser sendiri
+        // (rgb hardcoded) tidak diubah — hanya bar + inset.
+        try { SystemBarsVc309.applySystemBars(window, slotDark) } catch (e: Exception) {}
+        try { SystemBarsVc309.installEdgeToEdge(window, root) } catch (e: Exception) {}
         setupWebView()
         webView.loadUrl("https://chat.deepseek.com/")
     }

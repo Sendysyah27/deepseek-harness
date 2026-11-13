@@ -21,6 +21,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 class NotifListener : NotificationListenerService() {
@@ -150,8 +151,136 @@ data class NodeRef(
     val clickable: Boolean, val editable: Boolean, val password: Boolean
 )
 
+/** vc307: anggaran satu kali walk snapshot — cap node, depth, dan
+ * time-budget. Murni Kotlin (jam bisa di-inject) supaya bisa diuji di
+ * JVM tanpa pohon AccessibilityNodeInfo sungguhan. */
+internal class WalkBudget(
+    val deadlineMs: Long,
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    val maxNodes: Int = A11yService.SNAPSHOT_MAX_COLLECT_NODES,
+    val maxDepth: Int = A11yService.SNAPSHOT_MAX_DEPTH
+) {
+    var visited: Int = 0
+        private set
+
+    /** true bila node di depth ini masih boleh dikunjungi (di bawah
+     * cap depth/node/waktu); false berarti walk harus berhenti. */
+    fun allowVisit(depth: Int): Boolean {
+        if (depth > maxDepth) return false
+        if (visited >= maxNodes) return false
+        if (nowMs() > deadlineMs) return false
+        visited++
+        return true
+    }
+}
+
+/** vc307: penjadwal walk snapshot — debounce + coalesce + "lewati bila
+ * sedang berjalan". Murni Kotlin (jam + executor bisa di-inject)
+ * supaya bisa diuji di JVM tanpa AccessibilityService sungguhan.
+ *
+ * Kontrak:
+ * - request(): minta satu walk. Paling cepat 1x per minIntervalMs
+ *   sejak walk terakhir selesai; request yang datang saat walk berjalan
+ *   digabung jadi SATU walk susulan (pending); request dalam jeda
+ *   digabung jadi SATU walk tertunda (delayedScheduled).
+ * - runNow(): jalankan walk SEKARANG di thread pemanggil (jalur
+ *   sinkron pemanggil latar); bila walk lain sedang jalan, tandai
+ *   pending dan kembali TANPA menunggu — pemanggil tidak pernah
+ *   di-block oleh walk lain.
+ * - walkCount/walkThreadName: diagnostik + tes (thread walk terakhir). */
+internal class SnapshotScheduler(
+    private val minIntervalMs: Long = A11yService.SNAPSHOT_MIN_INTERVAL_MS,
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    private val post: (Runnable) -> Unit = { r -> Thread(r, "a11y-snapshot").apply { isDaemon = true }.start() },
+    private val postDelayed: (Runnable, Long) -> Unit = { r, ms -> Thread { Thread.sleep(ms); r.run() }.apply { isDaemon = true }.start() },
+    private val walk: () -> Unit = {}
+) {
+    private val lock = Any()
+
+    @Volatile var running: Boolean = false
+        private set
+    @Volatile var pending: Boolean = false
+        private set
+    @Volatile var delayedScheduled: Boolean = false
+        private set
+    @Volatile var lastEndMs: Long = 0
+        private set
+    @Volatile var walkCount: Int = 0
+        private set
+    @Volatile var walkThreadName: String? = null
+        private set
+
+    fun request() {
+        val now = nowMs()
+        var delayMs = -1L
+        synchronized(lock) {
+            if (running) { pending = true; return }
+            val elapsed = now - lastEndMs
+            if (elapsed < minIntervalMs) {
+                if (delayedScheduled) return
+                delayedScheduled = true
+                delayMs = minIntervalMs - elapsed
+            } else {
+                delayMs = 0
+            }
+        }
+        try {
+            if (delayMs == 0L) post(Runnable { runWalkGuarded() })
+            else postDelayed(Runnable {
+                synchronized(lock) { delayedScheduled = false }
+                runWalkGuarded()
+            }, delayMs)
+        } catch (e: Exception) {
+            synchronized(lock) { delayedScheduled = false }
+        }
+    }
+
+    fun runNow() {
+        synchronized(lock) {
+            if (running) { pending = true; return }
+            running = true
+        }
+        runWalkBody()
+    }
+
+    private fun runWalkGuarded() {
+        synchronized(lock) {
+            if (running) { pending = true; return }
+            running = true
+        }
+        runWalkBody()
+    }
+
+    private fun runWalkBody() {
+        try {
+            walkCount++
+            walkThreadName = Thread.currentThread().name
+            walk()
+        } finally {
+            var again = false
+            synchronized(lock) {
+                running = false
+                lastEndMs = nowMs()
+                if (pending) { pending = false; again = true }
+            }
+            if (again) request()
+        }
+    }
+}
+
 class A11yService : AccessibilityService() {
 
+    // vc307 ANR fix (ANR 2026-11-13 14:16:09, ganti tema ke cerah):
+    // refreshSnapshot() lama jalan SINKRON di main thread — tiap getChild
+    // = IPC sinkron, tanpa cap node/depth/waktu; ganti tema me-rebuild
+    // seluruh tree chat + banjir TYPE_WINDOW_STATE_CHANGED -> main thread
+    // ke-block >5 dtk. Sekarang onAccessibilityEvent HANYA menjadwalkan
+    // (scheduleSnapshot -> SnapshotScheduler.request) di executor
+    // single-thread; walk TIDAK PERNAH jalan di main thread. Pemanggil
+    // latar (Tools: get_screen/wait_change/wait_for_app/guiBlockReason)
+    // tetap sinkron lewat refreshSnapshot() — mereka jalan di thread
+    // agen dan membaca lastNodes/lastScreenText tepat sesudah panggilan
+    // kembali, jadi perilakunya tidak berubah (lihat laporan vc307).
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         try {
             val pkg = event.packageName?.toString() ?: return
@@ -161,39 +290,71 @@ class A11yService : AccessibilityService() {
                     currentPkg = pkg
                     EventDb.get(this).add("app", pkg, "App aktif: $pkg")
                 }
-                refreshSnapshot()
+                // vc307: JANGAN walk di sini — main thread. Hanya jadwalkan.
+                scheduleSnapshot()
             }
         } catch (e: Exception) {}
     }
 
     override fun onInterrupt() {}
 
+    /** Apakah thread saat ini main thread service (tempat
+     * onAccessibilityEvent/onServiceConnected jalan). */
+    fun isMainThread(): Boolean {
+        val mt = mainThread
+        if (mt != null) return Thread.currentThread() == mt
+        return try { android.os.Looper.myLooper() == android.os.Looper.getMainLooper() } catch (e: Exception) { false }
+    }
+
+    /** Minta satu walk snapshot di executor latar (debounce ~500 ms +
+     * coalesce). Aman dipanggil dari main thread. */
+    fun scheduleSnapshot() {
+        try { snapshotScheduler.request() } catch (e: Exception) {}
+    }
+
+    /** Snapshot layar ke lastScreenText/lastNodes.
+     * vc307: dari main thread HANYA menjadwalkan walk di executor latar
+     * (tidak pernah block main thread -> ANR); dari thread latar jalan
+     * sinkron seperti dulu, supaya get_screen/wait_change/wait_for_app/
+     * guiBlockReason yang membaca hasil tepat sesudah panggilan ini
+     * tidak berubah perilakunya. */
     fun refreshSnapshot() {
+        if (isMainThread()) { scheduleSnapshot(); return }
+        try { snapshotScheduler.runNow() } catch (e: Exception) {}
+    }
+
+    /** Isi walk lama refreshSnapshot() + cap node/depth/waktu vc307.
+     * Berjalan di executor latar atau thread pemanggil latar — TIDAK
+     * PERNAH di main thread. Dipanggil lewat SnapshotScheduler.walk. */
+    private fun doSnapshotWalk() {
         try {
             val root = rootInActiveWindow ?: return
+            val deadline = System.currentTimeMillis() + SNAPSHOT_TIME_BUDGET_MS
             val sb = StringBuilder()
-            collect(root, sb, 0)
+            collect(root, sb, 0, WalkBudget(deadline))
             lastScreenText = sb.toString().take(3000)
             lastScreenPkg = root.packageName?.toString() ?: currentPkg
             lastSnapshotTs = System.currentTimeMillis()
             try {
                 val nodes = ArrayList<NodeRef>()
-                collectNodes(root, ArrayList(), nodes)
+                collectNodes(root, ArrayList(), nodes, 0, WalkBudget(deadline, maxNodes = SNAPSHOT_MAX_VISIT_NODES))
                 lastNodes = nodes
                 lastNodesTs = System.currentTimeMillis()
             } catch (e: Exception) {}
         } catch (e: Exception) {}
     }
 
-    private fun collect(node: AccessibilityNodeInfo?, sb: StringBuilder, depth: Int) {
+    private fun collect(node: AccessibilityNodeInfo?, sb: StringBuilder, depth: Int, budget: WalkBudget) {
         if (node == null || sb.length > 3000) return
+        if (!budget.allowVisit(depth)) return
         val t = node.text?.toString() ?: node.contentDescription?.toString()
         if (!t.isNullOrBlank()) sb.append(t).append(" | ")
-        for (i in 0 until node.childCount) collect(node.getChild(i), sb, depth + 1)
+        for (i in 0 until node.childCount) collect(node.getChild(i), sb, depth + 1, budget)
     }
 
-    private fun collectNodes(node: AccessibilityNodeInfo?, path: ArrayList<Int>, out: ArrayList<NodeRef>) {
-        if (node == null || out.size >= 120) return
+    private fun collectNodes(node: AccessibilityNodeInfo?, path: ArrayList<Int>, out: ArrayList<NodeRef>, depth: Int, budget: WalkBudget) {
+        if (node == null || out.size >= SNAPSHOT_MAX_NODES) return
+        if (!budget.allowVisit(depth)) return
         try {
             val isPw = try { node.isPassword } catch (e: Exception) { false }
             val t = if (isPw) "" else (node.text?.toString() ?: "")
@@ -211,9 +372,9 @@ class A11yService : AccessibilityService() {
         } catch (e: Exception) {}
         for (i in 0 until node.childCount) {
             path.add(i)
-            collectNodes(node.getChild(i), path, out)
+            collectNodes(node.getChild(i), path, out, depth + 1, budget)
             path.removeAt(path.size - 1)
-            if (out.size >= 120) return
+            if (out.size >= SNAPSHOT_MAX_NODES) return
         }
     }
 
@@ -342,8 +503,51 @@ class A11yService : AccessibilityService() {
         @Volatile var lastSnapshotTs: Long = 0
         @Volatile var lastNodes: List<NodeRef> = emptyList()
         @Volatile var lastNodesTs: Long = 0
+
+        // ---- vc307: batas snapshot (ANR ganti tema 2026-11-13) ----
+        /** Jeda minimum antar walk snapshot (debounce/coalesce). */
+        const val SNAPSHOT_MIN_INTERVAL_MS = 500L
+        /** Time-budget satu walk (collect + collectNodes). */
+        const val SNAPSHOT_TIME_BUDGET_MS = 300L
+        /** Depth maksimum rekursi walk. */
+        const val SNAPSHOT_MAX_DEPTH = 24
+        /** Node maksimum yang dikunjungi collect() (teks layar). */
+        const val SNAPSHOT_MAX_COLLECT_NODES = 2000
+        /** Node maksimum yang dikunjungi collectNodes() (ref bernomor). */
+        const val SNAPSHOT_MAX_VISIT_NODES = 5000
+        /** Elemen maksimum yang disimpan di lastNodes (nilai lama: 120). */
+        const val SNAPSHOT_MAX_NODES = 120
+
+        /** Main thread service — dicatat di onServiceConnected (jalan
+         * di main thread). Dipakai isMainThread(). */
+        @Volatile var mainThread: Thread? = null
+
+        /** Executor latar snapshot: single-thread, daemon (tidak menahan
+         * proses/JVM). Sengaja TIDAK di-shutdown di onDestroy — service
+         * bisa connect lagi di proses yang sama dan companion ini dipakai
+         * bersama; satu thread daemon yang menganggur tidak berbahaya. */
+        val snapshotExecutor: ScheduledExecutorService =
+            Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "a11y-snapshot").apply { isDaemon = true }
+            }
+
+        /** Penjadwal walk snapshot (debounce + coalesce + skip-bila-jalan).
+         * walk = doSnapshotWalk() instance aktif; bila service belum
+         * connect (instance null) walk jadi no-op tapi penjadwalan tetap
+         * terhitung — dipakai tes JVM (AccessibilityService tidak bisa
+         * diinstansiasi dengan android.jar stub). */
+        @Volatile internal var snapshotScheduler: SnapshotScheduler = SnapshotScheduler(
+            minIntervalMs = SNAPSHOT_MIN_INTERVAL_MS,
+            nowMs = { System.currentTimeMillis() },
+            post = { r -> snapshotExecutor.execute(r) },
+            postDelayed = { r, ms -> snapshotExecutor.schedule(r, ms, TimeUnit.MILLISECONDS) },
+            walk = { instance?.doSnapshotWalk() }
+        )
     }
 
-    override fun onServiceConnected() { instance = this }
+    override fun onServiceConnected() {
+        instance = this
+        mainThread = Thread.currentThread()
+    }
     override fun onDestroy() { if (instance == this) instance = null; super.onDestroy() }
 }

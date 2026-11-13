@@ -5,6 +5,10 @@ import com.senzwh.deepharness.priv.AdbPairing
 import com.senzwh.deepharness.priv.PrivServer
 import com.senzwh.deepharness.priv.PrivPairNotif
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.content.res.ColorStateList
+import android.view.animation.LinearInterpolator
+import android.widget.ProgressBar
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
@@ -59,6 +63,46 @@ class MainActivity : Activity() {
     private var replyTargetText: String? = null
     private var liveCardTv: TextView? = null
     private var liveCardBox: LinearLayout? = null
+    // vc306 Worker B — header kaca + composer + activity strip (K1/K2).
+    // liveCardBox = baris strip (wadah kapsul + pill otomasi saat berjalan);
+    // liveCardTv dipakai ulang sebagai teks detail strip.
+    private var glassHeaderTitleTvVc306: TextView? = null
+    private var glassHeaderStatusTvVc306: TextView? = null
+    private var glassHeaderDotVc306: View? = null
+    private var glassHeaderTitlePillVc306: LinearLayout? = null
+    private var glassHeaderModelChipVc306: Button? = null
+    private var glassHeaderMenuBtnVc306: Button? = null
+    private var glassHeaderNewChatBtnVc306: Button? = null
+    private var glassHeaderFadeVc306: View? = null
+    private var micBtnVc306: Button? = null
+    private var sendBtnVc306: Button? = null
+    private var attachBtnVc306: Button? = null
+    private var stopSpinnerVc306: FrameLayout? = null
+    private var autoPillVc306: Button? = null
+    private var autoTopRowVc306: LinearLayout? = null // vc307: baris OTOMASI di ATAS composer (ganti footer bawah)
+    private var stripCapsuleVc306: LinearLayout? = null
+    private var stripTitleTvVc306: TextView? = null
+    private var stripDetailTvVc306: TextView? = null
+    private var stripTimerTvVc306: TextView? = null
+    private var stripTodoRowVc306: LinearLayout? = null
+    private var stripTodoTextVc306: TextView? = null
+    private var stripTodoFillVc306: View? = null
+    private var stripSpinnerVc306: android.widget.ProgressBar? = null
+    private var stripLongPressedVc306 = false
+    private var stripLongPressRunnableVc306: Runnable? = null
+    @Volatile private var stopRequestedVc306 = false
+    private val stripTimerHandlerVc306 = android.os.Handler(android.os.Looper.getMainLooper())
+    private val stripTimerRunnableVc306 = object : Runnable {
+        override fun run() {
+            try {
+                val box = liveCardBox
+                if (box != null && box.visibility == View.VISIBLE && turnActive) {
+                    updateStripTimerVc306()
+                    stripTimerHandlerVc306.postDelayed(this, 1000)
+                }
+            } catch (e: Exception) {}
+        }
+    }
     private var latestBtn: Button? = null
     private var queueRowBox: LinearLayout? = null
     private var replyChipTv: TextView? = null
@@ -84,7 +128,7 @@ class MainActivity : Activity() {
     private var quickChipsRow: LinearLayout? = null
     private var chatDrawerRoot: FrameLayout? = null
     private var chatDrawerPanel: View? = null
-    private var chatSendBtnRef: TextView? = null
+    private var chatSendBtnRef: Button? = null
     // vc267 ARTIFACTS: state panel + artifact yang sedang dibuka.
     private var artifactPanelRoot: FrameLayout? = null
     private var artifactWebView: WebView? = null
@@ -149,6 +193,17 @@ class MainActivity : Activity() {
     private val pendingExtractProposals = mutableListOf<Pair<String, String>>()
     private var collectingExtract = false
     private val turnWork = java.util.Collections.synchronizedList(mutableListOf<WorkItem>())
+    // vc306 Worker C: registry baris proses giliran berjalan (kartu tool +
+    // think pill) untuk auto-collapse + footnote; direset tiap pesan user
+    // baru di onUserMessage (di samping turnSource/turnUsedTools).
+    private val turnProcessViewsVc306 = ArrayList<View>()
+    private var turnToolRowsVc306 = 0
+    private var turnMsgCountVc306 = 0
+    private var turnThinkBlocksVc306 = 0
+    private val thinkPillsVc306 = ArrayList<ThinkPillVc306>()
+    private var lastTurnContainerVc306: View? = null
+    private var lastTurnExpandedContentVc306: View? = null
+    private var lastTurnToggleVc306: (() -> Unit)? = null
     private val autoRetryTools = mutableSetOf<String>()
     // v4.48.5 (P3) + v4.48.6 (Butir 3): digest bukti giliran sebelumnya (in-memory; hilang bila proses mati). Cap 2000 char — cap eksplisit — jalur PoW tanpa limit token. Isi DIRED AKSI (pola key=value token/api-key/secret/password) SEBELUM disimpan; hasil live tidak pernah diubah.
     private var prevTurnEvidence: String = ""
@@ -169,6 +224,14 @@ class MainActivity : Activity() {
     private var turnStoppedReason: String? = null // vc232 S4: alasan penghentian turn (null = normal); dibaca SATU pemilih pill akhir
     private var currentTurnUser: String = ""
     private var turnSessionId: Long = 1  // v4.15.0 (K5): sesi pemilik giliran berjalan
+    // vc304 B2: keputusan giliran background yang DIPARKIR menunggu user
+    // kembali ke sesi pemilik — ditawarkan ulang dari switchSession.
+    // extendOfferPendingVc304 = dialog +10 langkah tertunda (pendingTool
+    // sudah diset di proceedTool); approvalParkedVc304 = approval tool
+    // tertunda (tool, args, callId) — TIDAK dieksekusi / auto-approve
+    // selama parkir. @Volatile karena ditulis thread giliran, dibaca UI.
+    @Volatile private var extendOfferPendingVc304 = false
+    @Volatile private var approvalParkedVc304: Triple<String, JSONObject, String>? = null
     @Volatile private var activityResumed = false
     private var turnWakeLock: android.os.PowerManager.WakeLock? = null
     private var ckptChecked = false
@@ -194,6 +257,11 @@ class MainActivity : Activity() {
     // ketukan "Izinkan" setelah pindah sesi mengeksekusi tool di bawah
     // currentSessionId yang BARU).
     private var activeToolDialogVc246: android.app.AlertDialog? = null
+    // vc304 B2: dialog +10 langkah dan dialog tawaran-lanjut yang sedang
+    // tampil dilacak agar switchSession bisa menutupnya (dialog activity
+    // tidak hilang sendiri saat pindah sesi) + memarkir tawarannya.
+    private var extendDialogVc304: android.app.AlertDialog? = null
+    private var resumeDialogVc304: android.app.AlertDialog? = null
     private var lastUserText: String = ""
     private var turnUsedTools: Boolean = false
     private var verifyTurn: Boolean = false
@@ -819,7 +887,7 @@ class MainActivity : Activity() {
                 }
                 o.put("sessions", sArr)
             } catch (e: Exception) {}
-            o.put("chatFont", prefs.getInt("chatFontPx", 15))
+            o.put("chatFont", prefs.getInt("chatFontPx", 16)) // vc306: default 16
             o.put("sessMsgCount", try { MemoryDb.get(this).historyCount(currentSessionId) } catch (e: Exception) { 0 })
             o.put("dsLogin", ::statusTv.isInitialized && (statusTv.text?.toString() ?: "").contains("LOGIN AKTIF"))
             o.put("connectors", try { Connectors.statusJson(this, o.optBoolean("dsLogin", false)) } catch (e: Exception) { org.json.JSONArray() })
@@ -999,35 +1067,80 @@ class MainActivity : Activity() {
         }
     }
 
-    /** vc169: menu long-press gelembung — dipakai chat 1-1 & grup. */
+    /** vc169: menu long-press gelembung — dipakai chat 1-1 & grup.
+     *  vc308 Worker A (SS1): dibangun ulang sebagai dialog custom (bukan
+     *  lagi AlertDialog.setItems sistem polos + emoji) — mengikuti standar
+     *  vc306/vc307: wadah rounded(th.card, rXl) + window transparan (pola
+     *  thDialog), ikon Path/vektor tanpa emoji, teks th.text 15sp,
+     *  hit area 48dp per baris, benar di tema gelap + terang (semua warna
+     *  dari currentTheme()). Ketiga aksi + fungsinya TIDAK berubah:
+     *  0 -> uiCopy(text), 1 -> showSelectableTextDialog(text),
+     *  2 -> onReply(). */
     private fun showBubbleMenu(text: String, onReply: () -> Unit) {
-        android.app.AlertDialog.Builder(this)
-            .setItems(arrayOf("📋 Salin pesan", "✂️ Salin sebagian…", "↩️ Balas pesan ini")) { _, w ->
-                when (w) {
-                    0 -> uiCopy(text)
-                    1 -> showSelectableTextDialog(text)
-                    else -> onReply()
-                }
-            }.show()
+        val th = currentTheme()
+        var dlgHolder: android.app.AlertDialog? = null
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(th.card, ChatThemeVc306.rXl)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        fun rowBg(): android.graphics.drawable.Drawable =
+            android.graphics.drawable.StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_pressed), rounded(onSurfaceAlphaVc306(), ChatThemeVc306.rSm))
+                addState(intArrayOf(), rounded(Color.TRANSPARENT, ChatThemeVc306.rSm))
+            }
+        fun menuRow(glyph: String, label: String, onClick: () -> Unit) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rowBg()
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                setMinimumHeight(dp(ChatThemeVc306.touchTarget))
+                contentDescription = label
+                setOnClickListener { dlgHolder?.dismiss(); onClick() }
+            }
+            row.addView(android.widget.ImageView(this@MainActivity).apply {
+                setImageDrawable(pathIconVc306(glyph, th.text, chatIconSizeVc307(ChatThemeVc306.iconSm)))
+                layoutParams = LinearLayout.LayoutParams(dp(chatIconSizeVc307(ChatThemeVc306.iconSm)), dp(chatIconSizeVc307(ChatThemeVc306.iconSm)))
+            })
+            row.addView(TextView(this@MainActivity).apply {
+                // `this.` eksplisit: parameter `text` milik showBubbleMenu
+                // men-shadow TextView.text di dalam apply.
+                this.text = label
+                textSize = 15f
+                setTextColor(th.text)
+                setPadding(dp(12), 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            col.addView(row)
+        }
+        menuRow("copy", "Salin pesan") { uiCopy(text) }
+        menuRow("select", "Salin sebagian…") { showSelectableTextDialog(text) }
+        menuRow("back", "Balas pesan ini") { onReply() }
+        val scroll = android.widget.ScrollView(this).apply { addView(col) }
+        val dlg = android.app.AlertDialog.Builder(this).setView(scroll).create()
+        dlgHolder = dlg
+        dlg.show()
+        try { dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)) } catch (e: Exception) {}
     }
 
     /** vc169: dialog teks penuh yang bisa diseleksi native — salin
-     *  sebagian tanpa merebut gesture bubble (tap-lipat/buka aman). */
+     *  sebagian tanpa merebut gesture bubble (tap-lipat/buka aman).
+     *  vc308 Worker A (SS1): restyle ke standar vc306/vc307 via thDialog
+     *  (judul tanpa emoji, teks th.text dari currentTheme(), wadah
+     *  rounded rXl, tombol "Tutup" thBtn) — seleksi teks native
+     *  (setTextIsSelectable) DIPERTAHANKAN. */
     private fun showSelectableTextDialog(text: String) {
-        val sv = android.widget.ScrollView(this)
-        val tv = TextView(this).apply {
+        val th = currentTheme()
+        val bodyTv = TextView(this).apply {
             this.text = text
             textSize = 15f
-            setTextColor(TEXT)
+            setTextColor(th.text)
             setTextIsSelectable(true)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(0, dp(4), 0, dp(4))
         }
-        sv.addView(tv)
-        android.app.AlertDialog.Builder(this)
-            .setTitle("✂️ Pilih teks untuk disalin")
-            .setView(sv)
-            .setPositiveButton("Tutup", null)
-            .show()
+        thDialog("Pilih teks untuk disalin", bodyTv, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
     }
 
     fun uiSetAgent(id: String) {
@@ -1066,6 +1179,125 @@ class MainActivity : Activity() {
         runOnUiThread { recreate() }
     }
 
+    // ===== vc308 Worker C (BUG 4): ganti tema gelap<->cerah TANPA restart =====
+    //
+    // Pendekatan yang dipilih: (a) recreate() saat toggle tema — BUKAN
+    // re-theme in-place. Alasan (berdasarkan bukti dari source):
+    //  - chatList berisi >=10 jenis view yang warnanya di-bake saat dibuat
+    //    (bubble user, asisten tanpa bubble, tool mono, error, meta, think
+    //    pill, kartu tone claim/stuck, kartu kerja, kartu tanya, ringkasan
+    //    giliran, footnote, kartu artefak, bubble tabel, tombol muat) +
+    //    drawer + session bar + composer + tab bar + wizard + terminal.
+    //    Rebuild in-place dari histori DB akan KEHILANGAN view transien
+    //    (think pill, kartu tone, ringkasan/footnote giliran — tidak
+    //    tersimpan di DB) dan tetap berisiko ada jenis view yang kelewat.
+    //  - recreate() membangun ulang SEMUA view dari currentTheme() yang
+    //    baru — nol jenis view yang kelewat — dan sudah ada presedennya di
+    //    app ini (uiSetClassic di atas; jalur resume checkpoint vc304/
+    //    vc305 memang dirancang untuk Activity/proses yang mati).
+    //  - recreate() SAJA tidak cukup: BG/PANEL/TEXT/DIM dulu val gelap
+    //    hardcoded (lihat atas) — kini getter, jadi recreate benar-benar
+    //    bertema baru.
+    //  - Sapaan ganda TIDAK terjadi: addBubble/addMsg tidak pernah menulis
+    //    histori (addHistory hanya di 4 situs kirim/jawab giliran), jadi
+    //    sapaan onCreate tetap tepat 1x, sama seperti cold start; 40 baris
+    //    histori dimuat ulang dari DB (pesan yang terkirim selama sesi
+    //    sudah tersimpan di sana).
+    //  - Yang recreate TIDAK selamatkan (didokumentasikan, sama seperti
+    //    cold start): artefak transien giliran lama yang tidak tersimpan
+    //    (think pill settled, kartu tone, ringkasan/footnote giliran) dan
+    //    posisi scroll (kembali ke bawah). Giliran yang SEDANG berjalan
+    //    justru DILINDUNGI: recreate ditunda sampai giliran selesai.
+    private var currentTabVc308: String = "Beranda"
+    @Volatile private var pendingThemeRecreateVc308: Boolean = false
+
+    /** Benar bila ada giliran sedang berjalan. Selama true, recreate()
+     *  DILARANG: WebView + DsAgent mati bersama Activity lama dan giliran
+     *  putus di tengah jalan (mesin latar vc304/vc305). */
+    private fun turnRunningVc308(): Boolean {
+        if (turnActive || internalTurn) return true
+        return try { ::agent.isInitialized && agent.busy } catch (e: Exception) { false }
+    }
+
+    /** Terapkan tema baru ke seluruh UI via recreate(). Bila giliran sedang
+     *  berjalan, recreate DITUNDA (pendingThemeRecreateVc308, dicek di
+     *  endUserTurn() + onResume()); Setup sendiri sudah langsung bertema
+     *  baru lewat refreshSetupNative() di call-site. */
+    private fun applyThemeRecreateVc308() {
+        if (turnRunningVc308()) {
+            pendingThemeRecreateVc308 = true
+            runOnUiThread { Toast.makeText(this, "Tema disimpan — diterapkan penuh setelah giliran selesai.", Toast.LENGTH_SHORT).show() }
+            return
+        }
+        pendingThemeRecreateVc308 = false
+        saveThemeRecreateStateVc308()
+        runOnUiThread { recreate() }
+    }
+
+    /** Simpan state minimal yang TIDAK selamat dari recreate (tidak ada
+     *  onSaveInstanceState di Activity ini; view dibuat programatik tanpa
+     *  ID sehingga Android tidak menyimpan state-nya otomatis). Sesi,
+     *  histori, dan checkpoint giliran sudah persisten (prefs/DB) dan
+     *  tidak perlu disimpan di sini. */
+    private fun saveThemeRecreateStateVc308() {
+        try {
+            val ed = getSharedPreferences("harness", MODE_PRIVATE).edit()
+            ed.putBoolean("vc308Recreate", true)
+            ed.putString("vc308LastTab", currentTabVc308)
+            if (::chatInput.isInitialized) ed.putString("vc308Draft", chatInput.text.toString())
+            if (replyTargetText != null) ed.putString("vc308ReplyTarget", replyTargetText) else ed.remove("vc308ReplyTarget")
+            ed.apply()
+        } catch (e: Exception) {}
+    }
+
+    /** Pulihkan tab + draf + target balas sesudah recreate (dipanggil di
+     *  onCreate sesudah buildUi). Tanpa ini recreate selalu mendarat di
+     *  Beranda dengan draf hilang. Strict no-op pada cold start biasa
+     *  (marker vc308Recreate tidak ada) — state basi tidak pernah
+     *  dipulihkan. */
+    private fun restoreThemeRecreateStateVc308() {
+        try {
+            val p = getSharedPreferences("harness", MODE_PRIVATE)
+            if (!p.getBoolean("vc308Recreate", false)) return
+            val tab = p.getString("vc308LastTab", "") ?: ""
+            val draft = p.getString("vc308Draft", "") ?: ""
+            val reply = p.getString("vc308ReplyTarget", null)
+            // Bersihkan sekali pakai — jangan sampai recreate berikutnya
+            // (mis. ganti UI mode) memulihkan tab/draf basi.
+            p.edit().remove("vc308Recreate").remove("vc308LastTab").remove("vc308Draft").remove("vc308ReplyTarget").apply()
+            if (draft.isNotEmpty() && ::chatInput.isInitialized) {
+                chatInput.setText(draft)
+                try { chatInput.setSelection(draft.length) } catch (e: Exception) {}
+            }
+            if (!reply.isNullOrBlank()) { replyTargetText = reply; refreshReplyChip() }
+            val okTabs = setOf("Beranda", "Chat", "Terminal", "Profil", "Setup", "Grup", "Web")
+            if (tab in okTabs) showTab(tab, deferRefresh = true)
+        } catch (e: Exception) {}
+    }
+
+    /** Dicek di akhir giliran + onResume: bila ganti tema sempat ditunda
+     *  karena giliran berjalan dan kini tidak ada giliran/antrean yang akan
+     *  jalan, terapkan recreate sekarang. Dijeda 1 dtk + dicek ulang supaya
+     *  giliran lanjutan (follow-up/auto, dijadwalkan async lewat UI thread)
+     *  tidak ikut terbunuh; guard isDestroyed mencegah recreate ganda dari
+     *  instance lama bila user sempat toggle 2x. */
+    private fun maybeApplyPendingThemeVc308() {
+        if (!pendingThemeRecreateVc308) return
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                if (isDestroyed || isFinishing) return@postDelayed
+                if (!pendingThemeRecreateVc308) return@postDelayed
+                if (turnRunningVc308()) return@postDelayed
+                if (autoQueue.isNotEmpty()) return@postDelayed
+                val fqEmpty = try { synchronized(followQueue) { followQueue.isEmpty() } } catch (e: Exception) { true }
+                if (!fqEmpty) return@postDelayed
+                pendingThemeRecreateVc308 = false
+                saveThemeRecreateStateVc308()
+                runOnUiThread { recreate() }
+            } catch (e: Exception) {}
+        }, 1000)
+    }
+
     /** T10: durasi giliran yang waras. requestStartMs bisa 0 bila giliran
      *  dipulihkan dari checkpoint di proses baru (MIUI kill) atau lewat
      *  jalur latar — tanpa guard, totalMs jadi epoch (1,79 M dtk di
@@ -1083,13 +1315,35 @@ class MainActivity : Activity() {
         return String.format(java.util.Locale.US, "%.1f", ms / 1000.0).replace('.', ',')
     }
 
-    private val BG = Color.rgb(0, 0, 0)
-    private val PANEL = Color.rgb(24, 24, 24)
-    private val ACCENT = Color.rgb(77, 140, 255)
-    private val TEXT = Color.rgb(235, 238, 245)
-    private val DIM = Color.rgb(150, 158, 175)
+    // vc306 (C1): BG = fallback solid bila gradasi halaman tidak bisa
+    // dipakai — surface Mist dark #1C1F28 (BUKAN pure black; dsh-go
+    // menolak pure black). Gradasi aslinya di pageBackground().
+    // vc308 Worker C (BUG 4): BG/PANEL/TEXT/DIM DULU `val` GELAP
+    // hardcoded (darkSurface / rgb(24,24,24) / darkText / darkDim) yang
+    // di-init SEKALI saat Activity dibuat — tanpa recreate nilainya tidak
+    // pernah berubah, dan recreate pun meng-init ulang mereka ke konstanta
+    // gelap yang sama (akar #3 laporan). Kini getter yang membaca
+    // currentTheme() segar tiap akses: (a) semua view yang dibangun
+    // sesudah ganti tema memakai tema baru, (b) recreate() benar-benar
+    // membangun ulang UI dengan tema baru. ACCENT tetap val: aksen Mist
+    // #4B67B4 sama di kedua tema. PANEL (= permukaan kartu, dulu
+    // #181818) dipetakan ke th.card (#1C1F28 dark / #FBFCFF light) —
+    // di dark praktis identik, di light akhirnya ikut tema.
+    private val BG: Int get() = currentTheme().bg
+    private val PANEL: Int get() = currentTheme().card
+    // vc306 (C1/E6): satu aksen Mist — solid #4B67B4 (putih di atasnya
+    // 5.39:1, lulus AA). Dipakai untuk tombol solid berlatar aksen.
+    // CATATAN (koordinator merge): 3 pemakaian teks ACCENT lama
+    // (label "❓", label pengirim room, label "Koordinator #") sudah
+    // dipindah ke th.tileTint / Color.WHITE — teks #4B67B4 di atas
+    // surface dark hanya 3.06:1 (gagal AA), tileTint 7.73:1.
+    private val ACCENT = ChatThemeVc306.accentSolid
+    private val TEXT: Int get() = currentTheme().text
+    private val DIM: Int get() = currentTheme().dim
     // vc180: tema Setup (Gelap/Terang/Sistem) — dibaca segar tiap render Setup.
-    private data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int)
+    // vc306 (C1): tambah slot `faint` (tersier #9A9EA9 dark / #646974
+    // light) untuk timestamp/footnote/placeholder/status.
+    private data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val faint: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int)
     private fun currentTheme(): ThemeColors {
         val mode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
         val dark = when (mode) {
@@ -1097,9 +1351,23 @@ class MainActivity : Activity() {
             "sistem" -> (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
             else -> true
         }
-        return if (dark) ThemeColors(Color.rgb(0, 0, 0), Color.rgb(28, 28, 28), Color.rgb(72, 72, 72), Color.rgb(235, 238, 245), Color.rgb(150, 158, 175), Color.rgb(38, 38, 38), Color.rgb(107, 155, 255), Color.rgb(28, 28, 28), Color.rgb(66, 30, 30), Color.rgb(255, 170, 160))
-        else ThemeColors(Color.rgb(244, 246, 251), Color.rgb(255, 255, 255), Color.rgb(226, 232, 240), Color.rgb(15, 27, 51), Color.rgb(100, 116, 139), Color.rgb(227, 236, 253), Color.rgb(46, 107, 230), Color.rgb(226, 232, 240), Color.rgb(253, 232, 232), Color.rgb(185, 28, 28))
+        // vc306 (C1): palet Mist. Dark: bg surface #1C1F28, card #1C1F28,
+        // stroke #343841, teks #E6E9F0, dim #B6BBC5, faint #9A9EA9,
+        // tileBg #232730, tileTint (aksen teks) #97B1F0, track #14171E.
+        // Light: bg surface #F0F4FD, card #FBFCFF, stroke #DCE0E8,
+        // teks #1E232E, dim #4F5562, faint #646974, tileBg dipertahankan
+        // #E3ECFD (C1 tidak menetapkan tileBg light), tileTint #2E6BE6
+        // (approve blue, sudah lulus AA 4.81:1 — TETAP).
+        return if (dark) ThemeColors(ChatThemeVc306.darkSurface, ChatThemeVc306.darkSurface, ChatThemeVc306.darkStroke, ChatThemeVc306.darkText, ChatThemeVc306.darkDim, ChatThemeVc306.darkFaint, ChatThemeVc306.darkTileBg, ChatThemeVc306.darkAccentText, ChatThemeVc306.darkContainerLow, Color.rgb(66, 30, 30), Color.rgb(255, 170, 160))
+        else ThemeColors(ChatThemeVc306.lightSurface, ChatThemeVc306.lightCard, Color.rgb(220, 224, 232), ChatThemeVc306.lightText, ChatThemeVc306.lightDim, ChatThemeVc306.lightFaint, Color.rgb(227, 236, 253), ChatThemeVc306.approveBlue, Color.rgb(226, 232, 240), Color.rgb(253, 232, 232), Color.rgb(185, 28, 28))
     }
+    // vc306 (C1): gradasi vertikal halaman chat Mist — dark #1D222C →
+    // #1B1C23, light #EBF1FE → #F6F7FC. Dipakai di chatBox + refreshChatChrome;
+    // th.bg (surface) tetap jadi fallback solid di tempat lain.
+    private fun pageBackground(): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (isDarkTheme()) ChatThemeVc306.darkBgTop else ChatThemeVc306.lightBgTop,
+            if (isDarkTheme()) ChatThemeVc306.darkBgBottom else ChatThemeVc306.lightBgBottom))
     private fun isDarkTheme(): Boolean {
         val mode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
         return when (mode) {
@@ -1126,7 +1394,18 @@ class MainActivity : Activity() {
                 background = if (sel) rounded(ACCENT, 100) else null
                 setTextColor(if (sel) Color.WHITE else th.dim)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener { getSharedPreferences("harness", MODE_PRIVATE).edit().putString("themeMode", key).apply(); refreshSetupNative() }
+                setOnClickListener {
+                    // vc308 Worker C (BUG 4): dulu HANYA tulis themeMode +
+                    // refreshSetupNative() — tanpa recreate(), chatList +
+                    // kartu + composer yang sudah di-bake tidak pernah ikut
+                    // tema baru. Kini recreate() (ditunda bila giliran
+                    // berjalan); refreshSetupNative() tetap jalan dulu
+                    // supaya Setup sendiri langsung bertema baru.
+                    val old = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
+                    getSharedPreferences("harness", MODE_PRIVATE).edit().putString("themeMode", key).apply()
+                    refreshSetupNative()
+                    if (key != old) applyThemeRecreateVc308()
+                }
             })
         }
         return row
@@ -1149,6 +1428,10 @@ class MainActivity : Activity() {
     private var groupHead2Ref: HorizontalScrollView? = null
     private var groupDividerRef: View? = null
     private var groupInputRef: EditText? = null
+    // vc309 Worker B: ref baris composer grup — latarnya HARUS ikut tema
+    // (lihat buildGroupBox); tanpa ref ini refreshGroupChrome tidak bisa
+    // mewarnai ulang pill composer saat tema berganti.
+    private var groupInputRowRef: LinearLayout? = null
     private var chatSessionBarRef: LinearLayout? = null
     private var chatComposerRef: ViewGroup? = null
     private var tabBarRef: LinearLayout? = null
@@ -1156,10 +1439,31 @@ class MainActivity : Activity() {
     private fun agentRoleOverride(id: String): String? =
         getSharedPreferences("harness", MODE_PRIVATE).getString("agentRole_" + id, "")?.takeIf { it.isNotBlank() }
 
+    // vc309 Worker B: tombol aksi drawer ("Menu Chat") — SATU bentuk untuk
+    // semua tombol SESI & LAINNYA supaya tidak ada lagi yang terpotong:
+    // teks UTUH tanpa sufiks "…" (sufiks itu yang membuat "Sesi…" terbaca
+    // sebagai "SESI..." terpotong), isAllCaps=false (Button bawaan allCaps
+    // mengubah "Cari di chat…" jadi "CARI DI CHAT…" — lebih panjang dan
+    // terlihat seperti terpotong), sentence case, lebar MATCH_PARENT,
+    // tinggi sentuh 48dp (touchTarget), warna ikut tema (tileBg/teks).
+    private fun drawerBtnVc309(label: String, onClick: () -> Unit): Button = Button(this).apply {
+        val th = currentTheme()
+        text = label
+        isAllCaps = false
+        textSize = 14f
+        background = rounded(th.tileBg, ChatThemeVc306.rMd)
+        setTextColor(th.text)
+        minHeight = dp(ChatThemeVc306.touchTarget)
+        setPadding(dp(14), dp(10), dp(14), dp(10))
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(3), 0, dp(3)) }
+        setOnClickListener { onClick() }
+    }
+
     private fun thBtn(label: String, accent: Boolean = false, onClick: () -> Unit): Button = Button(this).apply {
         val th = currentTheme()
         text = label
-        background = rounded(if (accent) ACCENT else th.tileBg, 12)
+        background = rounded(if (accent) ACCENT else th.tileBg, ChatThemeVc306.rMd)
         setTextColor(if (accent) Color.WHITE else th.text)
         setPadding(dp(12), dp(10), dp(12), dp(10))
         minWidth = 0; minHeight = 0
@@ -1211,7 +1515,7 @@ class MainActivity : Activity() {
     private fun thDialog(title: String, body: View, buttons: List<Triple<String, Boolean, (android.app.AlertDialog) -> Unit>>, danger: Set<String> = emptySet()): android.app.AlertDialog {
         val th = currentTheme()
         var dlgHolder: android.app.AlertDialog? = null
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(10)); background = rounded(th.card, 18) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(10)); background = rounded(th.card, ChatThemeVc306.rXl) }
         if (title.isNotBlank()) col.addView(tv(title, 16f, th.text, true).apply { setPadding(0, 0, 0, dp(10)) })
         col.addView(body)
         if (buttons.isNotEmpty()) {
@@ -1291,7 +1595,7 @@ class MainActivity : Activity() {
     private fun refreshChatChrome() {
         val th = currentTheme()
         try {
-            containers["Chat"]?.setBackgroundColor(th.bg)
+            containers["Chat"]?.background = pageBackground() // vc306 (C1): gradasi Mist, bukan solid
             chatSessionBarRef?.setBackgroundColor(th.card)
             if (::sessionTitleTv.isInitialized) sessionTitleTv.setTextColor(th.text)
             chatSessionBarRef?.let { bar ->
@@ -1310,29 +1614,15 @@ class MainActivity : Activity() {
             } }
             artifactDividerRef?.setBackgroundColor(th.stroke)
             artifactPanelRoot?.setBackgroundColor(th.bg)
-            chatComposerRef?.setBackgroundColor(th.card)
-            if (::chatInput.isInitialized) { chatInput.setTextColor(th.text); chatInput.setHintTextColor(th.dim) }
-            chatComposerRef?.let { pill ->
-                for (i in 0 until pill.childCount) {
-                    val v = pill.getChildAt(i)
-                    if (v is TextView) {
-                        if (v.text.toString() == "+") v.setTextColor(th.text)
-                        else if (v.text.toString().isEmpty()) for (d in v.compoundDrawables) d?.setTint(th.text)
-                    } else if (v is ViewGroup) {
-                        // vc223: tombol kini di dalam klaster kiri/kanan.
-                        for (j in 0 until v.childCount) {
-                            val w = v.getChildAt(j)
-                            if (w is TextView) {
-                                if (w.text.toString() == "+") w.setTextColor(th.text)
-                                else if (w.text.toString().isEmpty()) for (d in w.compoundDrawables) d?.setTint(th.text)
-                            }
-                        }
-                    }
-                }
-            }
-            liveCardBox?.let { lc -> lc.background = rounded(th.card, 16).apply { setStroke(dp(1), Color.rgb(24, 178, 122)) } }
-            liveCardTv?.setTextColor(th.tileTint)
+            // vc306 Worker B: chrome kaca + tombol composer + strip + header
+            // (ganti setBackgroundColor(th.card) + loop tint lama yang
+            // mengasumsikan tombol TextView "+" / mic kosong — kini semua
+            // tombol composer adalah Button dengan ikon drawable).
+            applyVc306Chrome()
+            if (::chatInput.isInitialized) { chatInput.setTextColor(th.text); chatInput.setHintTextColor(if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint) }
             replyChipTv?.setTextColor(th.tileTint)
+            // vc307: tint ikon Path "back" chip balas ikut warna teks chip.
+            replyChipTv?.let { for (d in it.compoundDrawables) d?.setTint(th.tileTint) }
         } catch (e: Exception) {}
     }
 
@@ -1347,7 +1637,10 @@ class MainActivity : Activity() {
                 for (i in 0 until head.childCount) {
                     val v = head.getChildAt(i)
                     if (v is Button) { v.background = rounded(th.tileBg, 16); v.setTextColor(th.text) }
-                    else if (v is TextView) v.setTextColor(th.text)
+                    // vc309 Worker B: "tanpa thinking" tetap DIM (dulu loop
+                    // ini menimpanya jadi th.text — sama gelapnya dengan
+                    // judul — sehingga status mode tidak lagi tersier).
+                    else if (v is TextView) v.setTextColor(if (v.text.toString() == "tanpa thinking") th.dim else th.text)
                 }
             }
             groupHead2Ref?.let { h2 ->
@@ -1356,7 +1649,12 @@ class MainActivity : Activity() {
                 if (rencana is Button) { rencana.background = rounded(th.tileBg, 16); rencana.setTextColor(th.text) }
             }
             groupInputRef?.setTextColor(th.text)
-            groupInputRef?.setHintTextColor(th.dim)
+            // vc309 Worker B: composer grup ikut tema saat refresh — latar
+            // kaca seperti composer 1-1 + hint tersier (faint), bukan dim.
+            // Tanpa baris ini composer grup tetap hitam walau tema cerah
+            // (latar hardcoded di build tidak pernah disentuh refresh).
+            groupInputRowRef?.background = glassDrawableVc306(ChatThemeVc306.rXl, isDarkTheme())
+            groupInputRef?.setHintTextColor(if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint)
             if (::groupTypingTv.isInitialized) groupTypingTv.setTextColor(th.dim)
             groupReplyChipTv?.setTextColor(th.tileTint)
             refreshGroupChips()
@@ -1372,6 +1670,22 @@ class MainActivity : Activity() {
         // harus selesai sebelum routing routine dipercaya.
         try { Automation.migrateSessionIds(this) } catch (e: Exception) {}
         buildUi()
+        // vc309 Worker A — edge-to-edge penuh + bar ikut tema (§2 laporan):
+        // apply di onCreate sesudah buildUi() supaya tiap recreate() —
+        // termasuk toggle tema vc308 — otomatis menerapkan bar yang benar.
+        // JANGAN panggil di call-site toggle: recreate yang ditunda saat
+        // giliran berjalan akan membuat bar dan konten tidak cocok sementara.
+        // Listener inset dipasang di content view (root LinearLayout
+        // buildClassicUi); semua tab hidup di dalam stack di root itu
+        // sehingga satu listener mencakup Beranda/Chat/Grup/Terminal/
+        // Profil/Setup/Web. Gagal apply tidak pernah crash (try/catch di
+        // dalam helper).
+        try { SystemBarsVc309.applySystemBars(window, isDarkTheme()) } catch (e: Exception) {}
+        try {
+            val content = window.decorView.findViewById<View>(android.R.id.content)
+            if (content != null) SystemBarsVc309.installEdgeToEdge(window, content)
+        } catch (e: Exception) {}
+        restoreThemeRecreateStateVc308()
         Thread {
             try {
                 val rows = MemoryDb.get(this).historyForSession(currentSessionId, 40)
@@ -1509,9 +1823,15 @@ class MainActivity : Activity() {
         for (name in listOf("Beranda", "Chat", "Terminal", "Profil", "Setup")) {
             val b = Button(this).apply {
                 text = name; textSize = 10.5f
-                minWidth = 0; minHeight = 0; setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+                // vc307 Worker B: ikon tab pakai sizedIconVc306 (bounds dp
+                // eksplisit + skala smallest-width), BUKAN intrinsic 24dp
+                // mentah — di layar kecil ikon mengecil, di tablet membesar;
+                // hit area tetap >= 48dp (minHeight eksplisit, dulu 0).
+                minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+                setMinimumHeight(dp(ChatThemeVc306.touchTarget))
+                setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
                 val tabRes = when (name) { "Beranda" -> R.drawable.ic_home; "Chat" -> R.drawable.ic_chat; "Terminal" -> R.drawable.ic_keyboard; "Profil" -> R.drawable.ic_person; else -> R.drawable.ic_settings }
-                setCompoundDrawablesWithIntrinsicBounds(null, iconDrawable(tabRes, DIM), null, null)
+                setCompoundDrawables(null, sizedIconVc306(tabRes, DIM, chatIconSizeVc307(ChatThemeVc306.iconXl)), null, null)
                 compoundDrawablePadding = dp(2)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 setOnClickListener { showTab(name) }
@@ -1529,22 +1849,44 @@ class MainActivity : Activity() {
         // terbesar) — dibangun lazy via ensureWeb() (post pertama / tap Web).
         tabStack = stack
 
-        // Chat
-        val chatBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG) }
+        // Chat — vc306 (C1): latar gradasi Mist via pageBackground().
+        val chatBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = pageBackground() }
         chatScroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f) }
-        chatList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)) }
+        chatList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(88), dp(14), dp(12)) }
+        // vc306 Worker B: padding atas 88 = header kaca mengambang
+        // (margin 8 + bar 56 + fade 12) + jeda 12, agar pesan pertama
+        // tidak tertutup header saat daftar di-scroll ke atas.
         chatScroll.addView(chatList)
         chatBox.addView(chatScroll)
         // T8: tombol lompat ke pesan terbaru (ada di UI lama, hilang di native)
+        // vc308 Worker A (SS2): tombol ini PINDAH ke baris OTOMASI
+        // (autoTopRow) — bukan lagi bar biru solid full-width mengambang di
+        // atas composer. Dibangun di sini (butuh chatScroll + lb untuk
+        // listener scroll di bawah), ditempel ke autoTopRow di bawah (baris
+        // itu dibuat setelah blok ini). Styling ikut pill OTOMASI: latar
+        // transparan (autoPillBgVc307), teks/ikon th.text, hit area 48dp.
+        // Fungsi TETAP: scroll ke bawah + sembunyikan diri.
         val lb = Button(this).apply {
-            text = "↓ Pesan Terbaru"
-            setTextColor(Color.WHITE)
-            background = rounded(Color.rgb(46, 107, 230), 18)
+            text = "Pesan Terbaru"
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            background = autoPillBgVc307()
+            setTextColor(currentTheme().text)
+            minWidth = 0
+            minHeight = dp(ChatThemeVc306.touchTarget)
+            setMinimumHeight(dp(ChatThemeVc306.touchTarget))
+            setPadding(dp(14), 0, dp(14), 0)
+            gravity = Gravity.CENTER
+            contentDescription = "Pesan Terbaru"
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
             visibility = View.GONE
+            setCompoundDrawables(pathIconVc306("down", currentTheme().text, chatIconSizeVc307(ChatThemeVc306.iconXs)), null, null, null)
+            compoundDrawablePadding = dp(6)
             setOnClickListener { chatScroll.fullScroll(View.FOCUS_DOWN); visibility = View.GONE }
         }
         latestBtn = lb
-        chatBox.addView(lb)
+        // TIDAK lagi chatBox.addView(lb) — ditempel ke autoTopRow di bawah.
         chatScroll.setOnScrollChangeListener { _, _, _, _, _ ->
             val nb = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
             lb.visibility = if (nb) View.GONE else View.VISIBLE
@@ -1555,6 +1897,12 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             setBackgroundColor(PANEL)
             setPadding(dp(12), dp(8), dp(8), dp(8))
+            // vc306 Worker B: session bar dilebur ke title pill header kaca
+            // (C5) — disembunyikan, BUKAN dihapus: ref + penulis judulnya
+            // (sessionTitleTv) tetap hidup agar switch/rename sesi tetap
+            // jalan; aksinya pindah ke header (menu → drawer) + drawer
+            // ("Sesi…", "Cari di chat…", "Grup…", "Artefak…").
+            visibility = View.GONE
         }
         sessionTitleTv = TextView(this).apply {
             text = "🗂️ " + MemoryDb.get(this@MainActivity).sessionTitle(currentSessionId)
@@ -1590,10 +1938,19 @@ class MainActivity : Activity() {
         }
         drawerRoot.addView(drawerScrim, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        val drawerW = dp(300)
+        // vc309 Worker B: lebar 320dp (dulu 300dp) — memberi napas 20dp
+        // ekstra untuk label panjang di drawer (chip AKSI CEPAT vertikal +
+        // checkbox PENGATURAN PESAN) tanpa melanggar batas drawer Material
+        // (lebar layar − 56dp). setChatDrawer() memakai lebar panel aktual
+        // saat menutup, jadi tidak ada konstanta 300 yang tertinggal.
+        val drawerW = dp(320)
         val drawerPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(20, 20, 20))
+            // vc308 Worker C (BUG 4): dulu rgb(20,20,20) hardcoded — panel
+            // drawer gelap walau tema cerah (diperbaiki juga oleh
+            // refreshChatChrome saat masuk tab Chat; nilai bangun ini
+            // membuat cold start cerah benar sejak awal).
+            setBackgroundColor(currentTheme().card)
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
         val drawerScroll = ScrollView(this).apply {
@@ -1613,23 +1970,23 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         drawerHead.addView(Button(this).apply {
+            // vc309 Worker B: "Tutup" ikut tema (dulu bg gelap hardcoded
+            // rgb(34,34,34) + allCaps bawaan Button) + hit area 48dp.
             text = "Tutup"
-            background = rounded(Color.rgb(34, 34, 34), 16)
+            isAllCaps = false
+            textSize = 13f
+            background = rounded(currentTheme().tileBg, ChatThemeVc306.rMd)
             setTextColor(TEXT)
-            minWidth = 0; minHeight = 0
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
             setOnClickListener { setChatDrawer(false) }
         })
         drawerPanel.addView(drawerHead)
-        // T1: kartu kerja live klasik (sumber sama dgn React: turnCkpt/turnJournal)
-        liveCardBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(Color.rgb(18, 18, 18), 16).apply { setStroke(dp(1), Color.rgb(24, 178, 122)) }
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            visibility = View.GONE
-        }
-        liveCardTv = TextView(this).apply { setTextColor(Color.rgb(190, 220, 255)); textSize = 12f }
-        liveCardBox!!.addView(liveCardTv)
-        chatBox.addView(liveCardBox)
+        // vc306 Worker B (C10): kartu live lama DIHAPUS — diganti activity
+        // strip kapsul kaca (buildActivityStripVc306) yang dibangun di
+        // bagian composer dan ditempel ke chatBox tepat di atas input bar.
+        // Logika refresh-nya (turnCkpt/turnJournal) dipertahankan di
+        // refreshLiveCard(); liveCardBox/liveCardTv menunjuk view strip baru.
         ctxCheck = CheckBox(this).apply { text = "Sisipkan konteks HP (app aktif, baterai)"; isChecked = true; setTextColor(DIM); textSize = 12f }
         drawerPanel.addView(TextView(this).apply {
             text = "PENGATURAN PESAN"; setTextColor(DIM); textSize = 11f
@@ -1653,12 +2010,18 @@ class MainActivity : Activity() {
         // v4.36.0 (T16): composer SATU pill ala messenger referensi — tombol +
         // kiri & mic/panah-kirim kanan hidup DI DALAM pill; panah kirim hanya
         // muncul saat ada teks (mic tampil saat kosong). Listener dipertahankan.
-        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); setPadding(dp(12), dp(6), dp(12), dp(12)) }
+        // vc306 Worker B (C9): inputRow vertikal — baris OTOMASI (vc307,
+        // di ATAS composer pill) + composer pill. Tab bar bawah
+        // dipertahankan (E3).
+        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); setPadding(dp(12), dp(6), dp(12), dp(12)) }
         // vc223: composer dibangun ulang sebagai RelativeLayout — input
         // dijangkar di antara klaster kiri dan kanan (tanpa weight).
         val composerPill = android.widget.RelativeLayout(this).apply {
-            background = rounded(Color.rgb(38, 38, 38), 18)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            // C9: kaca chrome radius xl 28 (vc307: footer bawah sudah tidak
+            // ada — pill otomasi pindah ke atas — radius selalu 28, ikut
+            // state di refreshComposerButtonsVc306() via applyVc306Chrome().
+            background = glassDrawableVc306(ChatThemeVc306.rXl, isDarkTheme())
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         // vc223: klaster kiri/kanan untuk jangkar (tanpa weight).
@@ -1683,11 +2046,18 @@ class MainActivity : Activity() {
         chatInput = EditText(this).apply {
             hint = "Perintah untuk asisten…"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setTextColor(TEXT); setHintTextColor(DIM)
+            // vc306 Worker B (C9): teks 15sp/1.45, hint tersier, max 6 baris,
+            // Enter = baris baru (inputType multi-line, tanpa IME_ACTION_SEND).
+            // Warna kursor dibiarkan default sistem: setTextCursorDrawable
+            // butuh API 29+ dan compileSdk tree ini belum terverifikasi.
+            textSize = 15f
+            setLineSpacing(0f, 1.45f)
+            setTextColor(currentTheme().text)
+            setHintTextColor(if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint)
             background = null
             setPadding(dp(8), dp(8), dp(8), dp(8))
             minLines = 1
-            maxLines = 5
+            maxLines = 6
             minWidth = dp(56)
             layoutParams = android.widget.RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 addRule(android.widget.RelativeLayout.END_OF, leftCluster.id)
@@ -1695,67 +2065,56 @@ class MainActivity : Activity() {
                 addRule(android.widget.RelativeLayout.CENTER_VERTICAL)
             }
         }
-        leftCluster.addView(TextView(this).apply {
-            text = "+"
-            textSize = 22f
-            setTextColor(Color.WHITE)
-            background = null
-            minWidth = 0
-            setMinimumWidth(0)
-            setPadding(dp(10), dp(0), dp(6), dp(0))
-            setOnClickListener {
-                val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                }
-                startActivityForResult(i, 44)
-            }
-        })
-        leftCluster.addView(TextView(this).apply {
-            text = "📷"
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            background = null
-            minWidth = 0
-            setMinimumWidth(0)
-            setPadding(dp(6), dp(0), dp(6), dp(0))
-            setOnClickListener { openCameraVision(false) }
-        })
+        // vc306 Worker B (C9/C13, K1/K2): tombol ＋ attach jadi Button
+        // beneran — hit 48×48, visual 44×44 (vc308: diseragamkan dengan
+        // header — dulu 36), ikon drawable ic_attach
+        // (vc307: ukuran via chatIconSizeVc306, skala smallest-width),
+        // contentDescription "Lampirkan". Kamera TIDAK lagi tombol di baris
+        // input: pindah ke dalam sheet attach (showAttachSheetVc306).
+        val attachBtn = iconBtnVc306(
+            sizedIconVc306(R.drawable.ic_attach, currentTheme().text, chatIconSizeVc307(ChatThemeVc306.iconLg)),
+            circleBtnBgVc306(onSurfaceAlphaVc306(), iconCircleVisualDpVc308 / 2, iconCircleVisualDpVc308),
+            "Lampirkan"
+        ) { showAttachSheetVc306() }
+        attachBtnVc306 = attachBtn
+        leftCluster.addView(attachBtn)
         
-        val micBtn = TextView(this).apply {
-            text = ""
-            setTextColor(Color.WHITE)
-            background = null
-            minWidth = 0
-            setMinimumWidth(0)
-            setPadding(dp(6), dp(0), dp(6), dp(0))
-            setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_mic, Color.WHITE), null, null, null)
-            setOnClickListener { startVoiceInput() }
-        }
+        // vc306 Worker B (C9/C13, K1/K2): mic + kirim jadi Button beneran —
+        // hit 48×48, visual mic 44×44 (vc308: diseragamkan — dulu 36),
+        // kirim tetap 36 (aksen solid, bukan salah satu dari keempat ini),
+        // ikon drawable, contentDescription wajib.
+        // Visibilitas diatur TERPUSAT di refreshComposerButtonsVc306():
+        // idle + kosong → mic; berjalan + kosong → stop ■; ada draft → kirim ↑.
+        val micBtn = iconBtnVc306(
+            sizedIconVc306(R.drawable.ic_mic, currentTheme().text, chatIconSizeVc307(ChatThemeVc306.iconMd)),
+            circleBtnBgVc306(onSurfaceAlphaVc306(), iconCircleVisualDpVc308 / 2, iconCircleVisualDpVc308),
+            "Mikrofon"
+        ) { startVoiceInput() }
+        micBtnVc306 = micBtn
         rightCluster.addView(micBtn)
-        val sendBtn = TextView(this).apply {
-            text = "➤"
-            textSize = 20f
-            setTextColor(Color.rgb(59, 130, 246))
-            background = null
-            minWidth = 0
-            setMinimumWidth(0)
-            setPadding(dp(6), dp(0), dp(10), dp(0))
-            visibility = View.GONE
-            setOnClickListener {
-                if (pendingAttachesVc212.isNotEmpty()) {
+        val sendBtn = iconBtnVc306(
+            pathIconVc306("up", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconMd)),
+            sendBtnBgVc306(),
+            "Kirim"
+        ) {
+            // Berjalan + draft kosong + tanpa lampiran = tombol ini tampil
+            // sebagai ■ Berhenti (lihat refreshComposerButtonsVc306).
+            if (turnActive && chatInput.text.toString().trim().isEmpty() && pendingAttachesVc212.isEmpty()) {
+                requestStopTurnVc306()
+                return@iconBtnVc306
+            }
+            if (pendingAttachesVc212.isNotEmpty()) {
                     val ctxText = chatInput.text.toString().trim()
                     if (ctxText.isEmpty()) {
-                        Toast.makeText(this@MainActivity, "Tulis konteks untuk lampiran dulu, baru tap ➤. Lampiran tidak dikirim tanpa konteks.", Toast.LENGTH_SHORT).show()
-                        return@setOnClickListener
+                        Toast.makeText(this@MainActivity, "Tulis konteks untuk lampiran dulu, baru tap Kirim. Lampiran tidak dikirim tanpa konteks.", Toast.LENGTH_SHORT).show()
+                        return@iconBtnVc306
                     }
                     val attaches = pendingAttachesVc212.toList()
                     pendingAttachesVc212.clear()
                     refreshAttachStripVc212()
                     chatInput.setText("")
                     sendPendingAttachesVc212(ctxText, attaches)
-                    return@setOnClickListener
+                    return@iconBtnVc306
                 }
                 var t = chatInput.text.toString().trim()
                 if (t.isNotEmpty()) {
@@ -1766,27 +2125,36 @@ class MainActivity : Activity() {
                     }
                     chatInput.setText(""); onUserMessage(t)
                 }
-            }
         }
+        sendBtn.visibility = View.GONE
+        sendBtn.setOnLongClickListener { showSendModeSheetVc306(); true }
         chatSendBtnRef = sendBtn
-        val autoBtn = TextView(this).apply {
-            text = "🤖"
-            textSize = 16f
-            setTextColor(Color.rgb(59, 130, 246))
-            background = null
-            minWidth = 0
-            setMinimumWidth(0)
-            setPadding(dp(6), dp(0), dp(8), dp(0))
-            setOnClickListener { showAutomationCreateDialog(if (::chatInput.isInitialized) chatInput.text.toString().trim() else "") }
+        sendBtnVc306 = sendBtn
+        // vc306 Worker B: busy state tombol aksi (C9) — spinner 14px,
+        // stroke via tint putih, di dalam lingkaran aksen 36; tampil hanya
+        // saat stop sudah diminta dan giliran masih berjalan.
+        val stopSpin = FrameLayout(this).apply {
+            background = circleBtnBgVc306(ChatThemeVc306.accentSolid, ChatThemeVc306.rLg, 36)
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+            visibility = View.GONE
+            contentDescription = "Menghentikan giliran…"
+            addView(android.widget.ProgressBar(this@MainActivity).apply {
+                isIndeterminate = true
+                if (android.os.Build.VERSION.SDK_INT >= 21) indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                layoutParams = FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER)
+            })
         }
-        rightCluster.addView(autoBtn)
+        stopSpinnerVc306 = stopSpin
+        rightCluster.addView(stopSpin)
+        // vc306 Worker B: 🤖 otomasi PINDAH dari baris input ke baris
+        // sendiri di ATAS composer (vc307, autoTopRow) — bukan lagi
+        // tombol di baris input (C9) dan bukan lagi footer (vc306).
         rightCluster.addView(sendBtn)
         chatInput.addTextChangedListener(object : android.text.TextWatcher {
-            override fun afterTextChanged(s: android.text.Editable?) {
-                val has = !s.toString().trim().isEmpty()
-                sendBtn.visibility = if (has || pendingAttachesVc212.isNotEmpty()) View.VISIBLE else View.GONE
-                micBtn.visibility = if (has) View.GONE else View.VISIBLE
-            }
+            // vc306 Worker B: visibilitas mic/kirim/stop + hint diatur
+            // terpusat di refreshComposerButtonsVc306() (satu sumber
+            // kebenaran untuk semua pemicu: ketik, lampiran, giliran).
+            override fun afterTextChanged(s: android.text.Editable?) { refreshComposerButtonsVc306() }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
@@ -1842,45 +2210,100 @@ class MainActivity : Activity() {
         chatBox.addView(replyChipTv)
         // T5: Perintah Cepat native (prefs quickChipsNative — hasil panen
         // localStorage React; ketuk = isi composer + kirim)
-        val qcScroll = HorizontalScrollView(this)
-        val qcRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(8), dp(2), dp(8), dp(2)) }
+        // vc309 Worker B: AKSI CEPAT disusun VERTIKAL (dulu HorizontalScrollView
+        // 2 kolom berdampingan — tiap chip lebih lebar dari drawer 300dp
+        // sehingga teks terpotong di kiri+kanan: "...US HP DAN BATERAI",
+        // "RINGKASAN AKTI..."). Vertikal + lebar penuh = tiap label tampil
+        // utuh; label terpanjang membungkus ke baris ke-2, bukan terpotong.
+        val qcRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         quickChipsRow = qcRow
-        qcScroll.addView(qcRow)
         drawerPanel.addView(TextView(this).apply {
             text = "AKSI CEPAT"; setTextColor(DIM); textSize = 11f
             setPadding(0, dp(12), 0, dp(4))
         })
-        drawerPanel.addView(qcScroll)
+        drawerPanel.addView(qcRow)
         refreshQuickChips()
+        // vc307 Worker B (Tugas 2): tombol OTOMASI PINDAH ke ATAS papan
+        // input text chat — baris sendiri di atas composer pill (indeks 0
+        // inputRow) — dan background-nya TRANSPARAN (autoPillBgVc307:
+        // transparan saat diam, onSurface α0.06 saat ditekan, ripple tetap
+        // terasa). Handler TIDAK BERUBAH (showAutomationCreateDialog,
+        // teks composer ikut seperti semula). Hit area tetap 48dp.
+        // Saat giliran berjalan, pill PINDAH ke samping activity strip
+        // (lihat refreshComposerButtonsVc306); baris atas disembunyikan
+        // selama itu. Tidak menutupi pesan/input: baris ini in-flow di
+        // bawah chatScroll, di atas composer — bukan overlay.
+        val autoTopRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val autoPill = Button(this).apply {
+            text = "Otomasi"
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            background = autoPillBgVc307()
+            setTextColor(currentTheme().text)
+            minWidth = 0
+            minHeight = dp(ChatThemeVc306.touchTarget)
+            setMinimumHeight(dp(ChatThemeVc306.touchTarget))
+            setPadding(dp(14), 0, dp(14), 0)
+            gravity = Gravity.CENTER
+            contentDescription = "Otomasi"
+            setCompoundDrawables(sizedIconVc306(R.drawable.ic_robot, currentTheme().text, chatIconSizeVc307(ChatThemeVc306.iconSm)), null, null, null)
+            compoundDrawablePadding = dp(6)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setOnClickListener { showAutomationCreateDialog(if (::chatInput.isInitialized) chatInput.text.toString().trim() else "") }
+        }
+        autoPillVc306 = autoPill
+        autoTopRow.addView(autoPill)
+        // vc308 Worker A (SS2): "Pesan Terbaru" berdampingan dengan pill
+        // OTOMASI di baris yang sama — weight 1 + ellipsize agar di layar
+        // sempit mengecil dengan anggun, bukan overflow/clip. OTOMASI tetap
+        // WRAP_CONTENT (lebar alaminya). Show/hide lb tetap diatur sendiri
+        // oleh listener scroll + pemanggil addMsg (visibilitas per-view,
+        // tidak tergantung visibilitas baris); perilaku baris saat giliran
+        // berjalan tetap seperti vc307 (GONE bila strip terlihat).
+        lb.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        autoTopRow.addView(lb)
+        autoTopRowVc306 = autoTopRow
+        inputRow.addView(autoTopRow, 0)
+        // vc306 Worker B (C10): activity strip kapsul kaca di atas composer
+        // — mengganti live card (lihat buildActivityStripVc306).
+        chatBox.addView(buildActivityStripVc306())
         chatBox.addView(inputRow)
         drawerPanel.addView(TextView(this).apply {
             text = "SESI & LAINNYA"; setTextColor(DIM); textSize = 11f
             setPadding(0, dp(12), 0, dp(4))
         })
-        drawerPanel.addView(Button(this).apply {
-            text = "Sesi…"
-            background = rounded(Color.rgb(34, 34, 34), 14); setTextColor(TEXT)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setOnClickListener { setChatDrawer(false); showSessionDialog() }
-        })
-        drawerPanel.addView(Button(this).apply {
-            text = "Cari di chat…"
-            background = rounded(Color.rgb(34, 34, 34), 14); setTextColor(TEXT)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setOnClickListener { setChatDrawer(false); showChatSearch() }
-        })
-        drawerPanel.addView(Button(this).apply {
-            text = "Ekspor chat…"
-            background = rounded(Color.rgb(34, 34, 34), 14); setTextColor(TEXT)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            setOnClickListener { setChatDrawer(false); uiExportChat() }
-        })
-        containers["Chat"] = chatBox
-        stack.addView(chatBox)
+        // vc309 Worker B: label TANPA sufiks "…" — "Sesi…" / "Cari di chat…"
+        // terbaca sebagai teks terpotong ("SESI...", "CARI DI CHAT...").
+        // Semua tombol memakai drawerBtnVc309 (teks utuh, sentence case,
+        // lebar penuh, 48dp, ikut tema). Handler TIDAK BERUBAH.
+        drawerPanel.addView(drawerBtnVc309("Sesi") { setChatDrawer(false); showSessionDialog() })
+        drawerPanel.addView(drawerBtnVc309("Cari di chat") { setChatDrawer(false); showChatSearch() })
+        drawerPanel.addView(drawerBtnVc309("Ekspor chat") { setChatDrawer(false); uiExportChat() })
+        // vc306 Worker B: aksi session bar lama yang belum ada di drawer
+        // ("👥 Grup", "📄" artefak) dipindah ke sini agar tidak hilang
+        // saat session bar dilebur ke title pill header kaca (C5).
+        drawerPanel.addView(drawerBtnVc309("Grup") { setChatDrawer(false); showTab("Grup") })
+        drawerPanel.addView(drawerBtnVc309("Artefak") { setChatDrawer(false); showArtifactListDialog() })
+        // vc306 Worker B (C5): header kaca mengambang — chatBox dibungkus
+        // FrameLayout agar header + top-fade melayang di atas daftar chat.
+        // containers["Chat"] = bungkusnya (showTab hanya toggle visibility).
+        // Tab bar bawah TETAP (E3) — tidak disentuh.
+        val chatWrapVc306 = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+        chatWrapVc306.addView(chatBox, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        chatWrapVc306.addView(buildGlassHeaderVc306(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        containers["Chat"] = chatWrapVc306
+        stack.addView(chatWrapVc306)
         stack.addView(drawerRoot)
+        // vc306 Worker B: normalisasi awal state composer + header.
+        refreshComposerButtonsVc306()
+        syncGlassHeaderVc306()
 
         // vc176: Grup/Terminal/Monitor/Setup/Profil/Wizard TIDAK dibangun di
         // launch — dibangun lazy saat pertama dibuka (ensureTab di showTab).
@@ -1912,7 +2335,9 @@ class MainActivity : Activity() {
             root.visibility = View.VISIBLE
             panel.animate().translationX(0f).setDuration(200).start()
         } else {
-            panel.animate().translationX(dp(300).toFloat()).setDuration(200)
+            // vc309 Worker B: geser sejauh lebar panel aktual (dulu
+            // hardcoded dp(300) — tidak cocok lagi dengan drawerW 320dp).
+            panel.animate().translationX(if (panel.width > 0) panel.width.toFloat() else dp(320).toFloat()).setDuration(200)
                 .withEndAction { root.visibility = View.GONE }.start()
         }
     }
@@ -1968,6 +2393,9 @@ class MainActivity : Activity() {
     }
 
     private fun showTab(name: String, deferRefresh: Boolean = false) {
+        // vc308 Worker C (BUG 4): catat tab aktif untuk dipulihkan sesudah
+        // recreate() ganti tema (tanpa ini selalu mendarat di Beranda).
+        currentTabVc308 = name
         if (chatDrawerRoot?.visibility == View.VISIBLE) setChatDrawer(false)
         ensureTab(name)
         if (name == "Web") ensureWeb()
@@ -2108,16 +2536,31 @@ class MainActivity : Activity() {
         return g
     }
 
+    // vc306 (C2): skala radius AppShape-setara — xs 6 / sm 10 / md 14 /
+    // lg 20 / xl 28 + stadium. rounded() lama dipertahankan apa adanya.
+    private fun roundedXs(color: Int): GradientDrawable = rounded(color, ChatThemeVc306.rXs)
+    private fun roundedSm(color: Int): GradientDrawable = rounded(color, ChatThemeVc306.rSm)
+    private fun roundedMd(color: Int): GradientDrawable = rounded(color, ChatThemeVc306.rMd)
+    private fun roundedLg(color: Int): GradientDrawable = rounded(color, ChatThemeVc306.rLg)
+    private fun roundedXl(color: Int): GradientDrawable = rounded(color, ChatThemeVc306.rXl)
+    private fun roundedStadium(color: Int): GradientDrawable = rounded(color, 100)
+
     /** Tambah pesan chat bergaya bubble. kind: user | assistant | tool | error.
      *  Return TextView isi bubble (untuk update streaming / kartu tool). */
     /** T11: gelembung asisten bertabel — satu gelembung berisi TextView
      *  per segmen teks + baris LinearLayout berbobot per tabel. Lipatan >1500 karakter
      *  tetap jalan (tampilan lipat = TextView render lama). */
     private fun buildTableBubble(text: String, bf: Float): View {
+        // vc306 (C4): tanpa bubble, sel tabel harus ikut tema saat ini —
+        // sebelumnya teks memakai konstanta TEXT (terang) di atas wadah
+        // gelap; sekarang wadah transparan jadi pakai th.text/th.tileTint.
+        val thTbl = currentTheme()
         val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(Color.rgb(38, 38, 38), 24)
-            setPadding(dp(12), dp(9), dp(12), dp(9))
+            // vc306 (C4): tabel jawaban asisten juga TANPA bubble — wadah
+            // transparan, bukan bubble gelap radius 24.
+            background = null
+            setPadding(0, dp(9), 0, dp(9))
             layoutParams = LinearLayout.LayoutParams(
                 (resources.displayMetrics.widthPixels * 0.92).toInt(),
                 LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -2131,7 +2574,7 @@ class MainActivity : Activity() {
                 val tv = TextView(this).apply {
                     this.text = MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]")
                     textSize = bf
-                    setTextColor(TEXT)
+                    setTextColor(thTbl.text)
                 }
                 content.addView(tv)
                 return
@@ -2142,7 +2585,7 @@ class MainActivity : Activity() {
                         val tv = TextView(this).apply {
                             this.text = MdMini.render(block.raw)
                             textSize = bf
-                            setTextColor(TEXT)
+                            setTextColor(thTbl.text)
                         }
                         content.addView(tv)
                     }
@@ -2162,6 +2605,8 @@ class MainActivity : Activity() {
      *  chat sehingga tabel meluber ke tepi dan baris melar. Bobot: 2 kolom
      *  jadi 3:1 (deskripsi | nilai pendek); 3+ kolom jadi semua 1. */
     private fun buildTableView(table: MdMini.Block.Table, bf: Float): View {
+        // vc306 (C4): warna tabel ikut tema (lihat buildTableBubble).
+        val thTbl = currentTheme()
         val colCount = table.header.size
         val weights: List<Float> = if (colCount == 2) listOf(3f, 1f) else List(colCount) { 1f }
         val container = LinearLayout(this).apply {
@@ -2173,14 +2618,14 @@ class MainActivity : Activity() {
         fun cellView(txt: String, header: Boolean, weight: Float): TextView = TextView(this).apply {
             this.text = MdMini.inline(txt)
             textSize = bf - 1f
-            setTextColor(if (header) Color.rgb(170, 200, 255) else TEXT)
+            setTextColor(if (header) thTbl.tileTint else thTbl.text)
             if (header) typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(dp(6), dp(4), dp(6), dp(4))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight)
         }
         val headRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.rgb(34, 34, 34))
+            setBackgroundColor(thTbl.tileBg)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -2195,7 +2640,7 @@ class MainActivity : Activity() {
             if (ri >= maxRowsVc283) break
             val tr = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                if (ri % 2 == 1) setBackgroundColor(Color.rgb(30, 30, 30))
+                if (ri % 2 == 1) setBackgroundColor(thTbl.card)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -2209,7 +2654,7 @@ class MainActivity : Activity() {
                 text = "… +${table.rows.size - maxRowsVc283} baris lagi:\n$rest"
                 typeface = android.graphics.Typeface.MONOSPACE
                 textSize = bf - 1f
-                setTextColor(TEXT)
+                setTextColor(thTbl.text)
                 setPadding(dp(6), dp(4), dp(6), dp(4))
             })
         }
@@ -2300,8 +2745,24 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    private fun addMsg(text: String, kind: String, histId: Long = -1, pre: AssistantRender? = null): TextView {
+    // vc306 (C3/C4): bubble user Mist (radius lg 20, padding 16/8, maks
+    // 82%, 16sp/1.65); pesan asisten TANPA bubble (teks full-width rata
+    // kiri, 16sp/1.65). Param `userStatus`: label status DI BAWAH bubble
+    // user — HANYA diisi bila pemanggil punya status nyata dari data
+    // Harness ("Sending"/"Queued"/dst, spek C3); di vc305 TIDAK ADA data
+    // status per pesan (grep: tidak ada string status itu di tree), jadi
+    // tidak ada pemanggil yang mengisinya dan baris status tidak tampil
+    // — JANGAN dikarang.
+    // vc304 B2: param `turn = true` = output LIVE giliran (jawaban, think,
+    // meta giliran, kartu tool). Render hanya di sesi pemilik giliran
+    // (turnSessionId == currentSessionId); di sesi lain LEWATI render —
+    // isi tidak hilang: jawaban final + kartu kerja tersimpan ke histori
+    // DB sesi pemilik dan dimuat ulang switchSession saat user kembali.
+    // Pesan user/sistem sesi aktif (turn = false) TIDAK PERNAH tertahan.
+    // journalTrace tetap jalan (jejak proses persisten untuk resume).
+    private fun addMsg(text: String, kind: String, histId: Long = -1, pre: AssistantRender? = null, turn: Boolean = false, userStatus: String? = null): TextView {
         if (kind == "tool") journalTrace(text)
+        if (turn && !SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return TextView(this)
         // vc283: parse markdown (regex per baris, MdMini) dihitung di thread
         // pemanggil — addMsg sering dipanggil dari thread agen — supaya UI
         // thread hanya membangun view. Untuk pesan histori, parse sudah
@@ -2312,12 +2773,65 @@ class MainActivity : Activity() {
         val latch = java.util.concurrent.CountDownLatch(1)
         val runnable = Runnable {
             val th = currentTheme()
+            // vc306 Worker C: hitung pesan asisten giliran berjalan (untuk
+            // ringkasan "Completed · N tool calls · M messages").
+            if (turn && kind == "assistant") turnMsgCountVc306++
+            // vc306 Worker C (C12): label claim-check + pesan berhenti
+            // StuckDetector jadi KARTU tone (visual saja — teks + logika sama).
+            if (kind == "meta" && (ChatCardsVc306.isClaimWarningText(text) || ChatCardsVc306.isStuckStoppedText(text))) {
+                val card = buildToneCardVc306(text, if (ChatCardsVc306.isClaimWarningText(text)) "warning" else "danger")
+                val wrapTone = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.START
+                    setPadding(0, dp(4), 0, dp(4))
+                }
+                wrapTone.addView(card, LinearLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.92).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
+                tvRef = findFirstTextView(card)
+                synchronized(bubbleTexts) { bubbleTexts.add(wrapTone to text) }
+                chatList.addView(wrapTone)
+                val nearBottomTone = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
+                latestBtn?.visibility = if (nearBottomTone) View.GONE else View.VISIBLE
+                if (nearBottomTone) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+                trimChatListIfNeeded()
+                latch.countDown()
+                return@Runnable
+            }
+            // vc306 Worker C (C7): kind think jadi Thinking Pill StreamRow
+            // (bukan bubble) — glyph 24 berputar saat aktif + label
+            // "Thinking" + preview 1 baris + chevron; tap = expand penuh.
+            if (kind == "think") {
+                val pill = buildThinkPillVc306(text, turn)
+                val wrapThink = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.START
+                    setPadding(0, dp(4), 0, dp(4))
+                    tag = "think-pill-vc306"
+                }
+                wrapThink.addView(pill.root, LinearLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.92).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
+                tvRef = pill.liveTv
+                synchronized(bubbleTexts) { bubbleTexts.add(wrapThink to text) }
+                chatList.addView(wrapThink)
+                if (turn) { turnProcessViewsVc306.add(wrapThink); turnThinkBlocksVc306++; thinkPillsVc306.add(pill) }
+                val nearBottomThink = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
+                latestBtn?.visibility = if (nearBottomThink) View.GONE else View.VISIBLE
+                if (nearBottomThink) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+                trimChatListIfNeeded()
+                latch.countDown()
+                return@Runnable
+            }
             val isUser = kind == "user"
-            val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 15).toFloat()
+            // vc306 (C3/C4): default font chat 15 -> 16sp; rentang tetap 12-22.
+            val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 16).toFloat()
             val wrap = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
+                // vc306 (C3/C4): user + asisten pakai kolom vertikal (bubble
+                // + baris status / titik stall di bawahnya); kind lain tetap
+                // baris horizontal seperti sebelumnya.
+                orientation = if (isUser || kind == "assistant") LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
                 gravity = if (isUser) Gravity.END else Gravity.START
                 setPadding(0, dp(4), 0, dp(4))
+                // vc306 (C4): asisten full-width — wrap selebar daftar chat
+                // supaya teks MATCH_PARENT di dalamnya benar-benar penuh.
+                if (kind == "assistant") layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 // vc283: tag id baris histori — dipakai windowing untuk
                 // menggeser batas tombol "Muat …" saat view tertua dipotong.
                 if (histId >= 0) tag = "hist:$histId"
@@ -2336,24 +2850,44 @@ class MainActivity : Activity() {
                     else -> text
                 }
                 textSize = when (kind) { "tool" -> bf - 1.5f; "meta" -> bf - 3.5f; "think" -> bf - 2f; else -> bf }
+                // vc306 (C3/C4): body chat 16sp/1.65 (user + asisten).
+                if (kind == "user" || kind == "assistant") setLineSpacing(0f, 1.65f)
                 setTextColor(when (kind) {
                     "error" -> th.errText
                     "tool" -> th.tileTint
                     "meta" -> th.dim
                     "think" -> th.dim
-                    else -> if (kind == "user") Color.WHITE else th.text
+                    // vc306 (C3): teks bubble user = teks primer tema
+                    // (#E6E9F0 dark / #1E232E light) — kontras 10.68/12.33.
+                    else -> th.text
                 })
                 // v4.36.0 (T16): bubble ala messenger referensi — asisten abu netral,
                 // user biru aksen, radius pill besar.
-                background = if (kind == "meta") rounded(th.tileBg, 18) else rounded(when (kind) {
-                    "user" -> Color.rgb(59, 130, 246)
-                    "tool" -> th.tileBg
-                    "error" -> th.errBg
-                    "think" -> th.card
-                    else -> th.card
-                }, 18)
-                if (kind == "meta") setPadding(dp(12), dp(2), dp(12), dp(2)) else setPadding(dp(12), dp(9), dp(12), dp(9))
-                maxWidth = (resources.displayMetrics.widthPixels * 0.92).toInt()
+                // vc306 (C3/C4): user = bubble Mist radius lg 20; asisten =
+                // TANPA bubble (background null, teks full-width rata kiri).
+                // kind lain (tool/error/think/meta) dipertahankan.
+                background = when (kind) {
+                    "assistant" -> null
+                    "meta" -> rounded(th.tileBg, 18)
+                    else -> rounded(when (kind) {
+                        "user" -> if (isDarkTheme()) ChatThemeVc306.darkUserBubble else ChatThemeVc306.lightUserBubble
+                        "tool" -> th.tileBg
+                        "error" -> th.errBg
+                        "think" -> th.card
+                        else -> th.card
+                    }, if (kind == "user") ChatThemeVc306.rLg else 18)
+                }
+                if (kind == "meta") setPadding(dp(12), dp(2), dp(12), dp(2))
+                else if (kind == "user") setPadding(dp(16), dp(8), dp(16), dp(8))
+                else if (kind == "assistant") setPadding(0, 0, 0, 0)
+                else setPadding(dp(12), dp(9), dp(12), dp(9))
+                if (kind == "assistant") {
+                    maxWidth = resources.displayMetrics.widthPixels
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                } else {
+                    // vc306 (C3): lebar maks bubble user 92% -> 82%.
+                    maxWidth = (resources.displayMetrics.widthPixels * (if (kind == "user") 0.82 else 0.92)).toInt()
+                }
                 if (kind == "tool") typeface = android.graphics.Typeface.MONOSPACE
             }
             tvRef = tv
@@ -2388,6 +2922,49 @@ class MainActivity : Activity() {
                 wrap.setOnLongClickListener { bubbleMenu() }
                 if (!useBlocks) tv.setOnLongClickListener { bubbleMenu() }
             }
+            // vc306 (C3): baris status DI BAWAH bubble user — hanya bila
+            // pemanggil memasok status nyata (userStatus != null). Tanpa
+            // data status, tidak ada baris yang dikarang (lihat catatan di
+            // atas addMsg). Label labelSmall 11sp tersier (F3: 11sp hanya
+            // untuk metadata non-interaktif). Aksi teks kanan ("Send now"
+            // / "Steer instead" / "Undo") butuh mesin mode-kirim C16 —
+            // tidak ada di vc305, jadi slot aksi TIDAK dibuat di sini.
+            if (isUser && userStatus != null) {
+                val statusRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.END
+                    setPadding(dp(16), dp(2), dp(16), 0)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }
+                statusRow.addView(TextView(this).apply {
+                    this.text = userStatus // `this.` wajib: param `text` addMsg membayangi properti TextView.text
+                    textSize = 11f
+                    setTextColor(th.faint)
+                })
+                wrap.addView(statusRow)
+            }
+            if (kind == "assistant") {
+                // vc306 (C4): terganggu/dibatalkan — baris "⚠ Interrupted"
+                // kecil danger di bawah teks (ikon 16, bodySmall 12sp) +
+                // meta tetap ada (meta dirender terpisah oleh pemanggil).
+                if (text.trimStart().startsWith("⛔ Dihentikan")) {
+                    wrap.addView(TextView(this).apply {
+                        this.text = "⚠ Interrupted" // `this.` wajib: lihat atas
+                        textSize = 12f
+                        setTextColor(th.errText)
+                        setPadding(0, dp(4), 0, 0)
+                    })
+                }
+                // vc306 (C4): titik stall 5px di bawah teks — GONE sampai
+                // stream diam >900ms (ditampilkan updateStreamBubble).
+                val stallDot = View(this).apply {
+                    tag = "vc306StallDot"
+                    background = rounded(th.faint, 100)
+                    visibility = View.GONE
+                    layoutParams = LinearLayout.LayoutParams(dp(5), dp(5)).apply { topMargin = dp(6) }
+                }
+                wrap.addView(stallDot)
+            }
             synchronized(bubbleTexts) { bubbleTexts.add(wrap to text) }
             chatList.addView(wrap)
             // T1: auto-scroll hanya bila user memang di dekat bawah (atau
@@ -2408,23 +2985,407 @@ class MainActivity : Activity() {
         return tvRef ?: TextView(this)
     }
 
-    private fun addBubble(text: String, isUser: Boolean, histId: Long = -1, pre: AssistantRender? = null) {
+    // ===== vc306 Worker C: kartu tone + thinking pill + auto-collapse + footnote =====
+
+    // Reduce-motion sistem: skala animator 0 (animasi dimatikan user) =
+    // tampilkan keadaan akhir tanpa animasi (spek F6 / skill #15 §gerak).
+    private fun reduceMotionOnVc306(): Boolean = try {
+        android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    } catch (e: Exception) { false }
+
+    // C12: kartu tone attention (claim-check) / danger (StuckDetector).
+    // VISUAL SAJA — teks sama persis, tetap di alur pesan, bukan popup.
+    // Teks minimal 12sp (skill #15 F3: 11sp hanya metadata non-interaktif;
+    // label ini informasi penting). Hairline tone α0.45, radius md 14, padding 12/8.
+    private fun buildToneCardVc306(text: String, toneKind: String): LinearLayout {
+        val dark = isDarkTheme()
+        val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 16).toFloat()
+        val danger = toneKind == "danger"
+        val bgHex = if (danger) ChatCardsVc306.stuckContainerHex(dark) else ChatCardsVc306.claimContainerHex(dark)
+        val fgHex = if (danger) ChatCardsVc306.stuckTextHex(dark) else ChatCardsVc306.claimTextHex(dark)
+        val fg = ChatCardsVc306.hexToArgb(fgHex)
+        val hairline = Color.argb(115, Color.red(fg), Color.green(fg), Color.blue(fg))
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedS(ChatCardsVc306.hexToArgb(bgHex), 14, hairline)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            contentDescription = text
+            accessibilityLiveRegion = if (danger) View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
+                else View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        // vc307: "✕"/"⚠" (glyph teks) diganti ImageView ikon Path "x"/"warn".
+        card.addView(android.widget.ImageView(this).apply {
+            setImageDrawable(pathIconVc306(if (danger) "x" else "warn", fg, ChatThemeVc306.iconXs))
+            layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs)).apply { setMargins(0, 0, dp(8), 0) }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        })
+        card.addView(TextView(this).apply {
+            this.text = text
+            setTextColor(fg); textSize = maxOf(bf - 3.5f, 12f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        return card
+    }
+
+    // C7: Thinking Pill (StreamRow). Live = jendela tepat 3 baris terakhir;
+    // selesai (settle) = preview 1 baris; tap = expand Markdown penuh di
+    // bawah rail 1px; turn berakhir -> settle() menutup expand otomatis.
+    // Logika thinking/streaming TIDAK diubah — hanya wadah + tampilan.
+    private inner class ThinkPillVc306(
+        val root: View,
+        val liveTv: TextView,
+        val previewTv: TextView,
+        val bodyBox: View,
+        // vc307: glyph + chevron adalah ImageView berikon Path (dulu
+        // TextView "✦"/"▾"/"▸"); rotasi tetap jalan di View apa pun.
+        val glyphTv: android.widget.ImageView,
+        val chevronTv: android.widget.ImageView,
+        val fullText: String
+    ) {
+        var expanded = false
+        var settled = false
+        private var animator: ObjectAnimator? = null
+        private var syncing = false
+
+        fun firstLine(): String = fullText.lineSequence().firstOrNull()?.trim().orEmpty()
+
+        fun startSpin() {
+            if (settled || reduceMotionOnVc306()) return
+            animator?.cancel()
+            animator = ObjectAnimator.ofFloat(glyphTv, "rotation", 0f, 360f).apply {
+                duration = 4000L
+                repeatCount = ObjectAnimator.INFINITE
+                interpolator = LinearInterpolator()
+                start()
+            }
+        }
+
+        fun toggle() {
+            if (settled) { /* settle = preview saja; expand tetap boleh dibuka manual */ }
+            expanded = !expanded
+            bodyBox.visibility = if (expanded) View.VISIBLE else View.GONE
+            // vc307: chevron "chev" menunjuk bawah (0°) saat dibuka,
+            // kanan (-90°) saat dilipat — dulu teks "▾"/"▸".
+            chevronTv.rotation = if (expanded) 0f else -90f
+            root.contentDescription = "Thinking: ${firstLine()}" + if (expanded) ", dibuka" else ", dilipat"
+        }
+
+        fun settle() {
+            settled = true
+            expanded = false
+            animator?.cancel(); animator = null
+            glyphTv.rotation = 0f
+            liveTv.visibility = View.GONE
+            previewTv.visibility = View.VISIBLE
+            previewTv.text = firstLine()
+            bodyBox.visibility = View.GONE
+            chevronTv.rotation = -90f
+            root.contentDescription = "Thinking: ${firstLine()}, selesai"
+        }
+
+        // Sinkronisasi tampilan dari teks live (dipanggil TextWatcher liveTv).
+        fun onLiveTextChanged(t: String) {
+            if (syncing || settled) return
+            val lines = t.lines()
+            previewTv.text = lines.firstOrNull().orEmpty()
+            val last3 = lines.takeLast(3).joinToString("\n")
+            if (last3 != t) {
+                syncing = true
+                liveTv.text = last3
+                syncing = false
+            }
+        }
+    }
+
+    private fun buildThinkPillVc306(text: String, turn: Boolean): ThinkPillVc306 {
+        val th = currentTheme()
+        val dark = isDarkTheme()
+        // Glyph: bg brand blue α0.10 (light) / α0.18 (dark); fg brand #4D6BFE
+        // light / #97B1F0 dark. Radius 7.68 -> 8dp (ChatCardsVc306).
+        val glyphBg = if (dark) Color.argb(46, 0x4D, 0x6B, 0xFE) else Color.argb(26, 0x4D, 0x6B, 0xFE)
+        val glyphFg = if (dark) 0xFF97B1F0.toInt() else 0xFF4D6BFE.toInt()
+        val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty()
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val headRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // Hit area 48dp (skill #14/#15 menang atas min-height 32 spek —
+            // visual tetap ~32dp, padding sentuh yang membesar).
+            minimumHeight = dp(48)
+        }
+        // vc307: glyph "✦" (teks) diganti ImageView ikon Path "spark";
+        // tile ikut skala smallest-width (dulu 24dp tetap).
+        val glyphTv = android.widget.ImageView(this).apply {
+            setImageDrawable(pathIconVc306("spark", glyphFg, 14))
+            background = rounded(glyphBg, ChatCardsVc306.THINK_GLYPH_RADIUS_DP)
+            layoutParams = LinearLayout.LayoutParams(chatIconSizeVc307(ChatThemeVc306.iconXl), chatIconSizeVc307(ChatThemeVc306.iconXl))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val labelTv = TextView(this).apply {
+            this.text = "Thinking"; setTextColor(th.dim); textSize = 14f
+            setPadding(dp(8), 0, 0, 0)
+        }
+        val previewWrap = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), 0, 0, 0) }
+        }
+        val previewTv = TextView(this).apply {
+            this.text = firstLine; setTextColor(th.dim); textSize = 13f
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        // Fade kanan 40px di atas preview (gradasi transparan -> warna halaman).
+        val fade = View(this).apply {
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(Color.TRANSPARENT, th.bg))
+            layoutParams = FrameLayout.LayoutParams(dp(40), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        previewWrap.addView(previewTv); previewWrap.addView(fade)
+        // vc307: chevron "▸"/"▾" (teks) diganti ImageView ikon Path "chev";
+        // arah diatur lewat rotation di ThinkPillVc306.toggle()/settle().
+        val chevronTv = android.widget.ImageView(this).apply {
+            setImageDrawable(pathIconVc306("chev", th.dim, ChatThemeVc306.iconXs))
+            rotation = -90f
+            layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs)).apply { setMargins(dp(6), 0, 0, 0) }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        headRow.addView(glyphTv); headRow.addView(labelTv); headRow.addView(previewWrap); headRow.addView(chevronTv)
+        root.addView(headRow)
+        // Jendela live tepat 3 baris (13sp tersier).
+        val liveTv = TextView(this).apply {
+            this.text = text.lines().takeLast(3).joinToString("\n")
+            setTextColor(th.dim); textSize = 13f
+            maxLines = 3
+            setPadding(dp(32), dp(4), 0, 0)
+        }
+        root.addView(liveTv)
+        // Expand: Markdown penuh di bawah rail hairline 0.5dp (x=12),
+        // padding 4 (vc307: dulu lebar 1px mentah).
+        val bodyBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+        }
+        bodyBox.addView(View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), LinearLayout.LayoutParams.MATCH_PARENT).apply { setMargins(dp(12), dp(4), 0, dp(4)) }
+        })
+        val bodyTv = TextView(this).apply {
+            this.text = MdMini.render(text)
+            setTextColor(th.dim); textSize = 13f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), dp(4), 0, dp(4)) }
+        }
+        bodyBox.addView(bodyTv)
+        root.addView(bodyBox)
+        val pill = ThinkPillVc306(root, liveTv, previewTv, bodyBox, glyphTv, chevronTv, text)
+        liveTv.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                pill.onLiveTextChanged(s?.toString() ?: "")
+            }
+        })
+        root.contentDescription = "Thinking: $firstLine, dilipat"
+        headRow.setOnClickListener { pill.toggle() }
+        headRow.isFocusable = true
+        // Pill histori (turn=false) langsung settle: preview 1 baris, tanpa putaran.
+        if (turn) pill.startSpin() else pill.settle()
+        return pill
+    }
+
+    private fun settleThinkPillsVc306() {
+        for (p in thinkPillsVc306.toList()) { try { p.settle() } catch (e: Exception) {} }
+    }
+
+    // C8: akhir giliran — settle think pill + auto-collapse baris proses
+    // jadi SATU ringkasan + footnote. Dipanggil dari situs meta akhir
+    // giliran (bukan dari addMsg) supaya urutan tampil tetap: jawaban,
+    // ringkasan, footnote. Kartu native (artifact/ask) TIDAK lewat
+    // registry ini sehingga tidak ikut terlipat.
+    private fun addTurnEndVc306() {
+        val toolCalls = synchronized(turnWork) { turnWork.size }
+        val messages = turnMsgCountVc306
+        val thinking = turnThinkBlocksVc306
+        val durMs = turnElapsedMs()
+        val src = turnSource
+        runOnUiThread { addTurnEndUiVc306(toolCalls, messages, thinking, durMs, src) }
+    }
+
+    private fun addTurnEndUiVc306(toolCalls: Int, messages: Int, thinking: Int, durMs: Long, src: String) {
+        if (!::chatList.isInitialized) return
+        settleThinkPillsVc306()
+        val th = currentTheme()
+        val summaryText = ChatCardsVc306.turnSummary(toolCalls, messages, thinking)
+        if (turnProcessViewsVc306.isNotEmpty()) {
+            val views = turnProcessViewsVc306.toList()
+            // Hitungan grup dari turnWork (nama tool asli = jumlah PANGGILAN,
+            // bukan jumlah baris — satu baris batch = N panggilan).
+            val counts = synchronized(turnWork) {
+                turnWork.groupingBy { ChatCardsVc306.toneForTool(it.tool) }.eachCount()
+            }
+            val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val summaryRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(48)
+            }
+            // vc307: "✓" dan "▾" (glyph teks) diganti ikon Path "check" /
+            // "chev" yang digambar sendiri (ukuran dp, tint = th.dim).
+            summaryRow.addView(android.widget.ImageView(this).apply {
+                setImageDrawable(pathIconVc306("check", th.dim, ChatThemeVc306.iconSm))
+                layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconSm), dp(ChatThemeVc306.iconSm))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            summaryRow.addView(TextView(this).apply {
+                text = summaryText; setTextColor(th.dim); textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), 0, dp(8), 0) }
+            })
+            val chevTv = android.widget.ImageView(this).apply {
+                setImageDrawable(pathIconVc306("chev", th.dim, ChatThemeVc306.iconXs))
+                layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            summaryRow.addView(chevTv)
+            container.addView(summaryRow)
+            val expandedBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val railRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            railRow.addView(View(this).apply {
+                setBackgroundColor(th.stroke)
+                // vc307: lebar 1px mentah -> hairline 0.5dp (diskala density).
+                layoutParams = LinearLayout.LayoutParams(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), LinearLayout.LayoutParams.MATCH_PARENT).apply { setMargins(dp(12), dp(4), 0, dp(4)) }
+            })
+            val contentCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), 0, 0, 0) }
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            railRow.addView(contentCol)
+            expandedBox.addView(railRow)
+            container.addView(expandedBox)
+            // Baris grup (≥3 tool call): "Run 2 commands · Read 3 files".
+            val toolWraps = views.filter { it.tag == "tool-row-vc306" }
+            if (ChatCardsVc306.shouldGroup(toolCalls)) {
+                val gSummary = ChatCardsVc306.groupSummary(counts)
+                if (gSummary.isNotBlank() && toolWraps.isNotEmpty()) {
+                    val groupRow = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        minimumHeight = dp(48)
+                    }
+                    groupRow.addView(TextView(this).apply {
+                        text = gSummary; setTextColor(th.dim); textSize = 14f
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    })
+                    val gChev = android.widget.ImageView(this).apply {
+                        setImageDrawable(pathIconVc306("chev", th.dim, ChatThemeVc306.iconXs))
+                        layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs))
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }
+                    groupRow.addView(gChev)
+                    var groupExpanded = true
+                    fun applyGroup(exp: Boolean) {
+                        groupExpanded = exp
+                        gChev.rotation = if (exp) 0f else -90f
+                        for (w in toolWraps) w.visibility = if (exp) View.VISIBLE else View.GONE
+                        groupRow.contentDescription = "Grup tool: $gSummary" + if (exp) ", dibuka" else ", dilipat"
+                    }
+                    groupRow.contentDescription = "Grup tool: $gSummary, dibuka"
+                    groupRow.setOnClickListener { applyGroup(!groupExpanded) }
+                    groupRow.isFocusable = true
+                    contentCol.addView(groupRow)
+                }
+            }
+            // Pindahkan baris proses asli ke dalam konten lipatan.
+            val firstView = views.firstOrNull()
+            val insertIdx = if (firstView != null) chatList.indexOfChild(firstView) else -1
+            for (v in views) {
+                (v.parent as? ViewGroup)?.removeView(v)
+                contentCol.addView(v)
+            }
+            var turnExpanded = true
+            var userToggled = false
+            fun applyTurnExpanded(exp: Boolean) {
+                turnExpanded = exp
+                expandedBox.visibility = if (exp) View.VISIBLE else View.GONE
+                // vc307: chevron ImageView dirotasi (dulu teks "▾"/"▸").
+                chevTv.rotation = if (exp) 0f else -90f
+                summaryRow.contentDescription = summaryText + if (exp) ", dibuka" else ", dilipat"
+            }
+            summaryRow.contentDescription = "$summaryText, dibuka"
+            summaryRow.isFocusable = true
+            summaryRow.setOnClickListener { userToggled = true; applyTurnExpanded(!turnExpanded) }
+            lastTurnToggleVc306 = { userToggled = true; applyTurnExpanded(!turnExpanded) }
+            if (insertIdx < 0) chatList.addView(container) else chatList.addView(container, insertIdx)
+            lastTurnContainerVc306 = container
+            lastTurnExpandedContentVc306 = expandedBox
+            // Settle: turn baru selesai muncul terbuka dulu lalu mengecil
+            // jadi ringkasan (kecuali user sudah mengetuk duluan).
+            Handler(Looper.getMainLooper()).postDelayed({ if (!userToggled) applyTurnExpanded(false) }, 1500)
+        }
+        // Footnote (a.14/C8): durasi + langkah + sumber — token/biaya TIDAK
+        // tersedia di Harness (bukan per giliran; lihat ChatCardsVc306)
+        // sehingga segmennya hilang; durasi selalu ada. Tap -> trajectory
+        // = isi lipatan giliran (tidak ada tampilan trajectory khusus).
+        val footnoteText = ChatCardsVc306.formatFootnote(
+            durMs / 1000.0, toolCalls, null, null,
+            src.ifBlank { "sumber tidak tercatat" })
+        val footRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        footRow.addView(TextView(this).apply {
+            text = footnoteText; setTextColor(th.dim); textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+        })
+        footRow.isFocusable = true
+        footRow.contentDescription = "Footnote giliran: $footnoteText. Ketuk untuk melihat langkah-langkah giliran."
+        footRow.setOnClickListener { lastTurnToggleVc306?.invoke() }
+        chatList.addView(footRow)
+        val nearBottom = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
+        latestBtn?.visibility = if (nearBottom) View.GONE else View.VISIBLE
+        if (nearBottom) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+        trimChatListIfNeeded()
+        turnProcessViewsVc306.clear(); thinkPillsVc306.clear()
+        turnToolRowsVc306 = 0; turnMsgCountVc306 = 0; turnThinkBlocksVc306 = 0
+    }
+
+    private fun addBubble(text: String, isUser: Boolean, histId: Long = -1, pre: AssistantRender? = null, turn: Boolean = false) {
         addMsg(text, when {
             isUser -> "user"
             text.startsWith("⚠️") -> "error"
             else -> "assistant"
-        }, histId, pre)
+        }, histId, pre, turn)
     }
 
-    // vc254: baris aktivitas agen gaya Claude — satu langkah tool = satu
-    // baris lipat (judul bahasa Indonesia + status), ketuk untuk buka
-    // detail (argumen + hasil + durasi). Default TERTUTUP.
-    class ActivityRowHandle(val root: android.view.View, private val headTv: TextView, private val detailTv: TextView, private val chevronTv: TextView) {
+    // vc306 Worker C — StreamRow (spek C6/a.8): kolom lead 24 + gap 8 +
+    // kolom teks; min-height 32; kartu pembungkus radius md 14 (dulu 18);
+    // glyph 24x24 tone per kategori; verb 14sp sekunder + detail 13sp
+    // tersier (mono 12.5 bila kode); status ujung kanan (spinner 14 saat
+    // berjalan / "Needs approval" / ✕ gagal / "Declined" / "Cancelled" /
+    // sukses = kosong); detail expand = code well radius 14, max 280dp.
+    // `tool` = nama tool mentah bila diketahui call-site (untuk tone);
+    // kosong -> tone ditebak dari judul Indonesia (fallback) / netral.
+    // Diff "+18 −4" TIDAK ditampilkan: WorkItem tidak membawa jumlah
+    // baris +/- (lihat ChatCardsVc306.diffLabel) — jangan dikarang.
+    class ActivityRowHandle(
+        val root: android.view.View,
+        private val labelTv: TextView,
+        private val detailLineTv: TextView,
+        private val detailTv: TextView,
+        // vc307: chevron ImageView berikon Path (dulu TextView "▾"/"▸").
+        private val chevronTv: android.widget.ImageView,
+        private val statusSlot: LinearLayout,
+        private val glyphTv: TextView,
+        private val detailBox: View
+    ) {
         var expanded: Boolean = false
             set(v) {
                 field = v
-                detailTv.visibility = if (v) android.view.View.VISIBLE else android.view.View.GONE
-                chevronTv.text = if (v) "▾" else "▸"
+                detailBox.visibility = if (v) android.view.View.VISIBLE else android.view.View.GONE
+                chevronTv.rotation = if (v) 0f else -90f
+                (root as? View)?.contentDescription = contentDescVc306()
             }
         var title: String = ""
             set(v) { field = v; refreshHead() }
@@ -2432,44 +3393,174 @@ class MainActivity : Activity() {
             set(v) { field = v; refreshHead() }
         var detail: String = ""
             set(v) { field = v; detailTv.text = v }
+        var verbVc306: String = ""
+        var toneVc306: ChatCardsVc306.Tone = ChatCardsVc306.Tone.NEUTRAL
+        var toolVc306: String = ""
+        private fun contentDescVc306(): String =
+            "$verbVc306: $title" + (if (status.isNotBlank()) ", $status" else "") +
+                if (expanded) ", dibuka" else ", dilipat"
         private fun refreshHead() {
-            headTv.text = title + (if (status.isNotBlank()) " — " + status else "")
+            labelTv.text = verbVc306
+            detailLineTv.text = title
+            // Status ujung kanan — dipetakan dari teks status lama (bahasa
+            // Indonesia / ActivityTitle.statusText); teks tak dikenal
+            // ditampilkan mentah (12sp tersier) supaya info tidak hilang.
+            statusSlot.removeAllViews()
+            val ctx = statusSlot.context
+            val th = (ctx as? MainActivity)?.currentTheme()
+            val dark = (ctx as? MainActivity)?.isDarkTheme() ?: true
+            val st = status
+            val kind = when {
+                st.contains("menunggu", true) || st.contains("approval", true) ||
+                    st.contains("persetujuan", true) || st.contains("Needs approval") -> "approval"
+                st.contains("gagal", true) || st.contains("✗") || st.contains("error", true) -> "failed"
+                st.contains("ditolak", true) || st.contains("Declined") -> "declined"
+                st.contains("dibatalkan", true) || st.contains("Cancelled") || st.contains("dibatal", true) -> "cancelled"
+                st.contains("menjalankan", true) || st.contains("berjalan", true) -> "running"
+                st.contains("selesai", true) || st.contains("✓") || st.contains("berhasil", true) -> "success"
+                else -> "other"
+            }
+            val v: View? = when (kind) {
+                "running" -> (ctx as? MainActivity)?.let { act ->
+                    ProgressBar(act).apply {
+                        isIndeterminate = true
+                        indeterminateTintList = ColorStateList.valueOf(th?.tileTint ?: 0xFF4D8CFF.toInt())
+                        layoutParams = LinearLayout.LayoutParams(act.dp(14), act.dp(14))
+                        contentDescription = "Berjalan"
+                    }
+                }
+                "approval" -> TextView(ctx).apply {
+                    text = "Needs approval"; textSize = 12f
+                    setTextColor(ChatCardsVc306.hexToArgb(ChatCardsVc306.semanticTextHex("warning", dark)))
+                }
+                "failed" -> (ctx as? MainActivity)?.let { act ->
+                    // vc307: "✕" (glyph teks) diganti ikon Path "x" 16dp.
+                    android.widget.ImageView(act).apply {
+                        setImageDrawable(act.pathIconVc306("x", ChatCardsVc306.hexToArgb(ChatCardsVc306.semanticTextHex("danger", dark)), ChatThemeVc306.iconXs))
+                        layoutParams = LinearLayout.LayoutParams(act.dp(ChatThemeVc306.iconXs), act.dp(ChatThemeVc306.iconXs))
+                        contentDescription = "Gagal"
+                    }
+                }
+                "declined" -> TextView(ctx).apply {
+                    text = "Declined"; textSize = 12f
+                    setTextColor(ChatCardsVc306.hexToArgb(ChatCardsVc306.semanticTextHex("warning", dark)))
+                }
+                "cancelled" -> TextView(ctx).apply {
+                    text = "Cancelled"; textSize = 12f
+                    setTextColor(th?.dim ?: 0xFF969EAF.toInt())
+                }
+                "success" -> null // sukses = kosong (diff tidak tersedia)
+                else -> if (st.isBlank()) null else TextView(ctx).apply {
+                    text = st; textSize = 12f
+                    setTextColor(th?.dim ?: 0xFF969EAF.toInt())
+                }
+            }
+            if (v != null) statusSlot.addView(v)
+            (root as? View)?.contentDescription = contentDescVc306()
         }
     }
 
-    private fun buildActivityRow(title: String, status: String, detail: String): ActivityRowHandle {
+    private fun buildActivityRow(title: String, status: String, detail: String, tool: String = ""): ActivityRowHandle {
         val th = currentTheme()
-        val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 15).toFloat()
+        val dark = isDarkTheme()
+        val tone = if (tool.isNotBlank()) ChatCardsVc306.toneForTool(tool) else ChatCardsVc306.toneForTitle(title)
+        val verb = ChatCardsVc306.verbForTone(tone)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(th.tileBg, 18)
+            background = rounded(th.tileBg, 14)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         val headRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
+            minimumHeight = dp(32)
         }
-        val chevron = TextView(this).apply { text = "▸"; setTextColor(th.dim); textSize = bf - 1f; setPadding(0, 0, dp(6), 0) }
-        val head = TextView(this).apply {
-            text = title + (if (status.isNotBlank()) " — " + status else "")
-            setTextColor(th.text); textSize = bf - 1f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+        val glyph = TextView(this).apply {
+            text = ChatCardsVc306.glyphForTone(tone)
+            setTextColor(ChatCardsVc306.hexToArgb(ChatCardsVc306.toneFgHex(tone, dark)))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            background = rounded(ChatCardsVc306.hexToArgb(ChatCardsVc306.toneBgHex(tone, dark)), ChatCardsVc306.THINK_GLYPH_RADIUS_DP)
+            // vc307: tile glyph ikut skala smallest-width (dulu 24dp tetap).
+            layoutParams = LinearLayout.LayoutParams(chatIconSizeVc307(ChatThemeVc306.iconXl), chatIconSizeVc307(ChatThemeVc306.iconXl))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), 0, dp(8), 0) }
+        }
+        val line1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        val labelTv = TextView(this).apply {
+            text = verb; setTextColor(th.dim); textSize = 14f
+        }
+        val dotTv = TextView(this).apply {
+            text = "·"; setTextColor(th.dim); textSize = 13f
+            setPadding(dp(6), 0, dp(6), 0)
+        }
+        val detailLineTv = TextView(this).apply {
+            text = title; setTextColor(th.dim); textSize = 13f
+            maxLines = 3; ellipsize = android.text.TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        line1.addView(labelTv); line1.addView(dotTv); line1.addView(detailLineTv)
+        textCol.addView(line1)
+        val statusSlot = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        // vc307: chevron "▸"/"▾" (teks) diganti ImageView ikon Path "chev";
+        // arah diatur lewat rotation di setter ActivityRowHandle.expanded.
+        val chevron = android.widget.ImageView(this).apply {
+            setImageDrawable(pathIconVc306("chev", th.dim, ChatThemeVc306.iconXs))
+            rotation = -90f
+            layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs)).apply { setMargins(dp(6), 0, 0, 0) }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        headRow.addView(glyph)
+        headRow.addView(textCol)
+        headRow.addView(statusSlot)
         headRow.addView(chevron)
-        headRow.addView(head)
         box.addView(headRow)
+        // Detail expand: code well radius md 14, border 0.5, max-height 280,
+        // padding 12/4-12, judul seksi eyebrow 11sp tersier, divider 0.5, mono 12.
+        val detailBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedS(th.card, 14, th.stroke)
+            setPadding(dp(12), dp(4), dp(12), dp(12))
+            visibility = android.view.View.GONE
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+        }
+        detailBox.addView(TextView(this).apply {
+            text = "DETAIL"; setTextColor(th.dim); textSize = 11f
+            setLetterSpacing(0.4f)
+            setPadding(0, dp(4), 0, dp(4))
+        })
+        detailBox.addView(View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { setMargins(0, 0, 0, dp(4)) }
+        })
         val detailTv = TextView(this).apply {
             text = detail
-            setTextColor(th.tileTint); textSize = bf - 1.5f
+            setTextColor(th.tileTint); textSize = 12f
             typeface = android.graphics.Typeface.MONOSPACE
-            visibility = android.view.View.GONE
-            setPadding(0, dp(6), 0, 0)
+            maxHeight = dp(ChatCardsVc306.CODE_WELL_MAX_HEIGHT_DP)
+            isVerticalScrollBarEnabled = true
+            movementMethod = android.text.method.ScrollingMovementMethod()
         }
-        box.addView(detailTv)
-        val handle = ActivityRowHandle(box, head, detailTv, chevron)
+        detailBox.addView(detailTv)
+        box.addView(detailBox)
+        val handle = ActivityRowHandle(box, labelTv, detailLineTv, detailTv, chevron, statusSlot, glyph, detailBox)
+        handle.verbVc306 = verb
+        handle.toneVc306 = tone
+        handle.toolVc306 = tool
         handle.title = title
         handle.status = status
+        box.isFocusable = true
         box.setOnClickListener { handle.expanded = !handle.expanded }
         return handle
     }
@@ -2477,8 +3568,15 @@ class MainActivity : Activity() {
     // Baris aktivitas sebagai gelembung chat 1-1 (pola threading sama
     // seperti addMsg: latch 3 dtk bila dipanggil di luar UI thread).
     // Jejak tool tetap masuk journal (dulu via addMsg kind "tool").
-    private fun addActivityRow(title: String, status: String, detail: String): ActivityRowHandle {
+    // vc304 B2: param `turn = true` = baris aktivitas giliran. Di sesi
+    // lain kembalikan handle LEPAS (tidak ditempel ke chatList) supaya
+    // pemanggil tetap bisa update status/detail dengan aman; kartu kerja
+    // yang sama tersimpan ke histori DB dan dirender ulang saat user
+    // kembali ke sesi pemilik (renderHistRows -> renderWorkAndAsk).
+    // journalTrace tetap jalan (jejak proses persisten untuk resume).
+    private fun addActivityRow(title: String, status: String, detail: String, turn: Boolean = false, tool: String = ""): ActivityRowHandle {
         journalTrace(title + " — " + status)
+        if (turn && !SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return buildActivityRow(title, status, detail, tool)
         var handle: ActivityRowHandle? = null
         val latch = java.util.concurrent.CountDownLatch(1)
         val runnable = Runnable {
@@ -2486,12 +3584,16 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.START
                 setPadding(0, dp(4), 0, dp(4))
+                tag = "tool-row-vc306"
             }
-            val row = buildActivityRow(title, status, detail)
+            val row = buildActivityRow(title, status, detail, tool)
             handle = row
             wrap.addView(row.root, LinearLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.92).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
             synchronized(bubbleTexts) { bubbleTexts.add(wrap to (title + "\n" + detail)) }
             chatList.addView(wrap)
+            // vc306 Worker C: baris tool giliran berjalan masuk registry
+            // auto-collapse (bukan kartu native — artifact/ask tidak lewat sini).
+            if (turn) { turnProcessViewsVc306.add(wrap); turnToolRowsVc306++ }
             val nearBottom = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
             latestBtn?.visibility = if (nearBottom) android.view.View.GONE else android.view.View.VISIBLE
             if (nearBottom) chatScroll.post { chatScroll.fullScroll(android.view.View.FOCUS_DOWN) }
@@ -2505,7 +3607,7 @@ class MainActivity : Activity() {
             runOnUiThread(runnable)
             try { latch.await(3, java.util.concurrent.TimeUnit.SECONDS) } catch (e: Exception) {}
         }
-        return handle ?: buildActivityRow(title, status, detail)
+        return handle ?: buildActivityRow(title, status, detail, tool)
     }
 
     // vc254: kartu rencana (make_plan) sebagai baris aktivitas — judul
@@ -2550,10 +3652,13 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         head.addView(Button(this).apply {
-            text = "✕"
+            // vc307: "✕" (teks) diganti ikon Path "x" + contentDescription.
+            text = ""
+            contentDescription = "Tutup panel artefak"
             setTextColor(th.text)
             background = rounded(th.tileBg, 16)
             minWidth = 0; minHeight = 0
+            setCompoundDrawables(pathIconVc306("x", th.text, ChatThemeVc306.iconXs), null, null, null)
             setOnClickListener { closeArtifactPanel() }
         })
         artifactTitleTv = TextView(this).apply {
@@ -2961,6 +4066,12 @@ class MainActivity : Activity() {
             setBackgroundColor(th.card)
             setPadding(dp(10), dp(8), dp(10), dp(4))
         }
+        // vc309 Worker B: header dilonggarkan — "tanpa thinking" mengecil
+        // (11sp→10.5sp, singleLine + ellipsize, padding 6dp→4dp) dan
+        // padding/margin tombol dipangkas (10dp→8dp, margin 8dp→6dp) supaya
+        // judul "👥 Grup Agen" (weight 1) tidak lagi terpotong jadi "Gru..."
+        // di layar ~360dp; tombol naik ke hit area 48dp (dulu ~30dp —
+        // di bawah standar sentuh). Urutan + handler TIDAK BERUBAH.
         head.addView(TextView(this).apply {
             text = "👥 Grup Agen"
             setTextColor(th.text); textSize = 15f
@@ -2973,31 +4084,34 @@ class MainActivity : Activity() {
         // di header grup — dulu hanya disebut sekali di pesan routing.
         head.addView(TextView(this).apply {
             text = "tanpa thinking"
-            setTextColor(th.dim); textSize = 11f
-            setPadding(dp(6), dp(2), dp(6), dp(2))
+            setTextColor(th.dim); textSize = 10.5f
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(4), dp(2), dp(4), dp(2))
         })
         head.addView(Button(this).apply {
             text = "← Chat 1-1"
+            isAllCaps = false
             background = rounded(th.tileBg, 16); setTextColor(th.text); textSize = 12f
-            minWidth = 0; minHeight = 0
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) }
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) }
             setOnClickListener { showTab("Chat") }
         })
         head.addView(Button(this).apply {
             text = "☰"
             background = rounded(th.tileBg, 16); setTextColor(th.text)
-            minWidth = 0; minHeight = 0
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) }
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) }
             setOnClickListener { showGroupSessionsPanel() }
         })
         head.addView(Button(this).apply {
             text = "⚙️"
             background = rounded(th.tileBg, 16); setTextColor(th.text)
-            minWidth = 0; minHeight = 0
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) }
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) }
             setOnClickListener { showGroupSettingsDialog() }
         })
         box.addView(head)
@@ -3009,27 +4123,34 @@ class MainActivity : Activity() {
         }
         groupAllChip = Button(this).apply {
             text = "Semua jawab"
+            // vc309 Worker B: chip tidak lagi allCaps bawaan Button
+            // ("SEMUA JAWAB" memanjang + berteriak), padding dilonggarkan
+            // (12/7dp→14/9dp), jarak antar chip 8dp→10dp, hit area 48dp
+            // (dulu ~30dp). Warna ikut state via refreshGroupChips().
+            isAllCaps = false
             textSize = 12f
-            minWidth = 0; minHeight = 0
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) }
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(10) }
             setOnClickListener { GroupChat.setGroupAll(this@MainActivity, !GroupChat.isGroupAllOn(this@MainActivity)); refreshGroupChips() }
         }
         head2Inner.addView(groupAllChip)
         groupExecChip = Button(this).apply {
             text = "Mode Eksekusi"
+            isAllCaps = false
             textSize = 12f
-            minWidth = 0; minHeight = 0
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) }
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(10) }
             setOnClickListener { GroupChat.setGroupExec(this@MainActivity, !GroupChat.isGroupExecOn(this@MainActivity)); refreshGroupChips() }
         }
         head2Inner.addView(groupExecChip)
         head2Inner.addView(Button(this).apply {
             text = "📌 Rencana"
+            isAllCaps = false
             background = rounded(th.tileBg, 16); setTextColor(th.text); textSize = 12f
-            minWidth = 0; minHeight = 0
-            setPadding(dp(12), dp(7), dp(12), dp(7))
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
             setOnClickListener {
                 val msg = GroupChat.saveLastRoundAsPlan(this@MainActivity)
                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
@@ -3070,11 +4191,23 @@ class MainActivity : Activity() {
             setOnClickListener { groupReplyTargetName = null; groupReplyTargetText = null; refreshGroupReplyChip() }
         }
         box.addView(groupReplyChipTv)
-        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = rounded(Color.rgb(38, 38, 38), 18); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); setPadding(dp(8), dp(4), dp(8), dp(10)) }
+        // vc309 Worker B (b) — AKAR composer HITAM di tema cerah: latar
+        // baris ini dulu `rounded(Color.rgb(38,38,38), 18)` HARDCODED gelap
+        // (tidak pernah membaca tema — tidak seperti composer 1-1 yang
+        // memakai glassDrawableVc306 + diwarnai ulang di
+        // refreshComposerButtonsVc306/applyVc306Chrome). Kini latarnya
+        // glassDrawableVc306(rXl, isDarkTheme()) — PERSIS composer 1-1
+        // (kaca cerah di tema cerah, kaca gelap di tema gelap) — plus
+        // margin luar 12dp supaya jadi pill mengambang seperti 1-1 (dulu
+        // menempel ke tepi layar) dan padding vertikal simetris.
+        // groupInputRowRef dipakai refreshGroupChrome() agar ganti tema
+        // tanpa recreate tetap mewarnai ulang composer grup.
+        val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = glassDrawableVc306(ChatThemeVc306.rXl, isDarkTheme()); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(12), dp(6), dp(12), dp(12)) }; setPadding(dp(8), dp(6), dp(8), dp(6)) }
+        groupInputRowRef = inputRow
         groupInput = EditText(this).apply {
             hint = "Pesan grup… (@Asisten @Mandor @Mentor @Agen 4)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setTextColor(th.text); setHintTextColor(th.dim)
+            setTextColor(th.text); setHintTextColor(if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint)
             background = null
             setPadding(dp(8), dp(8), dp(8), dp(8))
             minLines = 1
@@ -3157,7 +4290,10 @@ class MainActivity : Activity() {
             val ac = try { Color.parseColor(accentHex) } catch (e: Exception) { DIM }
             wrap.addView(TextView(this).apply {
                 this.text = name
-                setTextColor(ac); textSize = 11f
+                // vc309 Worker B: label "Sistem" memakai errText, bukan
+                // abu #7d8aa0 hardcoded (kontras label itu 3.17:1 di tema
+                // cerah — di bawah AA; errText di atas bg halaman 5.9:1).
+                setTextColor(if (isSystem) th.errText else ac); textSize = 11f
                 typeface = android.graphics.Typeface.DEFAULT_BOLD
                 setPadding(dp(12), 0, dp(12), dp(2))
             })
@@ -3167,7 +4303,7 @@ class MainActivity : Activity() {
         if (isTool) {
             val actVc254 = ActivityTitle.parseText(text)
             if (actVc254 != null) {
-                val rowVc254 = buildActivityRow(actVc254.title, ActivityTitle.statusText(actVc254.ms, actVc254.ok), (if (actVc254.args.isNotBlank()) "Argumen: " + actVc254.args + "\n" else "") + "Hasil: " + actVc254.result)
+                val rowVc254 = buildActivityRow(actVc254.title, ActivityTitle.statusText(actVc254.ms, actVc254.ok), (if (actVc254.args.isNotBlank()) "Argumen: " + actVc254.args + "\n" else "") + "Hasil: " + actVc254.result, actVc254.tool)
                 wrap.addView(rowVc254.root)
                 groupList.addView(wrap)
                 groupScroll.post { groupScroll.fullScroll(View.FOCUS_DOWN) }
@@ -3179,12 +4315,20 @@ class MainActivity : Activity() {
             this.text = if (isAgentAnswer) (if (text.length > 1500) MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]") else MdMini.render(text)) else text
             textSize = 15f
             setTextColor(if (isSystem) th.errText else th.text)
-            background = rounded(when {
-                isUser -> Color.rgb(59, 130, 246)
-                isSystem -> th.errBg
-                isTool -> th.tileBg
-                else -> th.card
-            }, 24)
+            // vc309 Worker B (c): kartu sistem TIDAK LAGI blok pink penuh
+            // (th.errBg #FDE8E8 + teks merah — bentrok dengan palet Mist
+            // walau kontrasnya lolos 5.51:1). Kini kartu Mist biasa
+            // (th.card, sama seperti bubble asisten) + garis tepi 1dp
+            // errText + teks tetap errText + label "Sistem" merah — tetap
+            // terbaca sebagai peringatan, kontras justru naik (cerah
+            // 6.31:1, gelap 9.02:1 — keduanya lolos AA 4.5:1). Palet
+            // ChatThemeVc306.kt TIDAK diubah — hanya pemakaian tokennya.
+            background = when {
+                isUser -> rounded(Color.rgb(59, 130, 246), 24)
+                isSystem -> roundedS(th.card, 24, th.errText)
+                isTool -> rounded(th.tileBg, 24)
+                else -> rounded(th.card, 24)
+            }
             setPadding(dp(12), dp(9), dp(12), dp(9))
             maxWidth = (resources.displayMetrics.widthPixels * 0.92).toInt()
         }
@@ -3421,22 +4565,225 @@ class MainActivity : Activity() {
         val src = turnSource
         val think = turnThinking
         turnThinking = ""
-        if (think.isNotBlank()) addMsg("💭 Berpikir:\n$think", "think")
-        // vc232 S3(a): jawaban kena claimWarning diawali baris penanda SISTEM (bukan prosa model).
-        val marked = if (untrusted) "⚠️ JAWABAN INI TIDAK DIDUKUNG HASIL TOOL — baca dengan curiga; klaimnya belum terbukti.\n$text" else text
+        if (think.isNotBlank()) addMsg("💭 Berpikir:\n$think", "think", turn = true)
+        // vc232 S3(a) + vc306 C12: jawaban kena claimWarning TIDAK LAGI
+        // ditempel sebagai prefix di bubble asisten — peringatannya tampil
+        // sebagai kartu tone attention sendiri (teks SAMA), jawaban bersih.
+        if (untrusted) addMsg("⚠️ JAWABAN INI TIDAK DIDUKUNG HASIL TOOL — baca dengan curiga; klaimnya belum terbukti.", "meta", turn = true)
+        val marked = text
         // vc232 S10(b): label mimikri diperluas (awalan teks).
         val labeledVc230 = if (marked.trimStart().startsWith("✓ Selesai") || marked.trimStart().startsWith("🧰") || marked.trimStart().startsWith("⏱") || marked.trimStart().startsWith("✓ jawaban lolos") || marked.trimStart().startsWith("⛔ Dihentikan") || marked.trimStart().startsWith("⚠️ Peringatan sistem") || marked.trimStart().startsWith("❓ Agen menunggu") || marked.trimStart().startsWith("SISTEM •")) "[prosa model — bukan meta sistem] " + marked else marked
-        addMsg(labeledVc230, "assistant")
+        addMsg(labeledVc230, "assistant", turn = true)
+        // vc306 (C4): baris aksi di balasan terakhir tiap turn.
+        addAssistantActionRowVc306(labeledVc230)
+    }
+
+    // vc306 (C4): baris aksi balasan terakhir tiap turn — ikon 20 dengan
+    // hit area 48x48 (visual 36x36 di dalam padding sentuh; di sini tombol
+    // 48x48 penuh, teks ikon 20sp, warna tersier, contentDescription wajib
+    // — skill #15). Footnote turn di ujung kanan baris yang sama: slot
+    // TextView kosong (tag vc306FootnoteSlot) — TEKS footnote diisi Worker C
+    // via setTurnFootnoteVc306(); Worker A tidak menduplikasi logika footnote.
+    // CATATAN glyph: tidak ada drawable vector copy/share/branch/regenerate
+    // di res/drawable, jadi dipakai glyph teks (TalkBack membaca
+    // contentDescription, bukan glyph). Bila satu glyph tampil kotak di HP,
+    // ganti dengan vector drawable di pass berikutnya.
+    private var lastActionRowVc306: View? = null
+    private var lastRegenBtnVc306: Button? = null
+
+    private fun addAssistantActionRowVc306(answerText: String) {
+        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
+        runOnUiThread {
+            val th = currentTheme()
+            // Regenerate hanya di balasan TERAKHIR percakapan (spek a.6):
+            // sembunyikan tombol regenerate baris aksi sebelumnya.
+            lastRegenBtnVc306?.visibility = View.GONE
+            lastRegenBtnVc306 = null
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                tag = "vc306ActionRow"
+                setPadding(0, dp(2), 0, dp(4))
+            }
+            // vc307: glyph teks (⧉/↗/⑂/↻/⋯ — ⧉/⑂ rawan tofu) diganti
+            // ikon Path yang digambar sendiri; ukuran 20dp, tint = faint.
+            fun actionBtn(kind: String, desc: String, onClick: () -> Unit): Button = Button(this).apply {
+                text = ""
+                contentDescription = desc
+                setCompoundDrawables(pathIconVc306(kind, th.faint, 20), null, null, null)
+                background = null
+                minWidth = 0; minHeight = 0
+                setPadding(0, 0, 0, 0)
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, 0, dp(4), 0) }
+                setOnClickListener { onClick() }
+            }
+            var copyBtn: Button? = null
+            copyBtn = actionBtn("copy", "Salin balasan") {
+                uiCopy(answerText)
+                copyBtn?.setCompoundDrawables(pathIconVc306("check", th.faint, 20), null, null, null)
+                Handler(Looper.getMainLooper()).postDelayed({ try { copyBtn?.setCompoundDrawables(pathIconVc306("copy", th.faint, 20), null, null, null) } catch (e: Exception) {} }, 1400)
+            }
+            row.addView(copyBtn)
+            row.addView(actionBtn("share", "Bagikan balasan") {
+                try {
+                    val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, answerText) }
+                    startActivity(Intent.createChooser(intent, "Bagikan balasan"))
+                } catch (e: Exception) { Toast.makeText(this, "Tidak bisa membagikan: ${e.message}", Toast.LENGTH_SHORT).show() }
+            })
+            row.addView(actionBtn("branch", "Buat cabang dari sini") {
+                // TIDAK BISA DIBANGUN di vc306: tidak ada mesin cabang/fork
+                // sesi di vc305 (tidak ada pemanggil/pelacak sesi-cabang).
+                Toast.makeText(this, "Buat cabang belum tersedia di versi ini — salin balasan lalu kirim sebagai pesan baru.", Toast.LENGTH_LONG).show()
+            })
+            val regenBtn = actionBtn("regen", "Buat ulang balasan") {
+                // Kirim ulang prompt user terakhir lewat jalur kirim yang
+                // sudah ada (tanpa mengubah mesin giliran).
+                if (turnActive) { Toast.makeText(this, "Masih ada giliran berjalan — tunggu selesai dulu.", Toast.LENGTH_SHORT).show(); return@actionBtn }
+                if (lastUserText.isBlank()) { Toast.makeText(this, "Tidak ada pesan user terakhir untuk dibuat ulang.", Toast.LENGTH_SHORT).show(); return@actionBtn }
+                sendToAgent(lastUserText)
+            }
+            lastRegenBtnVc306 = regenBtn
+            row.addView(regenBtn)
+            row.addView(actionBtn("more", "Aksi lainnya") { showBubbleMenu(answerText) { replyTargetText = answerText; refreshReplyChip() } })
+            // Slot footnote turn (diisi Worker C — C8): teks 12sp tabular
+            // tersier, rata kanan, ketuk -> trajectory (ditangani Worker C).
+            val footnoteSlot = TextView(this).apply {
+                tag = "vc306FootnoteSlot"
+                text = ""
+                textSize = 12f
+                setTextColor(th.faint)
+                gravity = Gravity.END
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            row.addView(footnoteSlot)
+            lastActionRowVc306 = row
+            chatList.addView(row)
+        }
+    }
+
+    /** vc306 (C4/C8): slot footnote turn — dipakai Worker C untuk mengisi
+     *  teks footnote ("N sec · M steps · …") di baris aksi terakhir.
+     *  Worker A hanya menyediakan posisi; logika footnote milik Worker C. */
+    fun setTurnFootnoteVc306(text: String) {
+        runOnUiThread {
+            try {
+                var slot: TextView? = null
+                for (i in 0 until chatList.childCount) {
+                    val v = chatList.getChildAt(i)
+                    if (v is ViewGroup) {
+                        val s = v.findViewWithTag<TextView>("vc306FootnoteSlot")
+                        if (s != null) slot = s
+                    }
+                }
+                slot?.text = text
+            } catch (e: Exception) {}
+        }
     }
 
     @Volatile private var streamTv: TextView? = null
     @Volatile private var streamWrap: View? = null
 
+    // vc306 (C4): indikator typing + titik stall streaming.
+    private var typingRowVc306: View? = null
+    private var typingDotsVc306: List<TextView> = emptyList()
+    private var typingPhaseVc306 = 0
+    private val typingHandlerVc306 = Handler(Looper.getMainLooper())
+    private var typingRunnableVc306: Runnable? = null
+    private var streamLastChunkMsVc306 = 0L
+    private var stallRunnableVc306: Runnable? = null
+
+    // vc306 (C4/F6): hormati reduce-motion sistem — bila skala durasi
+    // animator 0 (animasi dimatikan user), tampilkan keadaan akhir statis.
+    private fun animationsOffVc306(): Boolean = try {
+        android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    } catch (e: Exception) { false }
+
+    private fun stopTypingVc306() {
+        try { typingRunnableVc306?.let { typingHandlerVc306.removeCallbacks(it) } } catch (e: Exception) {}
+        typingRunnableVc306 = null
+        typingRowVc306 = null
+        typingDotsVc306 = emptyList()
+    }
+
+    private fun hideStallDotVc306() {
+        try { stallRunnableVc306?.let { typingHandlerVc306.removeCallbacks(it) } } catch (e: Exception) {}
+        stallRunnableVc306 = null
+        try { (streamWrap as? ViewGroup)?.findViewWithTag<View>("vc306StallDot")?.visibility = View.GONE } catch (e: Exception) {}
+    }
+
+    private fun scheduleStallCheckVc306() {
+        hideStallDotVc306()
+        val r = Runnable {
+            try {
+                if (streamTv != null && System.currentTimeMillis() - streamLastChunkMsVc306 >= 900) {
+                    // Stream diam >900ms: titik 5px berdenyut di bawah teks.
+                    // Denyut = animasi alpha (hanya transform/alpha, skill #14
+                    // §7); bila animasi dimatikan, titik tampil statis.
+                    val dot = (streamWrap as? ViewGroup)?.findViewWithTag<View>("vc306StallDot")
+                    dot?.visibility = View.VISIBLE
+                    if (!animationsOffVc306()) {
+                        dot?.animate()?.alpha(0.3f)?.setDuration(450)?.withEndAction {
+                            dot.animate()?.alpha(1f)?.setDuration(450)?.start()
+                        }?.start()
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+        stallRunnableVc306 = r
+        typingHandlerVc306.postDelayed(r, 900)
+    }
+
     private fun beginStreamBubble() {
+        // vc304 B2: placeholder streaming hanya di sesi pemilik giliran;
+        // di sesi lain streamTv tetap null sehingga updateStreamBubble
+        // jadi no-op (tanpa bocor ke tampilan sesi baru).
+        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
         runOnUiThread {
-            val tv = addMsg("DeepSeek is working… ▍", "assistant")
-            streamTv = tv
-            streamWrap = tv.parent as? View
+            // vc306 (C4): BUKAN lagi teks placeholder lama + kursor blok —
+            // 3 titik typing warna primary (tileTint), animasi 1200ms
+            // (3 fase x 400ms), label aksesibilitas "Replying" (F4).
+            val th = currentTheme()
+            val dots = mutableListOf<TextView>()
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.START
+                setPadding(0, dp(4), 0, dp(4))
+                contentDescription = "Replying"
+                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            }
+            for (i in 0..2) {
+                val d = TextView(this).apply {
+                    text = "●"
+                    textSize = 14f
+                    setTextColor(th.tileTint)
+                    setPadding(dp(2), 0, dp(2), 0)
+                    alpha = 1f
+                }
+                dots.add(d)
+                row.addView(d)
+            }
+            typingDotsVc306 = dots
+            typingRowVc306 = row
+            streamWrap = row
+            streamTv = null
+            chatList.addView(row)
+            if (!animationsOffVc306()) {
+                typingPhaseVc306 = 0
+                val r = object : Runnable {
+                    override fun run() {
+                        try {
+                            val ds = typingDotsVc306
+                            if (ds.size != 3 || typingRowVc306 == null) return
+                            for ((idx, d) in ds.withIndex()) d.alpha = if (idx == typingPhaseVc306 % 3) 1f else 0.35f
+                            typingPhaseVc306++
+                            typingRunnableVc306 = this
+                            typingHandlerVc306.postDelayed(this, 400)
+                        } catch (e: Exception) {}
+                    }
+                }
+                typingRunnableVc306 = r
+                typingHandlerVc306.postDelayed(r, 400)
+            }
         }
     }
 
@@ -3449,12 +4796,21 @@ class MainActivity : Activity() {
         val ci = t.indexOf("```")
         if (ci >= 0) t = t.substring(0, ci)
         t = t.lines().filter { it.trim() !in listOf("json", "Copy", "Download") }.joinToString("\n").trim()
-        return t.ifBlank { "DeepSeek is working…" }
+        // vc306 (C4): potongan kosong = string kosong (BUKAN lagi teks
+        // placeholder lama) — updateStreamBubble membiarkan 3 titik typing
+        // tetap tampil sampai potongan nyata tiba.
+        return t
     }
 
     private fun updateStreamBubble(partial: String) {
         val clean = sanitizePartial(partial)
+        // vc306 (C4): potongan kosong — jangan buat teks asisten kosong;
+        // biarkan 3 titik typing tetap tampil.
+        if (clean.isBlank()) return
         journalStream(clean)
+        // vc304 B2: jejak streaming tetap masuk jurnal persisten, tapi
+        // update UI + scroll hanya di sesi pemilik giliran.
+        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
         // v4.15.0 (R2): tulis UI maks tiap 120 ms — potongan SSE bisa
         // datang belasan kali per detik; bubble final tetap menggantikan.
         // vc283: 120 -> 250 ms + scroll hanya bila di dekat bawah — tiap
@@ -3465,7 +4821,19 @@ class MainActivity : Activity() {
         if (nowS - lastStreamUiMs < 250) return
         lastStreamUiMs = nowS
         runOnUiThread {
-            streamTv?.text = clean + " ▍"
+            streamLastChunkMsVc306 = System.currentTimeMillis()
+            if (streamTv == null) {
+                // vc306 (C4): potongan pertama — ganti baris 3 titik typing
+                // dengan teks asisten tanpa bubble (tanpa kursor blok "▍").
+                try { (typingRowVc306?.parent as? ViewGroup)?.removeView(typingRowVc306) } catch (e: Exception) {}
+                stopTypingVc306()
+                val tv = addMsg(clean, "assistant")
+                streamTv = tv
+                streamWrap = tv.parent as? View
+            } else {
+                streamTv?.text = clean
+            }
+            scheduleStallCheckVc306()
             val nearBottom = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
             if (nearBottom) chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
         }
@@ -3473,6 +4841,8 @@ class MainActivity : Activity() {
 
     private fun endStreamBubble() {
         runOnUiThread {
+            stopTypingVc306()
+            hideStallDotVc306()
             val w = streamWrap
             if (w != null && w.parent != null) (w.parent as? ViewGroup)?.removeView(w)
             streamTv = null; streamWrap = null
@@ -3646,21 +5016,25 @@ class MainActivity : Activity() {
         box.visibility = View.VISIBLE
         for ((idx, pa) in pendingAttachesVc212.withIndex()) {
             val chip = Button(this).apply {
-                text = "📎 " + pa.name.take(28) + " ✕"
+                // vc307: "📎" (emoji, render beda antar device) diganti
+                // drawable vektor ic_attach; "✕" diganti "×" (U+00D7,
+                // Latin-1, ada di semua font). Tap chip = hapus lampiran.
+                text = pa.name.take(28) + " ×"
                 textSize = 12f
                 setTextColor(Color.WHITE)
                 background = rounded(Color.rgb(34, 34, 34), 20)
+                setCompoundDrawables(sizedIconVc306(R.drawable.ic_attach, Color.WHITE, ChatThemeVc306.iconXs), null, null, null)
+                compoundDrawablePadding = dp(6)
                 setOnClickListener { pendingAttachesVc212.removeAt(idx); refreshAttachStripVc212(); refreshSendVisibilityVc212() }
             }
             row.addView(chip)
         }
     }
     private fun refreshSendVisibilityVc212() {
-        try {
-            val hasText = ::chatInput.isInitialized && chatInput.text.toString().trim().isNotEmpty()
-            val hasAttach = pendingAttachesVc212.isNotEmpty()
-            chatSendBtnRef?.visibility = if (hasText || hasAttach) View.VISIBLE else View.GONE
-        } catch (e: Exception) {}
+        // vc306 Worker B: dialihkan ke state machine composer terpusat
+        // (mic/kirim/stop + hint + pill otomasi) — pemanggil lama
+        // (attach strip dsb.) tetap jalan tanpa perubahan.
+        try { refreshComposerButtonsVc306() } catch (e: Exception) {}
     }
     private fun mimeForNameVc212(name: String): String {
         return when (name.substringAfterLast('.', "").lowercase()) {
@@ -3860,6 +5234,11 @@ class MainActivity : Activity() {
     private fun offerResumeVc303() {
         try {
             if (resumeOfferShownVc303) return
+            // vc304 B2: tawaran lanjut HANYA di sesi pemilik giliran yang
+            // berhenti — jangan muncul di sesi lain. Flag TIDAK dikonsumsi
+            // supaya tawaran bisa muncul lagi di akhir giliran berikut di
+            // sesi pemilik.
+            if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
             if (abnormalStopReasonVc303() == null) return
             if (planItems.none { it.startsWith("☐") }) return
             if (!activityResumed) return
@@ -3867,17 +5246,31 @@ class MainActivity : Activity() {
             val openFirst = planItems.firstOrNull { it.startsWith("☐") } ?: return
             runOnUiThread {
                 try {
-                    AlertDialog.Builder(this)
+                    // vc304 B2: dilacak agar switchSession bisa menutupnya
+                    // bila user pindah sesi selagi dialog tampil.
+                    resumeDialogVc304 = AlertDialog.Builder(this)
                         .setTitle("Lanjutkan tugas?")
                         .setMessage("Giliran berhenti (${abnormalStopReasonVc303()}) padahal masih ada langkah rencana terbuka. Langkah berikut: $openFirst")
                         .setPositiveButton("Lanjutkan tugas") { _, _ ->
+                            resumeDialogVc304 = null
                             onUserMessage("Lanjutkan tugas yang tertunda: kerjakan langkah rencana ☐ yang masih terbuka dari STATUS GILIRAN TERAKHIR di atas; jangan mulai ulang dari langkah pertama.")
                         }
-                        .setNegativeButton("Nanti saja", null)
+                        .setNegativeButton("Nanti saja") { _, _ -> resumeDialogVc304 = null }
                         .show()
                 } catch (e: Exception) {}
             }
         } catch (e: Exception) {}
+    }
+
+    // vc304 B1: muat budget langkah giliran dari pref — SATU-SATUNYA tempat
+    // baca maxToolSteps untuk giliran baru (onUserMessage + maybeResumeTurn).
+    // Nilai & coercion sama persis seperti inline lama di onUserMessage
+    // (default 50, coerce 5..200, plafon 200 sejak vc299). Sebelum vc304,
+    // resume tidak memuat ulang: sesudah app mati/proses dibunuh, field
+    // kembali ke init (stepBudget 10) → giliran resume kehabisan budget
+    // di 10 lalu +10 sekali = 20, walau pref maxToolSteps 200.
+    private fun loadStepBudgetVc304() {
+        stepBudget = getSharedPreferences("harness", MODE_PRIVATE).getInt("maxToolSteps", 50).coerceIn(5, 200)
     }
 
     private fun onUserMessage(text: String) {
@@ -3890,6 +5283,10 @@ class MainActivity : Activity() {
         if (turnActive && !drainingFollow) { enqueueFollowUp(text); return }
         turnActive = true
         userTurnActive = true
+        // vc306 Worker B: giliran baru = stop lama hangus; composer pindah
+        // ke state berjalan (hint "Membuat…", tombol ■, pill otomasi ke strip).
+        stopRequestedVc306 = false
+        refreshComposerButtonsVc306()
         val prevTurnSessionVc234 = turnSessionId // vc234 K3: sesi giliran lama, dibaca SEBELUM turnSessionId ditimpa sesi baru
         turnSessionId = currentSessionId
         emitPhase("think")
@@ -3960,12 +5357,18 @@ class MainActivity : Activity() {
         toolChoiceRepairVc282 = 0
         turnSystemNotesVc282.clear()
         turnSource = "" // vc232 S10(c): sumber turn lama tidak terbawa ke pill turn baru
+        // vc306 Worker C: hitungan + registry auto-collapse giliran baru.
+        turnProcessViewsVc306.clear(); thinkPillsVc306.clear()
+        turnToolRowsVc306 = 0; turnMsgCountVc306 = 0; turnThinkBlocksVc306 = 0
+        lastTurnContainerVc306 = null; lastTurnExpandedContentVc306 = null; lastTurnToggleVc306 = null
         verifyTurn = false // vc232 S7: flag verifikasi tidak boleh bocor ke giliran berikut
         TurnMetrics.beginTurn(this)
         blockedAttempts = 0
         // vc265 V-m7 (vc299: plafon naik 50 → 200): cap dibatasi 200 (batas UI) — nilai restore/backup
         // buatan di atas 200 tidak lagi menaikkan cap langkah.
-        stepBudget = getSharedPreferences("harness", MODE_PRIVATE).getInt("maxToolSteps", 50).coerceIn(5, 200)
+        // vc304 B1: baca pref dipusatkan ke loadStepBudgetVc304() (dipakai
+        // juga maybeResumeTurn) — nilai & coercion TIDAK berubah.
+        loadStepBudgetVc304()
         pendingTool = null
         lastUserText = text
         // vc212 Item 1: routing thinking otomatis 1-1. Manual menang: bila user
@@ -4195,7 +5598,7 @@ class MainActivity : Activity() {
                 TurnMetrics.recordGuardTrim(trimmed)
                 if (trimmed > 0 && !guardMetaPostedVc228) {
                     guardMetaPostedVc228 = true
-                    try { addMsg("⚠️ Guard prompt memangkas riwayat percakapan (sekali per episode guard): sebagian riwayat lama dibuang agar prompt muat di cap — ringkasan riwayat lama dibuat terpisah bila potongannya cukup besar; jawaban giliran ini memakai riwayat yang tersisa.", "meta") } catch (e: Exception) {}
+                    try { addMsg("⚠️ Guard prompt memangkas riwayat percakapan (sekali per episode guard): sebagian riwayat lama dibuang agar prompt muat di cap — ringkasan riwayat lama dibuat terpisah bila potongannya cukup besar; jawaban giliran ini memakai riwayat yang tersisa.", "meta", turn = true) } catch (e: Exception) {}
                 }
             }
             val sysLen = AgentPrompt.buildSystemPrompt(this, true, text).length
@@ -4210,7 +5613,7 @@ class MainActivity : Activity() {
                 val marker = H_RINGKASAN
                 val hi = prompt.indexOf(H_RIWAYAT)
                 prompt = if (hi >= 0) prompt.substring(0, hi) + marker + summ + "\n\n" + prompt.substring(hi) else prompt + "\n\n" + marker + summ
-                try { addMsg("🧠 Ringkasan riwayat lama disisipkan ke prompt giliran ini — RINGKASAN BUATAN MODEL (belum terverifikasi — angka/nama di sini bisa salah; minta user mengonfirmasi bila dipakai untuk tindakan).", "meta") } catch (e: Exception) {}
+                try { addMsg("🧠 Ringkasan riwayat lama disisipkan ke prompt giliran ini — RINGKASAN BUATAN MODEL (belum terverifikasi — angka/nama di sini bisa salah; minta user mengonfirmasi bila dipakai untuk tindakan).", "meta", turn = true) } catch (e: Exception) {}
             }
         }
         var historyNotSummarizedVc228 = false
@@ -4233,7 +5636,7 @@ class MainActivity : Activity() {
                                     var combined = if (old.isBlank()) summNew else old + "\n" + summNew
                                     if (combined.length > 3000) combined = combined.takeLast(3000)
                                     prefsS.edit().putString("histSummary_" + currentSessionId, combined).putString("histSummaryHash_" + currentSessionId, hashVc212).apply()
-                                    try { runOnUiThread { try { addMsg("🧠 Ringkasan riwayat lama dibuat dari potongan yang dipangkas guard (belum terverifikasi — angka/nama di sini bisa salah) — berlaku mulai giliran berikut.", "meta") } catch (e: Exception) {} } } catch (e: Exception) {}
+                                    try { runOnUiThread { try { addMsg("🧠 Ringkasan riwayat lama dibuat dari potongan yang dipangkas guard (belum terverifikasi — angka/nama di sini bisa salah) — berlaku mulai giliran berikut.", "meta", turn = true) } catch (e: Exception) {} } } catch (e: Exception) {}
                                 }
                             }
                         } catch (e: Exception) {}
@@ -4243,7 +5646,7 @@ class MainActivity : Activity() {
         }
         if (historyNotSummarizedVc228) {
             prompt += "\n\n[SISTEM: riwayat lama belum diringkas — jawaban giliran ini belum memakai konteks lama. Jangan mengarang isi riwayat lama; bila user bertanya soal itu, katakan konteks lamanya belum tersedia di giliran ini.]\n"
-            try { addMsg("⚠️ Riwayat lama belum diringkas — jawaban giliran ini belum memakai konteks lama (ringkasan dibuat di latar untuk giliran berikut).", "meta") } catch (e: Exception) {}
+            try { addMsg("⚠️ Riwayat lama belum diringkas — jawaban giliran ini belum memakai konteks lama (ringkasan dibuat di latar untuk giliran berikut).", "meta", turn = true) } catch (e: Exception) {}
         }
         run {
             val cap = TurnMetrics.promptCap(this)
@@ -4253,7 +5656,7 @@ class MainActivity : Activity() {
                 TurnMetrics.recordGuardTrim(trimmed2)
                 if (trimmed2 > 0 && !guardMetaPostedVc228) {
                     guardMetaPostedVc228 = true
-                    try { addMsg("⚠️ Guard prompt memangkas riwayat percakapan (sekali per episode guard): sebagian riwayat lama dibuang agar prompt muat di cap.", "meta") } catch (e: Exception) {}
+                    try { addMsg("⚠️ Guard prompt memangkas riwayat percakapan (sekali per episode guard): sebagian riwayat lama dibuang agar prompt muat di cap.", "meta", turn = true) } catch (e: Exception) {}
                 }
                 // vc238 M15(c): fail-open kini BERBUNYI, bukan diam. Bila
                 // prompt masih di atas cap sesudah guard pass kedua, itu
@@ -4262,7 +5665,7 @@ class MainActivity : Activity() {
                 // peringatan di giliran ini (blok guard kedua hanya jalan
                 // sekali per giliran, jadi bubble ini pun sekali).
                 if (prompt.length > cap) {
-                    try { addMsg("⚠️ Guard prompt gagal-terbuka: prompt sistem saja sudah melebihi cap " + cap + " char, jadi prompt giliran ini dikirim utuh tanpa pemangkasan — kurangi persona atau skill aktif bila ini sering muncul.", "meta") } catch (e: Exception) {}
+                    try { addMsg("⚠️ Guard prompt gagal-terbuka: prompt sistem saja sudah melebihi cap " + cap + " char, jadi prompt giliran ini dikirim utuh tanpa pemangkasan — kurangi persona atau skill aktif bila ini sering muncul.", "meta", turn = true) } catch (e: Exception) {}
                 }
             }
             val sysLen = AgentPrompt.buildSystemPrompt(this, true, text).length
@@ -4438,7 +5841,21 @@ class MainActivity : Activity() {
             // sedang tampil + popup melayang agar tidak dieksekusi di
             // bawah sesi baru.
             try { activeToolDialogVc246?.dismiss() } catch (e: Exception) {}
+            // vc304 B2: dialog persetujuan yang sedang tampil ikut parkir —
+            // keputusannya menunggu user kembali ke sesi pemilik (bukan
+            // hilang bersama dialog). approvalParkedVc304 diset saat dialog
+            // dibuat di proceedTool dan dibersihkan saat user memutuskan.
             activeToolDialogVc246 = null
+            // vc304 B2: dialog +10 yang sedang tampil ikut parkir; tawarannya
+            // ditawarkan ulang saat user kembali ke sesi pemilik (di bawah).
+            try { extendDialogVc304?.dismiss() } catch (e: Exception) {}
+            if (extendDialogVc304 != null) extendOfferPendingVc304 = true
+            extendDialogVc304 = null
+            // vc304 B2: dialog tawaran-lanjut juga ditutup; tawarannya boleh
+            // muncul lagi di akhir giliran berikut di sesi pemilik.
+            try { resumeDialogVc304?.dismiss() } catch (e: Exception) {}
+            if (resumeDialogVc304 != null) resumeOfferShownVc303 = false
+            resumeDialogVc304 = null
             try { ApprovalFloat.hide(this) } catch (e: Exception) {}
         }
         currentSessionId = id
@@ -4469,6 +5886,20 @@ class MainActivity : Activity() {
             val pre = rows.map { r -> if (r.role == "asisten" || r.role == "assistant") precomputeAssistantRender(r.text) else null }
             runOnUiThread { renderHistRows(rows, older, false, pre) }
         }.start()
+        // vc304 B2: kembali ke sesi pemilik giliran background — tawarkan
+        // ulang keputusan yang diparkir (dialog +10 / approval tool).
+        // Giliran TIDAK dihentikan saat pindah sesi; yang diparkir hanya
+        // keputusannya. refreshLiveCard menampilkan progres sesi ini lagi.
+        if (turnActive && turnSessionId == id) {
+            if (extendOfferPendingVc304) {
+                extendOfferPendingVc304 = false
+                offerExtendStepsVc304()
+            }
+            val parkedApprovalVc304 = approvalParkedVc304
+            approvalParkedVc304 = null
+            if (parkedApprovalVc304 != null) proceedTool(parkedApprovalVc304.first, parkedApprovalVc304.second, true, parkedApprovalVc304.third)
+        }
+        refreshLiveCard()
     }
 
 
@@ -4840,12 +6271,29 @@ class MainActivity : Activity() {
     private fun refreshQuickChips() {
         val row = quickChipsRow ?: return
         runOnUiThread {
+            val th = currentTheme()
             row.removeAllViews()
             for (chip in quickChipsList()) {
+                // vc309 Worker B: chip AKSI CEPAT vertikal, lebar penuh,
+                // sentence case (isAllCaps=false — allCaps bawaan Button
+                // memanjangkan "Cek status HP dan baterai" jadi
+                // "CEK STATUS HP DAN BATERAI"), teks 13.5sp rata kiri,
+                // maks 2 baris + ellipsize END sebagai pengaman terakhir
+                // (label terpanjang membungkus dulu sebelum terpotong),
+                // tinggi sentuh 48dp, warna ikut tema (dulu bg gelap
+                // hardcoded + teks putih — bentrok di tema cerah).
                 row.addView(Button(this).apply {
                     text = chip
-                    setTextColor(Color.WHITE)
-                    background = rounded(Color.rgb(34, 34, 34), 16)
+                    isAllCaps = false
+                    textSize = 13.5f
+                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(th.text)
+                    background = rounded(th.tileBg, ChatThemeVc306.rMd)
+                    minHeight = dp(ChatThemeVc306.touchTarget)
+                    setPadding(dp(14), dp(10), dp(14), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(3), 0, dp(3)) }
                     setOnClickListener {
                         if (::chatInput.isInitialized) chatInput.setText(chip)
                         chatSendBtnRef?.performClick()
@@ -5571,7 +7019,7 @@ class MainActivity : Activity() {
         val c = cardBoxT()
         val th = currentTheme()
         c.addView(tv("UKURAN FONT CHAT", 12f, th.dim, true))
-        val cur = st.optInt("chatFont", 15)
+        val cur = st.optInt("chatFont", 16) // vc306: default 16, selaras addMsg
         val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (px in listOf(13, 15, 17, 19)) {
             rowB.addView(Button(this).apply {
@@ -5762,7 +7210,10 @@ class MainActivity : Activity() {
             cc.addView(circleImage(R.drawable.ic_dashboard, green, 42))
             val ccol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
             val ccLine = when {
-                turnActive -> "Agen Sedang Bekerja • Ketuk untuk Pantau"
+                // vc304 B2: "sedang bekerja" hanya untuk giliran sesi aktif;
+                // giliran sesi lain ditandai terpisah tanpa isinya.
+                turnActive && SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId) -> "Agen Sedang Bekerja • Ketuk untuk Pantau"
+                turnActive -> "Giliran sesi lain berjalan di background"
                 prefLong("ocCurrentTask") > 0 -> "Koordinator OpenCode Berjalan"
                 else -> "Semua Agen Online • Siaga"
             }
@@ -5798,7 +7249,9 @@ class MainActivity : Activity() {
                     background = rounded(white, 18)
                     setPadding(dp(14), dp(12), dp(14), dp(12))
                 }
-                if (turnActive) prog.addView(tv("● Agen sedang bekerja…", 12.5f, Color.rgb(197, 138, 30), true))
+                // vc304 B2: baris "sedang bekerja" hanya untuk giliran sesi
+                // aktif; giliran sesi lain ditandai terpisah tanpa isinya.
+                if (turnActive) prog.addView(tv(if (SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) "● Agen sedang bekerja…" else SessionBackgroundVc304.backgroundNotice(), 12.5f, Color.rgb(197, 138, 30), true))
                 for (l in planLines) prog.addView(tv(l, 12.5f, navy))
                 prog.setOnClickListener { showTab("Chat") }
                 box.addView(prog)
@@ -6139,6 +7592,11 @@ class MainActivity : Activity() {
             text = "Simpan & Lanjut"
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener {
+                // vc308 Worker C (BUG 4): jalur ganti tema kedua — wizard
+                // setup awal (~7239: themeSel lokal, ditulis di sini).
+                // Tanpa recreate, bubble sapaan + histori yang dibangun
+                // onCreate tetap bertema lama sampai restart.
+                val oldThemeVc308 = p.getString("themeMode", "gelap") ?: "gelap"
                 val ed = p.edit()
                 ed.putString("userName", nameEt.text.toString().trim().take(24))
                 val agName = agentEt.text.toString().trim().take(24)
@@ -6149,6 +7607,7 @@ class MainActivity : Activity() {
                 uiSetDefMode("think", thinkSel)
                 uiSetDefMode("search", searchSel)
                 uiSetFlow("identity"); refreshWizard()
+                if (themeSel != oldThemeVc308) applyThemeRecreateVc308()
             }
         })
         btnRow.addView(Button(this).apply {
@@ -6225,8 +7684,12 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun renderWorkAndAsk(workJson: String?, histId: Long) {
+    // vc304 B2: param `turn = true` = kartu kerja giliran yang sedang
+    // jalan — hanya dirender di sesi pemilik; di sesi lain lewati (JSON
+    // sudah tersimpan di histori DB -> renderHistRows saat user kembali).
+    private fun renderWorkAndAsk(workJson: String?, histId: Long, turn: Boolean = false) {
         if (workJson.isNullOrBlank()) return
+        if (turn && !SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
         try {
             val w = JSONObject(workJson)
             if (w.has("items")) addWorkCard(w)
@@ -6247,7 +7710,11 @@ class MainActivity : Activity() {
             if (totalMs <= 0L || totalMs > 86_400_000L) totalMs = sumMs
             val box = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = rounded(Color.rgb(24, 24, 24), 18)
+                // vc308 Worker C (BUG 4): dulu rgb(24,24,24) hardcoded —
+                // kartu kerja gelap di tema cerah, bahkan sesudah restart.
+                // Kini ikut tema (dibangun ulang dari work JSON histori
+                // saat recreate, jadi ikut tema baru).
+                background = rounded(currentTheme().card, 18)
                 setPadding(dp(12), dp(8), dp(12), dp(10))
             }
             box.addView(View(this).apply {
@@ -6273,7 +7740,7 @@ class MainActivity : Activity() {
                 // Baris lama (tanpa args/evidence) tetap tampil: detail
                 // jatuh ke ringkasan saja.
                 val det = (if (it.optString("args", "").isNotBlank()) "Argumen: " + ActivityTitle.shortArgs(tool, wArgs) + "\n" else "") + "Hasil: " + (if (ev.isNotBlank()) ActivityTitle.resultTail(ev, 600) else sum)
-                detail.addView(buildActivityRow(ActivityTitle.title(tool, wArgs), ActivityTitle.statusText(it.optLong("ms", 0), it.optBoolean("ok", true)), det).root)
+                detail.addView(buildActivityRow(ActivityTitle.title(tool, wArgs), ActivityTitle.statusText(it.optLong("ms", 0), it.optBoolean("ok", true)), det, tool).root)
             }
             box.addView(detail)
             head.setOnClickListener { detail.visibility = if (detail.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
@@ -6291,7 +7758,9 @@ class MainActivity : Activity() {
             val opts = ask.optJSONArray("options") ?: return@runOnUiThread
             val box = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = rounded(Color.rgb(30, 30, 30), 18)
+                // vc308 Worker C (BUG 4): dulu rgb(30,30,30) hardcoded —
+                // kartu tanya gelap di tema cerah, bahkan sesudah restart.
+                background = rounded(currentTheme().card, 18)
                 setPadding(dp(12), dp(10), dp(12), dp(10))
             }
             box.addView(TextView(this).apply { text = "❓ $q"; setTextColor(TEXT); textSize = 13.5f; typeface = android.graphics.Typeface.DEFAULT_BOLD })
@@ -6302,7 +7771,10 @@ class MainActivity : Activity() {
                 val b = Button(this).apply {
                     text = (if (isChosen) "✓ " else "◯ ") + opt
                     setTextColor(Color.WHITE)
-                    background = rounded(if (isChosen) Color.rgb(46, 107, 230) else Color.rgb(34, 34, 34), 20)
+                    // vc308 Worker C (BUG 4): opsi belum dipilih dulu
+                    // rgb(34,34,34) hardcoded — gelap di tema cerah.
+                    // Terpilih tetap biru approve (sama di kedua tema).
+                    background = rounded(if (isChosen) Color.rgb(46, 107, 230) else currentTheme().tileBg, 20)
                     isEnabled = chosen == null
                     setOnClickListener {
                         uiAskAnswer(histId, opt)
@@ -6329,38 +7801,897 @@ class MainActivity : Activity() {
     // vc283: throttle refresh kartu live (dipanggil tiap journalWrite —
     // tiap pesan tool — padahal isinya cuma 8 baris terakhir + fase).
     @Volatile private var lastLiveCardMsVc283 = 0L
+    // vc306 Worker B (C10): activity strip — KAPSUL KACA di atas composer,
+    // mengganti live card. LOGIKA live dipertahankan (sumber sama:
+    // turnCkpt/turnJournal + SessionBackgroundVc304 B2); yang berubah hanya
+    // wadah + isinya: indikator netral 20px (BUKAN ekor paus/maskot) +
+    // judul 12sp w600 + detail 12sp sekunder + timer tabular 0:20 +
+    // progres todo "n/m" + bar 30×3 (dari planItems bila ada).
     private fun refreshLiveCard() {
         val box = liveCardBox ?: return
-        val tv = liveCardTv ?: return
-        // Sembunyikan kartu selalu (akhir giliran); update teks di-throttle.
+        // Sembunyikan strip selalu (akhir giliran); update teks di-throttle.
         if (turnActive) {
             val now = System.currentTimeMillis()
             if (now - lastLiveCardMsVc283 < 500) return
             lastLiveCardMsVc283 = now
         }
         runOnUiThread {
-            val ckpt = try { turnPrefs().getString("turnCkpt", "") } catch (e: Exception) { "" }
-            if (!turnActive || ckpt.isNullOrBlank()) { box.visibility = View.GONE; return@runOnUiThread }
-            val sb = StringBuilder()
-            val agentName = try { Agents.active(this).name } catch (e: Exception) { "Agen" }
-            sb.append("● ").append(agentName).append(" sedang bekerja • ")
-                .append(if (requestStartMs > 0L) (System.currentTimeMillis() - requestStartMs) / 1000 else 0).append(" dtk")
-            try {
-                val j = JSONObject(turnPrefs().getString("turnJournal", "") ?: "")
-                val phase = j.optString("phase")
-                if (phase.isNotBlank()) sb.append(" • ").append(phase)
-                val lines = j.optJSONArray("lines")
-                if (lines != null) {
-                    val from = maxOf(0, lines.length() - 8)
-                    for (i in from until lines.length()) sb.append("\n").append(lines.optString(i))
+            val d = readStripDataVc306()
+            if (!turnActive || d.ckptBlank) {
+                box.visibility = View.GONE
+                stripTimerHandlerVc306.removeCallbacks(stripTimerRunnableVc306)
+                // Pill otomasi kembali ke baris atas composer bila strip hilang.
+                refreshComposerButtonsVc306()
+                return@runOnUiThread
+            }
+            // vc304 B2: strip hanya untuk giliran sesi AKTIF. Giliran sesi
+            // lain ditandai terpisah (tanpa isi prosesnya).
+            if (!d.renderAllowed) {
+                stripTitleTvVc306?.text = "Sesi lain"
+                stripDetailTvVc306?.text = d.notice
+                liveCardTv?.text = d.notice
+                stripTimerTvVc306?.visibility = View.GONE
+                stripTodoRowVc306?.visibility = View.GONE
+                stripSpinnerVc306?.visibility = View.VISIBLE
+                box.visibility = View.VISIBLE
+                refreshComposerButtonsVc306()
+                return@runOnUiThread
+            }
+            stripTitleTvVc306?.text = if (stopRequestedVc306) "Menghentikan…" else d.title
+            stripDetailTvVc306?.text = d.detail
+            liveCardTv?.text = d.detail
+            stripTimerTvVc306?.visibility = View.VISIBLE
+            updateStripTimerVc306()
+            if (d.todoTotal > 0) {
+                stripTodoRowVc306?.visibility = View.VISIBLE
+                stripTodoTextVc306?.text = "${d.todoDone}/${d.todoTotal}"
+                stripTodoFillVc306?.layoutParams = stripTodoFillVc306?.layoutParams?.apply {
+                    width = dp(30 * d.todoDone / d.todoTotal.coerceAtLeast(1))
                 }
-                val upd = j.optLong("upd", 0)
-                if (upd > 0 && System.currentTimeMillis() - upd > 90_000)
-                    sb.append("\n⚠️ Tidak ada kabar >90 dtk — proses mungkin terhenti.")
-            } catch (e: Exception) {}
-            tv.text = sb.toString()
+                stripTodoFillVc306?.requestLayout()
+            } else {
+                stripTodoRowVc306?.visibility = View.GONE
+            }
+            stripSpinnerVc306?.visibility = View.VISIBLE
+            stripCapsuleVc306?.contentDescription = d.title + ". " + d.detail + ". " + fmtElapsedVc306(d.elapsedSec) + ". Ketuk untuk detail, tahan 4 detik untuk statistik."
             box.visibility = View.VISIBLE
+            stripTimerHandlerVc306.removeCallbacks(stripTimerRunnableVc306)
+            stripTimerHandlerVc306.postDelayed(stripTimerRunnableVc306, 1000)
+            syncGlassHeaderVc306()
+            // Pill otomasi pindah ke samping strip saat strip tampil.
+            refreshComposerButtonsVc306()
         }
+    }
+
+    // ============ vc306 Worker B — HEADER KACA + COMPOSER + ACTIVITY STRIP ============
+    // Spek: SPEC-SAMAKAN-CHAT-DSHGO.md (a.4, a.12, b baris 8-9/16, c C5/C9/C10/
+    // C13/C16, e E3/E7, f F1/F4/F5). Bila spek vs skill #14/#15 konflik,
+    // SKILL MENANG (tanda [A11Y] di bawah). Warna tema dari ChatThemeVc306
+    // (Worker A) untuk nilai yang ada di daftar itu; sisanya literal spek.
+    // CATATAN BLUR: RenderEffect per-view SENGAJA tidak dipakai — ia ikut
+    // mengaburkan isi view sendiri (teks/ikon), bukan hanya latar belakang;
+    // blur latar per-view butuh API window-level yang tidak cocok di sini.
+    // Kaca = fill semi-opak + hairline, sesuai fallback spek §d (F5).
+
+    private data class StripDataVc306(
+        val title: String, val detail: String, val elapsedSec: Long,
+        val todoDone: Int, val todoTotal: Int, val journalLines: List<String>,
+        val stale: Boolean, val ckptBlank: Boolean, val renderAllowed: Boolean, val notice: String
+    )
+
+    private fun fmtElapsedVc306(sec: Long): String {
+        val s = sec.coerceAtLeast(0)
+        return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+    }
+
+    private fun faintColorVc306(): Int = if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint
+
+    private fun glassFillVc306(dark: Boolean): Int {
+        // Spek §a.1: chrome light = putih α0.70, dark = smoke #292E39 α0.72.
+        // SDK <31 (tanpa blur apa pun): fill nyaris-opak (α0.96) agar
+        // kontras teks di atasnya tetap lolos AA (F5).
+        return if (android.os.Build.VERSION.SDK_INT >= 31) {
+            if (dark) Color.argb(184, 41, 46, 57) else Color.argb(179, 255, 255, 255)
+        } else {
+            if (dark) Color.argb(245, 41, 46, 57) else Color.argb(245, 251, 252, 255)
+        }
+    }
+
+    private fun glassDrawableVc306(radiusDp: Int, dark: Boolean): GradientDrawable {
+        val g = GradientDrawable()
+        g.shape = GradientDrawable.RECTANGLE
+        g.cornerRadius = dp(radiusDp).toFloat()
+        g.setColor(glassFillVc306(dark))
+        // Hairline 0.5px: dark = putih α0.09, light = ink α0.08 (spek §a.1).
+        val hair = if (dark) Color.argb(23, 255, 255, 255) else Color.argb(20, 30, 35, 46)
+        g.setStroke(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), hair)
+        return g
+    }
+
+    private fun topFadeDrawableVc306(): android.graphics.drawable.GradientDrawable {
+        // Top-fade: gradasi warna halaman 12dp melewati bar saat scroll (C5).
+        val top = if (isDarkTheme()) ChatThemeVc306.darkBgTop else ChatThemeVc306.lightBgTop
+        return android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(top, Color.TRANSPARENT)
+        )
+    }
+
+    // onSurface α0.06 (bg tombol bundar netral) / α0.12 (bg disabled) — C9.
+    private fun onSurfaceAlphaVc306(): Int = if (isDarkTheme()) Color.argb(15, 255, 255, 255) else Color.argb(15, 30, 35, 46)
+    private fun disabledBgVc306(): Int = if (isDarkTheme()) Color.argb(31, 255, 255, 255) else Color.argb(31, 30, 35, 46)
+
+    // Latar tombol bundar: visual `visualDp` di tengah hit area 48×48
+    // (LayerDrawable inset — BUKAN TouchDelegate; F1/[A11Y]).
+    private fun circleBtnBgVc306(fill: Int, radiusDp: Int, visualDp: Int): android.graphics.drawable.Drawable {
+        val inset = (48 - visualDp) / 2
+        val g = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(radiusDp).toFloat(); setColor(fill) }
+        return android.graphics.drawable.LayerDrawable(arrayOf(g)).apply { setLayerInset(0, dp(inset), dp(inset), dp(inset), dp(inset)) }
+    }
+
+    private fun glassCircleBtnBgVc306(visualDp: Int): android.graphics.drawable.Drawable {
+        val inset = (48 - visualDp) / 2
+        val g = glassDrawableVc306(visualDp / 2, isDarkTheme())
+        return android.graphics.drawable.LayerDrawable(arrayOf(g)).apply { setLayerInset(0, dp(inset), dp(inset), dp(inset), dp(inset)) }
+    }
+
+    private fun sendBtnBgVc306(): android.graphics.drawable.Drawable {
+        // Kirim/stop: primary solid accentSolid + pressed accentPressed (C9).
+        val normal = circleBtnBgVc306(ChatThemeVc306.accentSolid, ChatThemeVc306.rLg, 36)
+        val pressed = circleBtnBgVc306(ChatThemeVc306.accentPressed, ChatThemeVc306.rLg, 36)
+        return android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), normal)
+        }
+    }
+
+    // ---- vc308 Worker B — tombol ikon lingkaran (SS3) ----
+    // Diameter visual lingkaran keempat tombol ikon chat (menu, +, attach,
+    // mic): SATU nilai untuk semuanya. Dulu header 44dp vs composer 36dp —
+    // lingkaran tidak konsisten antar keempatnya. Radius pemakaian =
+    // diameter/2 supaya benar-benar lingkaran (rLg=20 di 44dp menyisakan
+    // sisi datar 2dp). Kirim/stop SPIN SENGAJA tetap 36dp (bukan salah
+    // satu dari keempat ini; aksen solid, bahasa visual berbeda).
+    private val iconCircleVisualDpVc308: Int = 44
+
+    // Factory tombol ikon [A11Y]: Button beneran (bukan TextView klikabel),
+    // hit 48×48, ikon via setCompoundDrawables (bounds eksplisit).
+    // vc308 (SS3) — AKAR: drawable KIRI compound TIDAK PERNAH dipusatkan
+    // gravity. AOSP TextView.onDraw menggambarnya di x = paddingLeft
+    // (getHorizontalOffsetForDrawables() = 0; gravity horizontal diabaikan),
+    // jadi `gravity = CENTER` di bawah hanya memusatkan TEKS (yang kosong)
+    // — ikon 22dp menempel di tepi kiri tombol 48dp (pusat ikon 11dp vs
+    // pusat tombol 24dp = geser kiri 13dp; mic 20dp geser 14dp), sementara
+    // latar lingkaran LayerDrawable yang simetris TETAP di tengah. Karena
+    // itu padding kiri dihitung dari bounds ikon sendiri: (48dp - lebar
+    // ikon)/2. Override setCompoundDrawables memastikan pemusatan ikut
+    // SETIAP pergantian drawable (kirim 20dp <-> stop 18dp di
+    // refreshComposerButtonsVc306, refresh tema di applyVc306Chrome),
+    // bukan hanya saat konstruksi.
+    private fun iconBtnVc306(icon: android.graphics.drawable.Drawable, bg: android.graphics.drawable.Drawable, cd: String, onClick: () -> Unit): Button = object : Button(this) {
+        override fun setCompoundDrawables(left: android.graphics.drawable.Drawable?, top: android.graphics.drawable.Drawable?, right: android.graphics.drawable.Drawable?, bottom: android.graphics.drawable.Drawable?) {
+            super.setCompoundDrawables(left, top, right, bottom)
+            recenterIconBtnVc308(left)
+        }
+    }.apply {
+        text = ""
+        gravity = Gravity.CENTER
+        background = bg
+        setCompoundDrawables(icon, null, null, null)
+        compoundDrawablePadding = 0
+        contentDescription = cd
+        minWidth = dp(48); minHeight = dp(48)
+        setMinimumWidth(dp(48)); setMinimumHeight(dp(48))
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        setOnClickListener { onClick() }
+    }
+
+    // vc308 (SS3): pusatkan ikon kiri compound dari bounds-nya sendiri
+    // (x AOSP = paddingLeft, jadi padding kiri = (48dp - lebar ikon)/2
+    // menaruh pusat ikon tepat di pusat tombol 48dp). Dipanggil dari
+    // override setCompoundDrawables di iconBtnVc306. Tanpa-op bila
+    // drawable tidak punya ukuran (bounds/intrinsic <= 0).
+    private fun Button.recenterIconBtnVc308(icon: android.graphics.drawable.Drawable?) {
+        val w = icon?.bounds?.width()?.takeIf { it > 0 } ?: icon?.intrinsicWidth?.takeIf { it > 0 } ?: return
+        val pad = (dp(48) - w) / 2
+        if (paddingLeft != pad) setPadding(pad, 0, 0, 0)
+    }
+
+    // ---- vc307 Worker B — aturan ukuran ikon Chat UI (SATU aturan) ----
+    // Semua ukuran ikon Chat UI dalam dp, diskala dari smallest-width
+    // layar (bukan satu ukuran piksel mentah): sw < 360dp (layar kecil)
+    // -> dasar - 2dp; 360-599dp -> dasar; >= 600dp (tablet/lebar) ->
+    // dasar + 2dp; hasil dibatasi 16..28dp. Visual boleh mengecil,
+    // hit area TETAP 48dp (iconBtnVc306 / minHeight eksplisit).
+    private fun smallestWidthDpVc307(): Int {
+        val dm = resources.displayMetrics
+        return (minOf(dm.widthPixels, dm.heightPixels) / dm.density).toInt()
+    }
+
+    private fun chatIconSizeVc307(baseDp: Int): Int {
+        val scaled = when {
+            smallestWidthDpVc307() < 360 -> baseDp - 2
+            smallestWidthDpVc307() >= 600 -> baseDp + 2
+            else -> baseDp
+        }
+        return scaled.coerceIn(ChatThemeVc306.iconXs, 28)
+    }
+
+    // Latar tombol OTOMASI vc307: TRANSPARAN saat diam, onSurface α0.06
+    // saat ditekan (umpan balik sentuh tetap ada walau latar transparan).
+    private fun autoPillBgVc307(): android.graphics.drawable.Drawable {
+        val normal = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(100).toFloat(); setColor(Color.TRANSPARENT) }
+        val pressed = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(100).toFloat(); setColor(onSurfaceAlphaVc306()) }
+        return android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), normal)
+        }
+    }
+
+    private fun sizedIconVc306(res: Int, tint: Int, sizeDp: Int): android.graphics.drawable.Drawable =
+        iconDrawable(res, tint).apply { setBounds(0, 0, dp(sizeDp), dp(sizeDp)) }
+
+    // Ikon garis yang digambar di kode (bukan emoji, bukan aset baru):
+    // "up" = panah kirim ↑ 20, "stop" = kotak ■ 18, "menu" = 3 garis 22,
+    // "plus" = tambah 22 (chat baru), "camera" = kamera 20 (di sheet attach).
+    // vc307: "check" = centang ✓, "x" = silang ✕, "chev" = chevron bawah ⌄,
+    // "down" = panah bawah ↓, "back" = panah balas ←, "play" = segitiga ▶,
+    // "spark" = bintang 4 ✦ (chip model), "file" = dokumen (sheet attach).
+    // vc307 (baris aksi + kartu tone): "warn" = segitiga ⚠, "copy" = salin ⧉,
+    // "share" = bagikan ↗, "branch" = cabang ⑂, "regen" = buat ulang ↻,
+    // "more" = tiga titik ⋯. Glyph ⧉/⑂ rawan tofu di sebagian device.
+    // vc308 Worker A: "select" = kursor I-beam (pilih teks — menu "Salin
+    // sebagian…"), digambar mengikuti pola Path yang sama (viewport 24×24,
+    // stroke 2dp).
+    // Viewport 24×24; tidak ada drawable ic_camera/ic_menu/ic_stop di res.
+    // Stroke 2dp (diskala density) — vc306 memakai 2f px mentah: di xxhdpi
+    // garis hanya ~0.67dp (terlalu tipis), di mdpi 2dp (terlalu tebal).
+    private fun pathIconVc306(kind: String, tint: Int, sizeDp: Int): android.graphics.drawable.Drawable {
+        val px = dp(sizeDp)
+        val strokePx = 2f * resources.displayMetrics.density
+        return object : android.graphics.drawable.Drawable() {
+            private val strokePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = tint; style = android.graphics.Paint.Style.STROKE
+                strokeWidth = strokePx; strokeCap = android.graphics.Paint.Cap.ROUND; strokeJoin = android.graphics.Paint.Join.ROUND
+            }
+            private val fillPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = tint; style = android.graphics.Paint.Style.FILL }
+            override fun draw(canvas: android.graphics.Canvas) {
+                val b = bounds
+                if (b.width() <= 0 || b.height() <= 0) return
+                canvas.save()
+                canvas.translate(b.left.toFloat(), b.top.toFloat())
+                canvas.scale(b.width() / 24f, b.height() / 24f)
+                when (kind) {
+                    "up" -> {
+                        canvas.drawLine(12f, 19f, 12f, 5f, strokePaint)
+                        canvas.drawLine(5f, 12f, 12f, 5f, strokePaint)
+                        canvas.drawLine(19f, 12f, 12f, 5f, strokePaint)
+                    }
+                    "down" -> {
+                        canvas.drawLine(12f, 5f, 12f, 19f, strokePaint)
+                        canvas.drawLine(5f, 12f, 12f, 19f, strokePaint)
+                        canvas.drawLine(19f, 12f, 12f, 19f, strokePaint)
+                    }
+                    "back" -> {
+                        canvas.drawLine(20f, 12f, 6f, 12f, strokePaint)
+                        canvas.drawLine(11f, 7f, 6f, 12f, strokePaint)
+                        canvas.drawLine(11f, 17f, 6f, 12f, strokePaint)
+                    }
+                    "menu" -> for (y in floatArrayOf(6f, 12f, 18f)) canvas.drawLine(4f, y, 20f, y, strokePaint)
+                    "plus" -> {
+                        canvas.drawLine(12f, 5f, 12f, 19f, strokePaint)
+                        canvas.drawLine(5f, 12f, 19f, 12f, strokePaint)
+                    }
+                    "check" -> {
+                        canvas.drawLine(5f, 12f, 10f, 17f, strokePaint)
+                        canvas.drawLine(10f, 17f, 19f, 7f, strokePaint)
+                    }
+                    "x" -> {
+                        canvas.drawLine(6f, 6f, 18f, 18f, strokePaint)
+                        canvas.drawLine(18f, 6f, 6f, 18f, strokePaint)
+                    }
+                    "chev" -> {
+                        canvas.drawLine(6f, 9f, 12f, 15f, strokePaint)
+                        canvas.drawLine(12f, 15f, 18f, 9f, strokePaint)
+                    }
+                    "camera" -> {
+                        canvas.drawRoundRect(android.graphics.RectF(3f, 8f, 21f, 18f), 2f, 2f, strokePaint)
+                        canvas.drawLine(9f, 8f, 10f, 5.5f, strokePaint)
+                        canvas.drawLine(10f, 5.5f, 14f, 5.5f, strokePaint)
+                        canvas.drawLine(14f, 5.5f, 15f, 8f, strokePaint)
+                        canvas.drawCircle(12f, 13f, 3.2f, strokePaint)
+                    }
+                    "file" -> {
+                        canvas.drawRoundRect(android.graphics.RectF(6f, 3f, 18f, 21f), 2f, 2f, strokePaint)
+                        canvas.drawLine(13.5f, 3f, 13.5f, 8f, strokePaint)
+                        canvas.drawLine(13.5f, 8f, 18f, 8f, strokePaint)
+                        canvas.drawLine(9f, 12f, 15f, 12f, strokePaint)
+                        canvas.drawLine(9f, 16f, 13f, 16f, strokePaint)
+                    }
+                    "play" -> canvas.drawPath(android.graphics.Path().apply {
+                        moveTo(8f, 5f); lineTo(19f, 12f); lineTo(8f, 19f); close()
+                    }, fillPaint)
+                    "spark" -> canvas.drawPath(android.graphics.Path().apply {
+                        moveTo(12f, 3f); lineTo(14.2f, 9.8f); lineTo(21f, 12f)
+                        lineTo(14.2f, 14.2f); lineTo(12f, 21f); lineTo(9.8f, 14.2f)
+                        lineTo(3f, 12f); lineTo(9.8f, 9.8f); close()
+                    }, fillPaint)
+                    "warn" -> {
+                        canvas.drawPath(android.graphics.Path().apply {
+                            moveTo(12f, 4f); lineTo(21f, 20f); lineTo(3f, 20f); close()
+                        }, strokePaint)
+                        canvas.drawLine(12f, 10f, 12f, 14.5f, strokePaint)
+                        canvas.drawCircle(12f, 17.5f, 0.9f, fillPaint)
+                    }
+                    "copy" -> {
+                        canvas.drawRoundRect(android.graphics.RectF(9f, 9f, 20f, 20f), 2f, 2f, strokePaint)
+                        canvas.drawRoundRect(android.graphics.RectF(4f, 4f, 15f, 15f), 2f, 2f, strokePaint)
+                    }
+                    "share" -> {
+                        canvas.drawLine(12f, 15f, 12f, 3f, strokePaint)
+                        canvas.drawLine(7f, 8f, 12f, 3f, strokePaint)
+                        canvas.drawLine(17f, 8f, 12f, 3f, strokePaint)
+                        canvas.drawLine(5f, 12f, 5f, 20f, strokePaint)
+                        canvas.drawLine(5f, 20f, 19f, 20f, strokePaint)
+                        canvas.drawLine(19f, 20f, 19f, 12f, strokePaint)
+                    }
+                    "branch" -> {
+                        canvas.drawCircle(6f, 6f, 2.5f, strokePaint)
+                        canvas.drawCircle(18f, 6f, 2.5f, strokePaint)
+                        canvas.drawCircle(12f, 18f, 2.5f, strokePaint)
+                        canvas.drawLine(6f, 8.5f, 12f, 15.5f, strokePaint)
+                        canvas.drawLine(18f, 8.5f, 12f, 15.5f, strokePaint)
+                    }
+                    "regen" -> {
+                        canvas.drawArc(android.graphics.RectF(4.5f, 4.5f, 19.5f, 19.5f), -60f, 300f, false, strokePaint)
+                        canvas.drawLine(5.5f, 8.5f, 10f, 7.5f, strokePaint)
+                        canvas.drawLine(5.5f, 8.5f, 6.5f, 12.5f, strokePaint)
+                    }
+                    "more" -> for (x in floatArrayOf(6f, 12f, 18f)) canvas.drawCircle(x, 12f, 1.8f, fillPaint)
+                    "stop" -> canvas.drawRoundRect(android.graphics.RectF(7f, 7f, 17f, 17f), 2f, 2f, fillPaint)
+                    "select" -> {
+                        // vc308 Worker A: kursor I-beam — garis vertikal
+                        // + serif atas/bawah (ikon "pilih teks" standar).
+                        canvas.drawLine(12f, 4f, 12f, 20f, strokePaint)
+                        canvas.drawLine(8f, 4f, 16f, 4f, strokePaint)
+                        canvas.drawLine(8f, 20f, 16f, 20f, strokePaint)
+                    }
+                }
+                canvas.restore()
+            }
+            override fun setAlpha(alpha: Int) { strokePaint.alpha = alpha; fillPaint.alpha = alpha }
+            override fun setColorFilter(cf: android.graphics.ColorFilter?) { strokePaint.colorFilter = cf; fillPaint.colorFilter = cf }
+            override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+            override fun getIntrinsicWidth(): Int = px
+            override fun getIntrinsicHeight(): Int = px
+        }.apply { setBounds(0, 0, px, px) }
+    }
+
+    // Label chip model dari data yang ADA (pref dsModelVariant via
+    // thinkingVariantVc230 — v3/r1/auto). TIDAK mengarang "V4 Pro":
+    // nama itu tidak ada di data Harness.
+    private fun modelLabelVc306(): String = try {
+        when (thinkingVariantVc230()) {
+            "r1" -> "DeepSeek R1"
+            "auto" -> "Otomatis"
+            else -> "DeepSeek V3"
+        }
+    } catch (e: Exception) { "DeepSeek V3" }
+
+    // ---- Header kaca (C5) ----
+    private fun syncGlassHeaderVc306() {
+        runOnUiThread {
+            try {
+                val title = try {
+                    val raw = if (::sessionTitleTv.isInitialized) sessionTitleTv.text?.toString() ?: "" else ""
+                    // Judul sesi saat ini; buang awalan emoji "🗂️ " bila ada.
+                    raw.trim().trimStart { !it.isLetterOrDigit() }.ifBlank { MemoryDb.get(this).sessionTitle(currentSessionId) }
+                } catch (e: Exception) { "" }
+                glassHeaderTitleTvVc306?.text = title.ifBlank { "Sesi baru" }
+                val status = try { if (::statusTv.isInitialized) statusTv.text?.toString() ?: "" else "" } catch (e: Exception) { "" }
+                glassHeaderStatusTvVc306?.text = status.ifBlank { "Sesi DeepSeek" }
+                glassHeaderDotVc306?.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(if (turnActive) Color.rgb(24, 178, 122) else faintColorVc306())
+                }
+                glassHeaderTitlePillVc306?.contentDescription = "Sesi: $title. $status. Ketuk untuk ganti sesi."
+                val label = modelLabelVc306()
+                glassHeaderModelChipVc306?.text = label
+                glassHeaderModelChipVc306?.contentDescription = "Model aktif: $label. Ketuk untuk ganti varian model."
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun buildGlassHeaderVc306(): LinearLayout {
+        val dark = isDarkTheme()
+        val th = currentTheme()
+        val faint = faintColorVc306()
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+            setPadding(dp(12), 0, dp(12), 0)
+        }
+        // Kiri: tombol menu bundar [A11Y] hit 48×48, visual 44×44, ikon 22
+        // (vc307: ukuran via chatIconSizeVc307, skala smallest-width).
+        val menuBtn = iconBtnVc306(pathIconVc306("menu", th.text, chatIconSizeVc307(ChatThemeVc306.iconLg)), glassCircleBtnBgVc306(iconCircleVisualDpVc308), "Menu") { toggleChatDrawer() }
+        glassHeaderMenuBtnVc306 = menuBtn
+        bar.addView(menuBtn)
+        // Tengah: title pill stadium kaca chrome, padding kiri 16.
+        val titlePill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = glassDrawableVc306(100, dark)
+            setPadding(dp(16), dp(6), dp(12), dp(6))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), 0, dp(8), 0) }
+            minimumHeight = dp(44)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showSessionDialog() }
+        }
+        val gTitle = TextView(this).apply {
+            textSize = 15f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(th.text); setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val gDot = View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(6), dp(6)) }
+        val gStatus = TextView(this).apply {
+            textSize = 11f; setTextColor(faint); setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(5), 0, 0, 0) }
+        }
+        val titleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleCol.addView(gTitle)
+        val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        statusRow.addView(gDot)
+        statusRow.addView(gStatus)
+        titleCol.addView(statusRow)
+        titlePill.addView(titleCol)
+        glassHeaderTitleTvVc306 = gTitle
+        glassHeaderStatusTvVc306 = gStatus
+        glassHeaderDotVc306 = gDot
+        glassHeaderTitlePillVc306 = titlePill
+        bar.addView(titlePill)
+        // Kanan: model chip + tombol new-chat bundar [A11Y] 48×48 / 44 / 22
+        // (vc307: ukuran ikon via chatIconSizeVc307). Glyph "✦ … ⌄"
+        // (U+2726/U+2304, render beda antar font) DIGANTI ikon Path
+        // "spark" (kiri) + "chev" (kanan) yang digambar sendiri.
+        val chip = Button(this).apply {
+            text = modelLabelVc306()
+            textSize = 12f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            background = glassDrawableVc306(100, dark)
+            setTextColor(th.text)
+            minWidth = 0; minHeight = dp(ChatThemeVc306.touchTarget); setMinimumHeight(dp(ChatThemeVc306.touchTarget))
+            setPadding(dp(12), 0, dp(12), 0)
+            gravity = Gravity.CENTER
+            setCompoundDrawables(pathIconVc306("spark", th.text, ChatThemeVc306.iconXs), null, pathIconVc306("chev", th.text, ChatThemeVc306.iconXs), null)
+            compoundDrawablePadding = dp(6)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, dp(8), 0) }
+            contentDescription = "Model aktif: ${modelLabelVc306()}. Ketuk untuk ganti varian model."
+            setOnClickListener { showModelVariantDialogVc306() }
+        }
+        glassHeaderModelChipVc306 = chip
+        bar.addView(chip)
+        val newBtn = iconBtnVc306(pathIconVc306("plus", th.text, chatIconSizeVc307(ChatThemeVc306.iconLg)), glassCircleBtnBgVc306(iconCircleVisualDpVc308), "Chat baru") { uiSessionNew() }
+        glassHeaderNewChatBtnVc306 = newBtn
+        bar.addView(newBtn)
+        val fade = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+            background = topFadeDrawableVc306()
+        }
+        glassHeaderFadeVc306 = fade
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        wrap.addView(bar)
+        wrap.addView(fade)
+        // Judul + status mengikuti sumber yang sudah ada (sessionTitleTv /
+        // statusTv) lewat TextWatcher — tanpa ubah satu pun call-site lama.
+        try {
+            statusTv.addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) { syncGlassHeaderVc306() }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+            sessionTitleTv.addTextChangedListener(object : android.text.TextWatcher {
+                override fun afterTextChanged(s: android.text.Editable?) { syncGlassHeaderVc306() }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+        } catch (e: Exception) {}
+        return wrap
+    }
+
+    private fun showModelVariantDialogVc306() {
+        var dlgRef: android.app.AlertDialog? = null
+        val th = currentTheme()
+        val prefsH = getSharedPreferences("harness", MODE_PRIVATE)
+        val variant = try { thinkingVariantVc230() } catch (e: Exception) { "v3" }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(tv("Varian aktif: " + modelLabelVc306() + ". Mengubah varian hanya mengubah thinking_enabled di body completion; sesi + PoW tidak berubah.", 12f, th.dim))
+        for ((key, label) in listOf("v3" to "DeepSeek V3", "r1" to "DeepSeek R1 (DeepThink)", "auto" to "Otomatis")) {
+            body.addView(thBtn(label + if (variant == key) " ✓" else "", variant == key) {
+                dlgRef?.dismiss()
+                prefsH.edit().putString("dsModelVariant", key).apply()
+                // v3/r1 selaras dengan toggle DeepThink bawaan (uiSetDefMode
+                // ikut menulis dsModelVariant yang sama); "auto" dibiarkan.
+                if (key == "v3") uiSetDefMode("think", false)
+                if (key == "r1") uiSetDefMode("think", true)
+                syncGlassHeaderVc306()
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(6), 0, 0) }
+            })
+        }
+        dlgRef = thDialog("Varian model", body, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
+    }
+
+    // ---- Composer: sheet + state machine (C9/C13/C16-label, K1/K2) ----
+    private fun showAttachSheetVc306() {
+        var dlgRef: android.app.AlertDialog? = null
+        val th = currentTheme()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // Opsi "Pilih file" = intent ACTION_OPEN_DOCUMENT lama (req 44).
+        // vc307: ikon Path "file" (dulu teks polos tanpa ikon).
+        body.addView(thBtn("Pilih file") {
+            dlgRef?.dismiss()
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+            startActivityForResult(i, 44)
+        }.apply {
+            setCompoundDrawables(pathIconVc306("file", th.text, ChatThemeVc306.iconSm), null, null, null)
+            compoundDrawablePadding = dp(8)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(4), 0, 0) }
+        })
+        // vc307: ikon Path "camera" (dulu teks polos tanpa ikon).
+        body.addView(thBtn("Kamera") {
+            dlgRef?.dismiss()
+            openCameraVision(false)
+        }.apply {
+            setCompoundDrawables(pathIconVc306("camera", th.text, ChatThemeVc306.iconSm), null, null, null)
+            compoundDrawablePadding = dp(8)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(6), 0, 0) }
+        })
+        body.addView(tv("Lampiran dikirim bersama konteks teks yang ditulis di composer.", 12f, th.dim).apply { setPadding(0, dp(10), 0, 0) })
+        dlgRef = thDialog("Lampirkan", body, listOf(Triple("Batal", false) { d: android.app.AlertDialog -> d.dismiss() }))
+    }
+
+    private fun showSendModeSheetVc306() {
+        // E7 B: mode kirim sebagai LABEL saja — perilaku steer/interrupt
+        // TIDAK dibangun; pesan saat giliran berjalan masuk antrean (queue).
+        val th = currentTheme()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(tv("Mode kirim saat giliran berjalan (label — perilaku steer/interrupt belum dibangun). Pesan yang dikirim saat giliran berjalan masuk antrean dan dijalankan sesudah giliran ini.", 12f, th.dim))
+        for ((t, d) in listOf(
+            "Kirim sekarang (now)" to "Kirim langsung sebagai pesan baru.",
+            "Steer" to "AI melihatnya di langkah berikut, tanpa menginterupsi.",
+            "Interrupt and send" to "Hentikan tugas saat ini dan tangani ini dulu.",
+            "Queue" to "Kirim setelah giliran ini selesai."
+        )) {
+            body.addView(tv(t, 13f, th.text, true).apply { setPadding(0, dp(10), 0, 0) })
+            body.addView(tv(d, 12f, th.dim))
+        }
+        thDialog("Mode kirim", body, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
+    }
+
+    private fun micAvailableVc306(): Boolean = try { android.speech.SpeechRecognizer.isRecognitionAvailable(this) } catch (e: Exception) { true }
+
+    // State machine composer — SATU sumber kebenaran untuk mic/kirim/stop/
+    // spinner/hint/pill otomasi. Dipanggil dari: TextWatcher, giliran
+    // mulai/selesai, refreshSendVisibilityVc212, refreshLiveCard, chrome.
+    private fun refreshComposerButtonsVc306() {
+        runOnUiThread {
+            try {
+                val dark = isDarkTheme()
+                val th = currentTheme()
+                val hasDraft = ::chatInput.isInitialized && chatInput.text.toString().trim().isNotEmpty()
+                val hasAttach = pendingAttachesVc212.isNotEmpty()
+                val running = turnActive
+                val stopReq = stopRequestedVc306
+                if (::chatInput.isInitialized) chatInput.hint = if (running) "Membuat… · Ketik untuk mengarahkan" else "Perintah untuk asisten…"
+                // Radius composer: selalu xl 28 (vc307 — footer bawah sudah
+                // tidak ada; pill otomasi pindah ke baris atas composer).
+                chatComposerRef?.background = glassDrawableVc306(ChatThemeVc306.rXl, dark)
+                // Pill otomasi: baris atas composer saat idle, samping strip
+                // saat berjalan DAN strip terlihat; bila strip belum tampil
+                // (awal giliran), pill tetap di baris atas agar tidak hilang
+                // di dalam row GONE.
+                val pill = autoPillVc306
+                if (pill != null) {
+                    val stripVisible = liveCardBox?.visibility == View.VISIBLE
+                    val target: ViewGroup? = if (running && stripVisible) liveCardBox else autoTopRowVc306
+                    if (pill.parent !== target && target != null) {
+                        (pill.parent as? ViewGroup)?.removeView(pill)
+                        pill.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            if (running && stripVisible) setMargins(dp(8), 0, 0, 0)
+                        }
+                        // vc308 Worker A (SS2): saat pill kembali ke
+                        // autoTopRow, sisipkan di indeks 0 agar urutan tetap
+                        // [OTOMASI, Pesan Terbaru] — addView() biasa akan
+                        // menaruhnya SETELAH lb (weight 1) dan urutan
+                        // terbalik sesudah giliran pertama berjalan.
+                        if (target === autoTopRowVc306) target.addView(pill, 0) else target.addView(pill)
+                    }
+                    autoTopRowVc306?.visibility = if (running && stripVisible) View.GONE else View.VISIBLE
+                }
+                val mic = micBtnVc306
+                val send = sendBtnVc306
+                val spin = stopSpinnerVc306
+                if (mic == null || send == null) return@runOnUiThread
+                when {
+                    running && stopReq -> {
+                        mic.visibility = View.GONE; send.visibility = View.GONE; spin?.visibility = View.VISIBLE
+                    }
+                    running -> {
+                        spin?.visibility = View.GONE; mic.visibility = View.GONE; send.visibility = View.VISIBLE
+                        send.background = sendBtnBgVc306()
+                        if (!hasDraft && !hasAttach) {
+                            send.setCompoundDrawables(pathIconVc306("stop", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconSm)), null, null, null)
+                            send.contentDescription = "Berhenti"
+                        } else {
+                            send.setCompoundDrawables(pathIconVc306("up", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconMd)), null, null, null)
+                            send.contentDescription = "Kirim"
+                        }
+                        send.isEnabled = true; send.alpha = 1f
+                    }
+                    hasDraft || hasAttach -> {
+                        spin?.visibility = View.GONE; mic.visibility = View.GONE; send.visibility = View.VISIBLE
+                        send.background = sendBtnBgVc306()
+                        send.setCompoundDrawables(pathIconVc306("up", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconMd)), null, null, null)
+                        send.contentDescription = "Kirim"
+                        send.isEnabled = true; send.alpha = 1f
+                    }
+                    else -> {
+                        spin?.visibility = View.GONE; send.visibility = View.GONE; mic.visibility = View.VISIBLE
+                        val avail = micAvailableVc306()
+                        mic.background = circleBtnBgVc306(if (avail) onSurfaceAlphaVc306() else disabledBgVc306(), iconCircleVisualDpVc308 / 2, iconCircleVisualDpVc308)
+                        val micIcon = sizedIconVc306(R.drawable.ic_mic, th.text, chatIconSizeVc307(ChatThemeVc306.iconMd))
+                        // Disabled (C9): ikon α0.38. WCAG mengecualikan
+                        // komponen nonaktif dari tuntutan kontras.
+                        if (!avail) micIcon.alpha = 97
+                        mic.setCompoundDrawables(micIcon, null, null, null)
+                        mic.isEnabled = avail
+                        mic.contentDescription = if (avail) "Mikrofon" else "Mikrofon (tidak tersedia di HP ini)"
+                    }
+                }
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun requestStopTurnVc306() {
+        if (!turnActive) return
+        stopRequestedVc306 = true
+        // Satu-satunya hook stop yang sudah ada (tugas panel OC + tolak
+        // izin parkir); giliran 1-1 sendiri berhenti di batas tool-call
+        // berikut lewat flag di execToolAndContinue/execBatchAndContinue.
+        try { uiOcStop() } catch (e: Exception) {}
+        try { stripTitleTvVc306?.text = "Menghentikan…" } catch (e: Exception) {}
+        refreshComposerButtonsVc306()
+        refreshLiveCard()
+        try { stripCapsuleVc306?.announceForAccessibility("Permintaan berhenti dikirim. Giliran berhenti di langkah tool berikutnya.") } catch (e: Exception) {}
+    }
+
+    // ---- Activity strip (C10) ----
+    private fun readStripDataVc306(): StripDataVc306 {
+        val ckpt = try { turnPrefs().getString("turnCkpt", "") } catch (e: Exception) { "" }
+        val allowed = try { SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId) } catch (e: Exception) { true }
+        val notice = try { SessionBackgroundVc304.backgroundNotice() } catch (e: Exception) { "" }
+        if (ckpt.isNullOrBlank()) return StripDataVc306("", "", 0, 0, 0, emptyList(), false, true, allowed, notice)
+        val agentName = try { Agents.active(this).name } catch (e: Exception) { "Agen" }
+        var phase = ""
+        var lines = emptyList<String>()
+        var stale = false
+        try {
+            val j = JSONObject(turnPrefs().getString("turnJournal", "") ?: "")
+            phase = j.optString("phase")
+            val arr = j.optJSONArray("lines")
+            if (arr != null) {
+                val from = maxOf(0, arr.length() - 8)
+                lines = (from until arr.length()).map { arr.optString(it) }
+            }
+            val upd = j.optLong("upd", 0)
+            stale = upd > 0 && System.currentTimeMillis() - upd > 90_000
+        } catch (e: Exception) {}
+        val elapsed = if (requestStartMs > 0L) (System.currentTimeMillis() - requestStartMs) / 1000 else 0
+        val done = planItems.count { it.startsWith("☑") }
+        val total = planItems.size
+        val detail = when {
+            stale -> "Tidak ada kabar >90 dtk — proses mungkin terhenti."
+            phase.isNotBlank() -> phase
+            lines.isNotEmpty() -> lines.last()
+            else -> "Memproses…"
+        }
+        return StripDataVc306((agentName.ifBlank { "Agen" }) + " sedang bekerja", detail, elapsed, done, total, lines, stale, false, allowed, notice)
+    }
+
+    private fun updateStripTimerVc306() {
+        try {
+            val sec = if (requestStartMs > 0L) (System.currentTimeMillis() - requestStartMs) / 1000 else 0
+            stripTimerTvVc306?.text = fmtElapsedVc306(sec)
+        } catch (e: Exception) {}
+    }
+
+    private fun buildActivityStripVc306(): LinearLayout {
+        val dark = isDarkTheme()
+        val th = currentTheme()
+        val faint = faintColorVc306()
+        // Baris strip: kapsul (bobot 1) + slot pill otomasi saat berjalan.
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setPadding(dp(12), 0, dp(12), dp(6))
+            visibility = View.GONE
+        }
+        val capsule = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = glassDrawableVc306(100, dark)
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(8), 0) }
+            minimumHeight = dp(36)
+            isClickable = true
+            isFocusable = true
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        // Indikator progres NETRAL 20px (C10) — ProgressBar kecil, bukan
+        // ekor paus/maskot; warnanya tileTint (bukan brand DeepSeek).
+        val spinner = android.widget.ProgressBar(this).apply {
+            isIndeterminate = true
+            if (android.os.Build.VERSION.SDK_INT >= 21) indeterminateTintList = android.content.res.ColorStateList.valueOf(th.tileTint)
+            layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { setMargins(0, 0, dp(8), 0) }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        stripSpinnerVc306 = spinner
+        capsule.addView(spinner)
+        val titleTv = TextView(this).apply {
+            textSize = 12f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(th.text); setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, dp(6), 0) }
+        }
+        stripTitleTvVc306 = titleTv
+        capsule.addView(titleTv)
+        val detailTv = TextView(this).apply {
+            textSize = 12f; setTextColor(th.dim); setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        stripDetailTvVc306 = detailTv
+        liveCardTv = detailTv
+        capsule.addView(detailTv)
+        val timerTv = TextView(this).apply {
+            textSize = 12f; setTextColor(faint); typeface = android.graphics.Typeface.MONOSPACE
+            setSingleLine(true)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(6), 0, 0, 0) }
+        }
+        stripTimerTvVc306 = timerTv
+        capsule.addView(timerTv)
+        // Pemisah vertikal 0.5×14 + progres todo "n/m" + bar 30×3.
+        val sep = View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), dp(14)).apply { setMargins(dp(8), 0, dp(8), 0) }
+        }
+        val todoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        todoRow.addView(sep)
+        val todoText = TextView(this).apply {
+            textSize = 12f; setTextColor(th.dim); setSingleLine(true)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        stripTodoTextVc306 = todoText
+        todoRow.addView(todoText)
+        val todoTrack = FrameLayout(this).apply {
+            background = rounded(th.track, 2)
+            layoutParams = LinearLayout.LayoutParams(dp(30), dp(3)).apply { setMargins(dp(6), 0, 0, 0) }
+        }
+        val todoFill = View(this).apply {
+            setBackgroundColor(th.tileTint)
+            layoutParams = FrameLayout.LayoutParams(0, dp(3))
+        }
+        stripTodoFillVc306 = todoFill
+        todoTrack.addView(todoFill)
+        todoRow.addView(todoTrack)
+        stripTodoRowVc306 = todoRow
+        capsule.addView(todoRow)
+        // Tap → detail (lembar trajectory BELUM ADA di Harness — dialog
+        // sederhana berisi info yang sama; didokumentasikan). Long-press
+        // 4 detik → statistik langkah + token/detik (token tidak tersedia).
+        capsule.setOnClickListener {
+            if (stripLongPressedVc306) { stripLongPressedVc306 = false; return@setOnClickListener }
+            showActivityDetailVc306()
+        }
+        capsule.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    stripLongPressedVc306 = false
+                    val r = Runnable { stripLongPressedVc306 = true; showActivityStatsVc306() }
+                    stripLongPressRunnableVc306 = r
+                    capsule.postDelayed(r, 4000)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    stripLongPressRunnableVc306?.let { capsule.removeCallbacks(it) }
+                    stripLongPressRunnableVc306 = null
+                }
+            }
+            false
+        }
+        stripCapsuleVc306 = capsule
+        row.addView(capsule)
+        liveCardBox = row
+        return row
+    }
+
+    private fun showActivityDetailVc306() {
+        val d = readStripDataVc306()
+        val th = currentTheme()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(tv(d.title.ifBlank { "Tidak ada giliran berjalan" }, 14f, th.text, true))
+        body.addView(tv(d.detail, 12.5f, th.dim).apply { setPadding(0, dp(6), 0, 0) })
+        body.addView(tv("Durasi: " + fmtElapsedVc306(d.elapsedSec) + if (d.todoTotal > 0) " • Rencana: ${d.todoDone}/${d.todoTotal} langkah selesai" else "", 12f, th.dim).apply { setPadding(0, dp(6), 0, 0) })
+        if (d.journalLines.isNotEmpty()) body.addView(tv(d.journalLines.joinToString("\n"), 12f, th.dim).apply { setPadding(0, dp(8), 0, 0) })
+        // Lembar trajectory belum ada di Harness — dialog ini pengganti
+        // sementara yang menampilkan info strip yang sama (C10).
+        thDialog("Aktivitas giliran", body, listOf(Triple("Tutup", false) { dlg: android.app.AlertDialog -> dlg.dismiss() }))
+    }
+
+    private fun showActivityStatsVc306() {
+        val d = readStripDataVc306()
+        val th = currentTheme()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(tv("Statistik giliran berjalan", 14f, th.text, true))
+        body.addView(tv("Langkah tool: " + agentSteps, 12.5f, th.dim).apply { setPadding(0, dp(6), 0, 0) })
+        body.addView(tv("Durasi: " + fmtElapsedVc306(d.elapsedSec), 12.5f, th.dim))
+        if (d.todoTotal > 0) body.addView(tv("Rencana: ${d.todoDone}/${d.todoTotal} langkah selesai", 12.5f, th.dim))
+        // Token/detik TIDAK tersedia: Harness tidak mencatat pemakaian
+        // token per giliran (TurnMetrics.kt tidak punya counter token).
+        body.addView(tv("Token/detik: tidak tersedia — Harness tidak mencatat pemakaian token per giliran.", 12.5f, th.dim))
+        thDialog("Statistik langkah", body, listOf(Triple("Tutup", false) { dlg: android.app.AlertDialog -> dlg.dismiss() }))
+    }
+
+    // Terapkan ulang chrome kaca + ikon + warna teks (dipanggil dari
+    // refreshChatChrome saat tema/giliran berubah).
+    private fun applyVc306Chrome() {
+        try {
+            val dark = isDarkTheme()
+            val th = currentTheme()
+            val faint = faintColorVc306()
+            glassHeaderMenuBtnVc306?.background = glassCircleBtnBgVc306(iconCircleVisualDpVc308)
+            glassHeaderMenuBtnVc306?.setCompoundDrawables(pathIconVc306("menu", th.text, chatIconSizeVc307(ChatThemeVc306.iconLg)), null, null, null)
+            glassHeaderNewChatBtnVc306?.background = glassCircleBtnBgVc306(iconCircleVisualDpVc308)
+            glassHeaderNewChatBtnVc306?.setCompoundDrawables(pathIconVc306("plus", th.text, chatIconSizeVc307(ChatThemeVc306.iconLg)), null, null, null)
+            glassHeaderTitlePillVc306?.background = glassDrawableVc306(100, dark)
+            glassHeaderTitleTvVc306?.setTextColor(th.text)
+            glassHeaderStatusTvVc306?.setTextColor(faint)
+            glassHeaderModelChipVc306?.background = glassDrawableVc306(100, dark)
+            glassHeaderModelChipVc306?.setTextColor(th.text)
+            glassHeaderFadeVc306?.background = topFadeDrawableVc306()
+            attachBtnVc306?.background = circleBtnBgVc306(onSurfaceAlphaVc306(), iconCircleVisualDpVc308 / 2, iconCircleVisualDpVc308)
+            attachBtnVc306?.setCompoundDrawables(sizedIconVc306(R.drawable.ic_attach, th.text, chatIconSizeVc307(ChatThemeVc306.iconLg)), null, null, null)
+            chatComposerRef?.background = glassDrawableVc306(ChatThemeVc306.rXl, dark)
+            stripCapsuleVc306?.background = glassDrawableVc306(100, dark)
+            stripTitleTvVc306?.setTextColor(th.text)
+            stripDetailTvVc306?.setTextColor(th.dim)
+            stripTimerTvVc306?.setTextColor(faint)
+            stripTodoTextVc306?.setTextColor(th.dim)
+            stripTodoFillVc306?.setBackgroundColor(th.tileTint)
+            // vc307: latar OTOMASI TRANSPARAN (autoPillBgVc307), bukan lagi
+            // pill kapsul tile/surface — tint ikon ikut th.text.
+            autoPillVc306?.background = autoPillBgVc307()
+            autoPillVc306?.setTextColor(th.text)
+            for (cd in autoPillVc306?.compoundDrawables ?: emptyArray<android.graphics.drawable.Drawable?>()) cd?.setTint(th.text)
+            // vc308 Worker A (SS2): "Pesan Terbaru" ikut tema seperti
+            // OTOMASI (latar transparan, teks/ikon th.text — ikon Path
+            // digambar ulang agar tint-nya pasti ikut tema).
+            latestBtn?.background = autoPillBgVc307()
+            latestBtn?.setTextColor(th.text)
+            latestBtn?.setCompoundDrawables(pathIconVc306("down", th.text, chatIconSizeVc307(ChatThemeVc306.iconXs)), null, null, null)
+            refreshComposerButtonsVc306()
+            syncGlassHeaderVc306()
+        } catch (e: Exception) {}
     }
 
     private fun refreshQueueChips() {
@@ -6370,7 +8701,8 @@ class MainActivity : Activity() {
             val items = synchronized(followQueue) { followQueue.toList() }
             if (items.isEmpty()) { row.visibility = View.GONE; return@runOnUiThread }
             row.visibility = View.VISIBLE
-            row.addView(TextView(this).apply { text = "⏳ Antrean: "; setTextColor(DIM); textSize = 11.5f })
+            // vc307: "⏳" (emoji) dihapus dari label — teks polos "Antrean:".
+            row.addView(TextView(this).apply { text = "Antrean: "; setTextColor(DIM); textSize = 11.5f })
             for (f in items) {
                 val chip = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -6379,11 +8711,21 @@ class MainActivity : Activity() {
                 }
                 chip.addView(TextView(this).apply { text = f.text.take(26); setTextColor(TEXT); textSize = 12f })
                 chip.addView(Button(this).apply {
-                    text = if (f.steer) "▶ Sisip" else "Sisipkan"
+                    // vc307: "▶" (U+25B6) diganti ikon Path "play".
+                    text = if (f.steer) "Sisip" else "Sisipkan"
+                    if (f.steer) {
+                        setCompoundDrawables(pathIconVc306("play", TEXT, ChatThemeVc306.iconXs), null, null, null)
+                        compoundDrawablePadding = dp(4)
+                    }
                     setOnClickListener { uiQueueSteer(f.id); refreshQueueChips() }
                 })
                 chip.addView(Button(this).apply {
-                    text = "✕"
+                    // vc307: "✕" (teks) diganti ikon Path "x" + CD.
+                    text = ""
+                    contentDescription = "Hapus dari antrean"
+                    minWidth = 0; minHeight = 0
+                    setPadding(dp(8), 0, dp(8), 0)
+                    setCompoundDrawables(pathIconVc306("x", TEXT, ChatThemeVc306.iconXs), null, null, null)
                     setOnClickListener { uiQueueDrop(f.id); refreshQueueChips() }
                 })
                 row.addView(chip)
@@ -6398,7 +8740,11 @@ class MainActivity : Activity() {
             if (t.isNullOrBlank()) tv.visibility = View.GONE
             else {
                 tv.visibility = View.VISIBLE
-                tv.text = "↩️ Balas: \"" + t.take(60) + "\"  (ketuk untuk batal)"
+                // vc307: "↩️" (emoji) diganti ikon Path "back" yang digambar
+                // sendiri; tint ikut warna teks chip (tileTint).
+                tv.setCompoundDrawables(pathIconVc306("back", currentTheme().tileTint, ChatThemeVc306.iconXs), null, null, null)
+                tv.compoundDrawablePadding = dp(6)
+                tv.text = "Balas: \"" + t.take(60) + "\"  (ketuk untuk batal)"
             }
         }
     }
@@ -6444,8 +8790,12 @@ class MainActivity : Activity() {
         val t = lastUserText
         if (t.isBlank() || t.startsWith("Hasil tool") || t.startsWith("TUGAS LATAR") || t.startsWith("VERIFIKASI")) return false
         val local = LocalAgent.tryHandle(this, t) ?: return false
-        addBubble("📴 Koneksi ke DeepSeek bermasalah — dijawab mode OFFLINE lokal:\n$local", false)
-        try { MemoryDb.get(this).addHistory("asisten", local, currentSessionId) } catch (e: Exception) {}
+        addBubble("📴 Koneksi ke DeepSeek bermasalah — dijawab mode OFFLINE lokal:\n$local", false, turn = true)
+        // vc304 B2: jawaban fallback offline milik giliran ini — simpan ke
+        // histori sesi PEMILIK giliran (turnSessionId), bukan sesi aktif
+        // saat ini (dulu: currentSessionId — bocor ke sesi lain bila
+        // giliran jalan di background).
+        try { MemoryDb.get(this).addHistory("asisten", local, turnSessionId) } catch (e: Exception) {}
         return true
     }
 
@@ -7043,7 +9393,7 @@ class MainActivity : Activity() {
             val slotAuth = if (slotEff != null) AccountPool.slotAuth(this, slotEff) else null
             if (slotPref in 1..5 && slotAuth == null) {
                 endStreamBubble()
-                addBubble("⚠️ Browser $slotPref belum login — buka Browser $slotPref di Setup, login, lalu ulangi.", false)
+                addBubble("⚠️ Browser $slotPref belum login — buka Browser $slotPref di Setup, login, lalu ulangi.", false, turn = true)
                 return
             }
             if (slotEff != null && slotAuth != null) {
@@ -7063,7 +9413,7 @@ class MainActivity : Activity() {
                     // TIDAK ADA fallback WebView untuk slot: akun slot adalah
                     // pilihan eksplisit; fallback akan memakai akun WebView
                     // utama yang berbeda.
-                    addBubble("⚠️ $err", false)
+                    addBubble("⚠️ $err", false, turn = true)
                 })
                 return
             }
@@ -7082,7 +9432,7 @@ class MainActivity : Activity() {
             }, { err ->
                 endStreamBubble()
                 if (!tryOfflineFallback(err)) {
-                    addBubble("⚠️ $err\nJatuh kembali ke jalur WebView…", false)
+                    addBubble("⚠️ $err\nJatuh kembali ke jalur WebView…", false, turn = true)
                     runOnUiThread { sendViaWebView(prompt) }
                 }
             })
@@ -7177,7 +9527,10 @@ class MainActivity : Activity() {
             if (android.os.Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(chId) == null) {
                 nm.createNotificationChannel(android.app.NotificationChannel(chId, "Tugas Selesai", android.app.NotificationManager.IMPORTANCE_DEFAULT))
             }
-            val pi = android.app.PendingIntent.getActivity(this, 71, Intent(this, MainActivity::class.java), android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
+            // vc304 B2: ketuk notifikasi membuka SESI PEMILIK giliran
+            // (handleIncomingIntent membaca bgSessionId -> switchSession),
+            // bukan sesi yang sedang aktif saat notifikasi diketuk.
+            val pi = android.app.PendingIntent.getActivity(this, 71, Intent(this, MainActivity::class.java).putExtra("bgSessionId", turnSessionId), android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
             val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, chId) else android.app.Notification.Builder(this)
             val n = nb.setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Tugas selesai")
@@ -7225,7 +9578,21 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (e: Exception) {}
-            addMsg("↻ Sesi sebelumnya terputus di tengah jalan — kulanjutkan dari checkpoint.", "meta")
+            // vc304 B1: giliran hasil resume = giliran BARU untuk anggaran
+            // langkah. Sebelum vc304, resume tidak memuat ulang stepBudget
+            // dan tidak mereset agentSteps: sesudah app mati/proses dibunuh,
+            // field kembali ke init (stepBudget 10, agentSteps 0) → giliran
+            // resume kehabisan budget di 10 lalu +10 sekali = 20, walau pref
+            // maxToolSteps 200 (laporan user). Muat dari pref + reset
+            // penghitung & kuota perpanjangan +10 per giliran (cermin blok
+            // reset onUserMessage). Hanya state anggaran — state lain
+            // (stuckMap, planItems, turnWork, capStopSentVc277,
+            // blockedAttempts, dst) sengaja TIDAK disentuh di sini.
+            loadStepBudgetVc304()
+            agentSteps = 0
+            extendCountVc303 = 0
+            extendOkMarkVc303 = 0
+            addMsg("↻ Sesi sebelumnya terputus di tengah jalan — kulanjutkan dari checkpoint.", "meta", turn = true)
             sendContinuation("Sesi terputus di tengah jalan (app ditutup / proses dibunuh sistem) saat mengerjakan perintah user: \"$user\". Lanjutkan tugas itu dari keadaan terakhir: cek jejak tool & rencana di konteks, jangan mengulang langkah yang sudah selesai, lalu selesaikan dan laporkan hasilnya." + trail)
         } catch (e: Exception) {}
     }
@@ -7304,7 +9671,7 @@ class MainActivity : Activity() {
             TurnMetrics.recordGuardTrim(trimmedVc240)
             TurnMetrics.recordPromptTotal(toSendVc240.length)
             if (toSendVc240.length > capVc240) {
-                try { addMsg("⚠️ Guard ulang suffix: prompt + perintah user masih melebihi cap " + capVc240 + " char sebesar " + (toSendVc240.length - capVc240) + " char — rencana dan perintah user tidak dipangkas, prompt dikirim utuh.", "meta") } catch (e: Exception) {}
+                try { addMsg("⚠️ Guard ulang suffix: prompt + perintah user masih melebihi cap " + capVc240 + " char sebesar " + (toSendVc240.length - capVc240) + " char — rencana dan perintah user tidak dipangkas, prompt dikirim utuh.", "meta", turn = true) } catch (e: Exception) {}
             }
         }
         sendToAgent(toSendVc240)
@@ -7324,7 +9691,7 @@ class MainActivity : Activity() {
             handleAgentResponse(resp)
         }, { err ->
             endStreamBubble()
-            if (!tryOfflineFallback(err)) addBubble("⚠️ $err", false)
+            if (!tryOfflineFallback(err)) addBubble("⚠️ $err", false, turn = true)
             pendingEndReason = "error"
             verifyTurn = false // vc232 S7: giliran verifikasi yang gagal terminal tidak boleh bocor
             endUserTurn()
@@ -7454,6 +9821,13 @@ class MainActivity : Activity() {
     // tersimpan); Nanti = simpan ke prefs, diputuskan lewat Setup 65.
     private fun vc228ShowExtractionBatchDialog(props: List<Pair<String, String>>) {
         if (props.isEmpty()) return
+        // vc304 B2: dialog persetujuan batch HANYA di sesi pemilik giliran
+        // — di sesi lain proposal diparkir ke antrean Setup 65 (pola yang
+        // sama seperti jalur catch di bawah), tanpa dialog.
+        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) {
+            vc228PersistProposals(props)
+            return
+        }
         try {
             // vc240 M22: dedup deterministik SEBELUM dialog — proposal yang
             // duplikat fakta yang sudah ada dibuang, yang bertentangan /
@@ -7467,7 +9841,7 @@ class MainActivity : Activity() {
             val dedupVc240 = mdbVc240.dedupExtractProposals(props)
             val keptVc240 = dedupVc240.kept
             if (keptVc240.isEmpty()) {
-                try { addMsg("🧠 Ekstraksi latar: " + dedupVc240.dropped + " proposal dibuang karena duplikat fakta yang sudah ada (tidak ada yang baru).", "meta") } catch (e: Exception) {}
+                try { addMsg("🧠 Ekstraksi latar: " + dedupVc240.dropped + " proposal dibuang karena duplikat fakta yang sudah ada (tidak ada yang baru).", "meta", turn = true) } catch (e: Exception) {}
                 return
             }
             val shownVc240 = keptVc240.take(12)
@@ -7483,16 +9857,16 @@ class MainActivity : Activity() {
                     val mdb = MemoryDb.get(this)
                     for (p in shownVc240) mdb.putFact(p.first, p.second, true, "user:setup65")
                     if (hiddenVc240.isNotEmpty()) vc228PersistProposals(hiddenVc240)
-                    try { addMsg("🧠 Ekstraksi latar: " + shownVc240.size + " fakta yang tampil disetujui dan tersimpan (terkonfirmasi)" + (if (hiddenVc240.isNotEmpty()) "; " + hiddenVc240.size + " fakta lain masih antre di Setup 65." else "."), "meta") } catch (e: Exception) {}
+                    try { addMsg("🧠 Ekstraksi latar: " + shownVc240.size + " fakta yang tampil disetujui dan tersimpan (terkonfirmasi)" + (if (hiddenVc240.isNotEmpty()) "; " + hiddenVc240.size + " fakta lain masih antre di Setup 65." else "."), "meta", turn = true) } catch (e: Exception) {}
                 }
                 .setNegativeButton("Tolak semua") { _, _ ->
-                    try { addMsg("🧠 Ekstraksi latar: " + keptVc240.size + " fakta ditolak (tidak tersimpan).", "meta") } catch (e: Exception) {}
+                    try { addMsg("🧠 Ekstraksi latar: " + keptVc240.size + " fakta ditolak (tidak tersimpan).", "meta", turn = true) } catch (e: Exception) {}
                 }
                 .setNeutralButton("Nanti (Setup 65)") { _, _ -> vc228PersistProposals(keptVc240) }
                 .show()
         } catch (e: Exception) {
             vc228PersistProposals(props)
-            try { addMsg("🧠 Ekstraksi latar: " + props.size + " fakta menunggu persetujuan batch (buka Setup 65).", "meta") } catch (e2: Exception) {}
+            try { addMsg("🧠 Ekstraksi latar: " + props.size + " fakta menunggu persetujuan batch (buka Setup 65).", "meta", turn = true) } catch (e2: Exception) {}
         }
     }
 
@@ -7779,7 +10153,7 @@ class MainActivity : Activity() {
                 if (ToolGate.level(rescuedTool) != RiskLevel.SAFE) {
                     val thinkingFull = turnThinking
                     turnThinking = ""
-                    addBubble("🧩 Panggilan tool '$rescuedTool' ditemukan di fragmen berpikir — TIDAK dieksekusi karena tool ini berisiko (rescue vc229 hanya untuk tool baca SAFE). Isi fragmen berpikir pemicu (lengkap):\n$thinkingFull", false)
+                    addBubble("🧩 Panggilan tool '$rescuedTool' ditemukan di fragmen berpikir — TIDAK dieksekusi karena tool ini berisiko (rescue vc229 hanya untuk tool baca SAFE). Isi fragmen berpikir pemicu (lengkap):\n$thinkingFull", false, turn = true)
                     sendContinuation("SISTEM (rescue ditolak): panggilan tool '$rescuedTool' hanya muncul di fragmen berpikirmu, bukan di jawaban final — dan tool itu berisiko, jadi TIDAK dieksekusi. Bila kamu memang bermaksud menjalankan tool itu, kirim ulang SEKARANG sebagai blok json jawaban final (dengan argumen lengkap) dan tunggu persetujuan user; bila tidak, lanjutkan tanpa tool itu.")
                     return
                 }
@@ -7790,7 +10164,7 @@ class MainActivity : Activity() {
                 // sejak vc247 (level() selalu SAFE, rescue apa pun jalan).
                 // Eksekusi rescue kini dicatat di ledger.
                 try { DecisionLedger.add(this, "1-1", "flag", "Tool '" + rescuedTool + "' dari fragmen berpikir dieksekusi via rescue (format " + rescueKind + ") — gerbang vc247 nonaktif, rescue TIDAK dibatasi tool baca SAFE.") } catch (e: Exception) {}
-                addMsg("🧩 Panggilan tool model terdeteksi di fragmen berpikir (format $rescueKind) — diselamatkan & dijalankan (gerbang vc247 nonaktif: rescue TIDAK dibatasi tool baca SAFE — tercatat di ledger).", "meta")
+                addMsg("🧩 Panggilan tool model terdeteksi di fragmen berpikir (format $rescueKind) — diselamatkan & dijalankan (gerbang vc247 nonaktif: rescue TIDAK dibatasi tool baca SAFE — tercatat di ledger).", "meta", turn = true)
             }
             turnThinking = ""
         }
@@ -7807,12 +10181,12 @@ class MainActivity : Activity() {
                 forcedToolVc282 = null
             } else if (forcedVc282 != null && toolChoiceRepairVc282 == 0) {
                 toolChoiceRepairVc282 = 1
-                addMsg("🎯 Pseudo tool_choice: tugas ini menuntut tool '$forcedVc282' dulu — menyuruh model memanggilnya sekali lagi.", "meta")
+                addMsg("🎯 Pseudo tool_choice: tugas ini menuntut tool '$forcedVc282' dulu — menyuruh model memanggilnya sekali lagi.", "meta", turn = true)
                 sendContinuation(ApiToolLayer.toolChoiceRepairText(forcedVc282))
                 return
             } else if (forcedVc282 != null) {
                 forcedToolVc282 = null
-                addMsg("🎯 Pseudo tool_choice: model tetap tidak memanggil '$forcedVc282' setelah 1 kali repair terarah — giliran lanjut jujur tanpa tool itu (instruksi + validasi client-side, bukan enforcement server-side).", "meta")
+                addMsg("🎯 Pseudo tool_choice: model tetap tidak memanggil '$forcedVc282' setelah 1 kali repair terarah — giliran lanjut jujur tanpa tool itu (instruksi + validasi client-side, bukan enforcement server-side).", "meta", turn = true)
             }
         }
         if (obj == null) {
@@ -7830,9 +10204,9 @@ class MainActivity : Activity() {
                 // Hasil verifikasi WAJIB disaring: model suka membocorkan proses mikirnya
                 // (Inggris, draf, catatan meta). Teks mentah tidak pernah ditampilkan.
                 when (val cleaned = cleanVerdict(visible)) {
-                    "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta")
-                    null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta")
-                    else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false)
+                    "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
+                    null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
+                    else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false, turn = true)
                 }
             } else if (visible.isNotEmpty()) {
                 // vc251 MODE BEBAS: jawaban refusal server -> 1x retry dengan
@@ -7844,7 +10218,7 @@ class MainActivity : Activity() {
                 // untuk respons kedua. Tidak ada loop: sekali saja.
                 if (AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 0 && AgentPrompt.isRefusalAnswer(visible)) {
                     refusalRetryVc251 = 1
-                    addMsg("🔁 Mode Bebas: DeepSeek menolak topik ini — mencoba sekali lagi dengan framing netral.", "meta")
+                    addMsg("🔁 Mode Bebas: DeepSeek menolak topik ini — mencoba sekali lagi dengan framing netral.", "meta", turn = true)
                     sendContinuation(AgentPrompt.MODE_BEBAS_REFRAME)
                     return
                 }
@@ -7856,7 +10230,7 @@ class MainActivity : Activity() {
                     try { DecisionLedger.add(this, "1-1", "parse_gagal", "Tool call rusak: $parseDetailVc271 (pantulan ke-$malformedRetry dari maks 2)") } catch (e: Exception) {}
                 if (malformedRetry < 2 && looksMalformedToolFragment(visible)) {
                     malformedRetry++
-                    addMsg("🔁 Panggilan tool terakhir rusak (" + parseDetailVc271 + ") — sistem menyuruh agen mengulang dengan format yang benar.", "meta")
+                    addMsg("🔁 Panggilan tool terakhir rusak (" + parseDetailVc271 + ") — sistem menyuruh agen mengulang dengan format yang benar.", "meta", turn = true)
                     sendContinuation("SISTEM (koreksi format): Jawaban terakhirmu hanya berisi panggilan tool yang RUSAK sehingga tidak bisa dijalankan dan pekerjaanmu BELUM selesai. Kerusakan parse: " + parseDetailVc271 + ". Perbaiki tepat di titik itu — contoh blok yang benar: {\"tool\":\"<nama_tool>\",\"args\":{\"arg1\":\"nilai\"}}. Panggil tool berikutnya SEKARANG memakai format itu, dengan argumen lengkap. Jangan mengakhiri sebelum pekerjaan benar-benar tuntas atau kamu memang butuh keputusan user.")
                     return
                 }
@@ -7865,7 +10239,7 @@ class MainActivity : Activity() {
                 val askPair = AgentPrompt.extractAsk(visible)
                 if (askPair == null && autoContinueCount < (if (planItems.any { it.startsWith("☐") }) 2 else 1) && shouldAutoContinue(visible)) {
                     autoContinueCount++
-                    addMsg("⏩ Agen berhenti sebelum tuntas — sistem menyuruhnya lanjut otomatis.", "meta")
+                    addMsg("⏩ Agen berhenti sebelum tuntas — sistem menyuruhnya lanjut otomatis.", "meta", turn = true)
                     // v4.35.3 (T15): auto-lanjut membawa STATUS rencana — agen lanjutan
                     // tidak boleh buta soal apa yang sudah selesai (itu sumber pengulangan).
                     val planT15 = if (planItems.isEmpty()) "Tidak ada rencana aktif — kerjakan janji berikutnya langsung dengan tool." else "RENCANA SAAT INI (JANGAN dibuat ulang): " + planItems.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("; ") + ". Langkah ☑ SUDAH selesai & terverifikasi — JANGAN diulang, JANGAN di-restart. Lanjutkan SEKARANG dari langkah ☐ pertama; JANGAN panggil make_plan."
@@ -7887,7 +10261,7 @@ class MainActivity : Activity() {
                 // vc266: jawaban yang seluruh klaimnya didukung memori tidak kena gate bukti.
                 if (askPair == null && claimWarningVc228 == null && gateRetryVc249 == 0 && vc228HasFactualClaim(visible) && turnUsedTools && !allClaimsMemoryVc266 && !AgentPrompt.evidenceMarkerPresent(visible)) {
                     gateRetryVc249 = 1
-                    addMsg("🔁 Gate bukti: jawaban faktual belum mencantumkan bukti — sistem menyuruh agen mengulang sekali dengan format klaim → bukti.", "meta")
+                    addMsg("🔁 Gate bukti: jawaban faktual belum mencantumkan bukti — sistem menyuruh agen mengulang sekali dengan format klaim → bukti.", "meta", turn = true)
                     sendContinuation(AgentPrompt.EVIDENCE_GATE_NUDGE)
                     return
                 }
@@ -7934,11 +10308,11 @@ class MainActivity : Activity() {
                             val rSlotVc249 = try { AccountPool.reviewerSlot(this) } catch (e: Exception) { null }
                             val rAuthVc249 = if (rSlotVc249 != null) try { AccountPool.slotAuth(this, rSlotVc249) } catch (e: Exception) { null } else null
                             if (rSlotVc249 == null || rAuthVc249 == null) {
-                                addMsg(ReviewerVc298.SKIP_NOTE, "meta")
+                                addMsg(ReviewerVc298.SKIP_NOTE, "meta", turn = true)
                             } else if (Governor.overCapReviewer(this)) {
                                 // vc277 O16(b): kuota reviewer habis — reviewer
                                 // dilewati dengan penanda, bukan diam-diam lolos.
-                                addMsg(Governor.reviewerOverCapText(this), "meta")
+                                addMsg(Governor.reviewerOverCapText(this), "meta", turn = true)
                             } else {
                                 // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer, bukan interaktif — chatSync reviewer=true bump reviewer + memakai sesi server TETAP reviewer slot 5 sejak vc298, bukan sesi ephemeral baru tiap review); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
                                 var unsVc249: List<Int> = emptyList()
@@ -7962,7 +10336,7 @@ class MainActivity : Activity() {
                                 // (StuckDetector, kunci giliran, cap langkah)
                                 // tidak dihapus filter [KLAIM DIHAPUS].
                                 val unsVc249FiltVc282 = ApiToolLayer.dropSystemBackedClaims(claimsVc249, unsVc249FiltVc266, turnSystemNotesVc282.toList() + listOfNotNull(turnStoppedReason))
-                                if (reviewFailVc275) addMsg(AgentPrompt.reviewerNotVerifiedNote() + indepNoteVc275, "meta")
+                                if (reviewFailVc275) addMsg(AgentPrompt.reviewerNotVerifiedNote() + indepNoteVc275, "meta", turn = true)
                                 else if (unsVc249FiltVc282.isNotEmpty()) {
                                     // vc250: double-pass — jawaban yang tampil (dan tersimpan di riwayat) hanya berisi klaim yang lolos; klaim gagal diganti penanda, bukan dihapus diam-diam.
                                     visible = AgentPrompt.applyDoublePass(visible, claimsVc249, unsVc249FiltVc282)
@@ -7972,15 +10346,15 @@ class MainActivity : Activity() {
                                     if (footerVc288.isNotEmpty() && !visible.contains("Yang belum diketahui:")) {
                                         visible = visible.trimEnd() + "\n\n" + footerVc288
                                     }
-                                    addMsg(AgentPrompt.reviewerNoteText(claimsVc249, unsVc249FiltVc282) + indepNoteVc275, "meta")
-                                } else if (indepNoteVc275.isNotBlank()) addMsg("🔍 Reviewer konteks-nol: verdict diterima" + indepNoteVc275 + ".", "meta")
+                                    addMsg(AgentPrompt.reviewerNoteText(claimsVc249, unsVc249FiltVc282) + indepNoteVc275, "meta", turn = true)
+                                } else if (indepNoteVc275.isNotBlank()) addMsg("🔍 Reviewer konteks-nol: verdict diterima" + indepNoteVc275 + ".", "meta", turn = true)
                             }
                         }
                     } catch (e: Exception) {
-                        addMsg(AgentPrompt.reviewerNotVerifiedNote(), "meta")
+                        addMsg(AgentPrompt.reviewerNotVerifiedNote(), "meta", turn = true)
                     }
                 }
-                if (claimWarningVc228 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $claimWarningVc228", "meta")
+                if (claimWarningVc228 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $claimWarningVc228", "meta", turn = true)
                 if (askPair == null && claimWarningVc228 != null) turnStoppedReason = "klaim tidak didukung hasil tool di giliran ini. Detail: $claimWarningVc228" // vc232 S4 (ask tidak dihentikan: turn menunggu user)
                 // VC303-P3-20 (LP-6): sidik jari klaim gagal — simpan hash
                 // kalimat klaim yang kena claim-stop per sesi; setelah 2 stop
@@ -8003,12 +10377,14 @@ class MainActivity : Activity() {
                 // JANGAN memalsukan jawaban.
                 val stillRefusalVc252 = AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 1 && AgentPrompt.isRefusalAnswer(visible)
                 addAnswerBubble(visible, askPair == null && claimWarningVc228 != null) // vc232 S3
-                if (stillRefusalVc252) addMsg("Mode Bebas aktif, tapi DeepSeek tetap menolak topik ini.", "meta")
+                if (stillRefusalVc252) addMsg("Mode Bebas aktif, tapi DeepSeek tetap menolak topik ini.", "meta", turn = true)
                 emitPhase("report")
-                if (askPair != null) addMsg("❓ Agen menunggu pilihanmu — ketuk salah satu opsi di pesannya, atau ketik jawaban bebas.", "meta")
-                else if (turnStoppedReason != null) addMsg("⛔ Dihentikan: $turnStoppedReason", "meta") // vc232 S4: satu pemilih pill akhir; S2: detail klaim dibawa di pill ini
-                else addMsg("✓ Selesai dalam ${elapsedText()} detik • via " + turnSource.ifBlank { "sumber tidak tercatat" }, "meta") // vc232 S10(c)
-                if (askPair == null && claimWarningVc228 != null) addMsg("🔍 Verifikasi dilewati: turn ini sudah dihentikan claim check, jadi tidak ada pill verifikasi.", "meta") // vc232 S1: netral, sekali saja
+                if (askPair != null) addMsg("❓ Agen menunggu pilihanmu — ketuk salah satu opsi di pesannya, atau ketik jawaban bebas.", "meta", turn = true)
+                else if (turnStoppedReason != null) {
+                    addMsg("⛔ Dihentikan: $turnStoppedReason", "meta", turn = true) // vc232 S4: satu pemilih pill akhir; S2: detail klaim dibawa di pill ini
+                    addTurnEndVc306() // vc306 C8: ringkasan + footnote (durasi/langkah/sumber dipertahankan)
+                } else addTurnEndVc306() // vc306 C8: menggantikan meta "✓ Selesai dalam N detik • via <sumber>" — info durasi + sumber pindah ke footnote, bukan hilang
+                if (askPair == null && claimWarningVc228 != null) addMsg("🔍 Verifikasi dilewati: turn ini sudah dihentikan claim check, jadi tidak ada pill verifikasi.", "meta", turn = true) // vc232 S1: netral, sekali saja
                 if (askPair != null) pendingEndReason = "ask"
                 val workItemsF = turnWork.toList()
                 val baseWorkF = WorkLog.turnJson(workItemsF, turnElapsedMs(workItemsF))
@@ -8023,7 +10399,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {}
                 }
                 if (baseWorkF != null) {
-                    addMsg(WorkLog.footer(workItemsF, turnElapsedMs(workItemsF)), "meta")
+                    addMsg(WorkLog.footer(workItemsF, turnElapsedMs(workItemsF)), "meta", turn = true)
                     try { uiEvent(JSONObject(workJsonF ?: baseWorkF).put("type", "chat.work")) } catch (e: Exception) {}
                 }
                 try { MemoryDb.get(this).addHistory("asisten", visible, turnSessionId, workJsonF) } catch (e: Exception) {}
@@ -8032,13 +10408,18 @@ class MainActivity : Activity() {
                 run {
                     try {
                         val hid = MemoryDb.get(this).lastHistoryId(turnSessionId)
-                        if (workJsonF != null) renderWorkAndAsk(workJsonF, hid)
+                        if (workJsonF != null) renderWorkAndAsk(workJsonF, hid, turn = true)
                     } catch (e: Exception) {}
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshLiveCard(); refreshQueueChips() }, 700)
                 }
                 clearTurnCheckpoint()
-                if (!activityResumed) notifyTurnDone(visible)
-                if (::voiceCheck.isInitialized && voiceCheck.isChecked) {
+                // vc304 B2: giliran background yang SELESAI saat user di sesi
+                // lain — hasilnya sudah di histori sesi pemilik; beri
+                // notifikasi ringan (ketuk -> buka sesi pemilik) tanpa
+                // mencampur tampilan sesi aktif.
+                if (!activityResumed || !SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) notifyTurnDone(visible)
+                // vc304 B2: VO jawaban hanya dibacakan di sesi pemilik.
+                if (::voiceCheck.isInitialized && voiceCheck.isChecked && SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) {
                     if (askPair == null && claimWarningVc228 != null) speak("Peringatan: jawaban ini tidak didukung hasil tool. $visible") else speak(visible) // vc232 S3
                 }
                 if (askPair == null && claimWarningVc228 == null && !allClaimsMemoryVc266 && ::verifyCheck.isInitialized && verifyCheck.isChecked && (turnUsedTools || vc228HasFactualClaim(visible))) { // vc232 S1: turn kena claimWarning tidak diverifikasi; vc266: jawaban yang seluruh klaimnya didukung memori dilewati dari verifikasi (prompt verifikasi tidak membawa FAKTA PIN)
@@ -8080,7 +10461,7 @@ class MainActivity : Activity() {
         // karena cabang verifyTurn di atas sudah mengosongkannya untuk respons bersih.)
         if (verifyTurn) {
             verifyTurn = false
-            addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta")
+            addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
             endUserTurn()
             return
         }
@@ -8099,29 +10480,29 @@ class MainActivity : Activity() {
         val multiVc229 = parsedVc282.calls
         if (parsedVc282.repaired && multiVc229.isNotEmpty()) {
             try { DecisionLedger.add(this, "1-1", "parse_repair", "Tool call diperbaiki lapisan API vc282 (strict gagal, repair/lenient dipakai — detail strict: " + (parsedVc282.strictError ?: "-") + ") lalu dieksekusi.") } catch (e: Exception) {}
-            addMsg("🔧 Format tool-call diperbaiki otomatis oleh lapisan API (strict gagal — detail: " + (parsedVc282.strictError ?: "format tidak kanonik") + ").", "meta")
+            addMsg("🔧 Format tool-call diperbaiki otomatis oleh lapisan API (strict gagal — detail: " + (parsedVc282.strictError ?: "format tidak kanonik") + ").", "meta", turn = true)
         }
         if (multiVc229.size > 1) {
             if (useBatchVc273(multiVc229)) {
                 if (visible.isNotEmpty() && vc228HasFactualClaim(visible)) {
                     val warnBatchVc273 = vc228ClaimWarning(visible, turnWork.toList())
-                    if (warnBatchVc273 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnBatchVc273", "meta")
+                    if (warnBatchVc273 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnBatchVc273", "meta", turn = true)
                 }
-                if (visible.isNotEmpty()) addBubble(visible, false)
+                if (visible.isNotEmpty()) addBubble(visible, false, turn = true)
                 if (!internalTurn && !verifyTurn) {
                     AgentPrompt.extractAsk(visible)?.let { pendingAskVc229 = it.first }
                 }
                 execBatchAndContinueVc273(multiVc229)
                 return
             }
-            addMsg("🔁 Respons memuat ${multiVc229.size} panggilan tool — batch tidak dipakai untuk kombinasi ini (tool jalur-khusus atau giliran internal): hanya tool pertama yang dijalankan, kirim ulang sisanya di giliran berikutnya.", "meta")
+            addMsg("🔁 Respons memuat ${multiVc229.size} panggilan tool — batch tidak dipakai untuk kombinasi ini (tool jalur-khusus atau giliran internal): hanya tool pertama yang dijalankan, kirim ulang sisanya di giliran berikutnya.", "meta", turn = true)
             // jatuh ke jalur tunggal di bawah (obj sudah = call pertama)
         }
         if (visible.isNotEmpty() && vc228HasFactualClaim(visible)) { // vc232 S6(b)
             val warnVc232 = vc228ClaimWarning(visible, turnWork.toList())
-            if (warnVc232 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnVc232", "meta")
+            if (warnVc232 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnVc232", "meta", turn = true)
         }
-        if (visible.isNotEmpty()) addBubble(visible, false)
+        if (visible.isNotEmpty()) addBubble(visible, false, turn = true)
         val tool = obj.optString("tool")
         val args = obj.optJSONObject("args") ?: JSONObject()
         // vc272 O4: id pengikat kanonis giliran ini — id model dipakai bila
@@ -8134,7 +10515,7 @@ class MainActivity : Activity() {
             AgentPrompt.extractAsk(visible)?.let { pendingAskVc229 = it.first }
         }
         // vc229 R-05(a): pratinjau tool non-risky pertama per giliran.
-        if (!Tools.isRisky(tool) && turnWork.isEmpty()) addMsg("▶️ Akan menjalankan $tool (pratinjau: tool non-risky pertama giliran ini).", "meta")
+        if (!Tools.isRisky(tool) && turnWork.isEmpty()) addMsg("▶️ Akan menjalankan $tool (pratinjau: tool non-risky pertama giliran ini).", "meta", turn = true)
         if (tool == "make_plan" || tool == "update_plan") { handlePlannerTool(tool, args); return }
         if (internalTurn && collectingExtract && (tool == "remember_fact" || tool == "learn_rule")) {
             val kVc228 = if (tool == "remember_fact") args.optString("key").trim() else "aturan:" + args.optString("rule").trim().hashCode()
@@ -8157,7 +10538,7 @@ class MainActivity : Activity() {
             val propsVc228 = pendingExtractProposals.toList()
             pendingExtractProposals.clear()
             collectingExtract = false
-            addBubble("🧠 Ekstraksi fakta latar selesai.", false)
+            addBubble("🧠 Ekstraksi fakta latar selesai.", false, turn = true)
             endUserTurn()
             if (propsVc228.isNotEmpty()) vc228ShowExtractionBatchDialog(propsVc228)
             return
@@ -8179,8 +10560,8 @@ class MainActivity : Activity() {
         val q = ask.optString("question")
         val arr = ask.optJSONArray("options")
         val optsTxt = if (arr != null) (0 until arr.length()).joinToString("\n") { "${it + 1}. ${arr.optString(it)}" } else ""
-        addBubble("❓ $q" + (if (optsTxt.isNotBlank()) "\n$optsTxt" else ""), false)
-        addMsg("❓ Agen bertanya (lihat pesan di atas) — jawab dengan ketik bebas.", "meta") // vc232 S8 opsi (b): opsi pending-ask tidak bisa diketuk, pill-nya dibuat jujur
+        addBubble("❓ $q" + (if (optsTxt.isNotBlank()) "\n$optsTxt" else ""), false, turn = true)
+        addMsg("❓ Agen bertanya (lihat pesan di atas) — jawab dengan ketik bebas.", "meta", turn = true) // vc232 S8 opsi (b): opsi pending-ask tidak bisa diketuk, pill-nya dibuat jujur
     }
 
     /** vc229 R-04(g): dialog konfirmasi kedua dalam-app untuk tool HIGH yang
@@ -8193,6 +10574,37 @@ class MainActivity : Activity() {
         if (raw.isBlank()) return
         val o = try { JSONObject(raw) } catch (e: Exception) { return }
         if (System.currentTimeMillis() - o.optLong("ts", 0) > 15 * 60_000L) {
+            prefsSc.edit().remove("bgSecondConfirm").apply()
+            return
+        }
+        // vc305 H-K1: dialog konfirmasi kedua HANYA bila status durable
+        // masih PROCESSING. Slot tanpa pid (legacy pra-vc305) atau baris
+        // yang sudah diputuskan / kedaluwarsa -> hapus slot + batalkan
+        // notif 7704, JANGAN tampilkan dialog (tidak ada yang bisa
+        // dikonfirmasi). Pemilik tunggal penulisan decision adalah
+        // BgBrain.resumeSecondConfirm — di sini hanya membaca status.
+        val pidVc305 = o.optString("pid", "")
+        if (pidVc305.isBlank()) {
+            prefsSc.edit().remove("bgSecondConfirm").apply()
+            try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(7704) } catch (e: Exception) {}
+            return
+        }
+        try {
+            val rowVc305 = ParkedApprovalStoreVc305.get(this).get(pidVc305)
+            if (rowVc305 == null || rowVc305.status != "PROCESSING") {
+                prefsSc.edit().remove("bgSecondConfirm").apply()
+                try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(7704) } catch (e: Exception) {}
+                return
+            }
+            if (ParkedApprovalMachineVc305.isExpired(rowVc305.createdAtMs, rowVc305.risk, System.currentTimeMillis()) ||
+                ParkedApprovalMachineVc305.isClaimExpired(rowVc305.toState(), System.currentTimeMillis())) {
+                ParkedApprovalStoreVc305.get(this).markExpired(pidVc305, System.currentTimeMillis())
+                prefsSc.edit().remove("bgSecondConfirm").apply()
+                try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(7704) } catch (e: Exception) {}
+                return
+            }
+        } catch (e: Exception) {
+            // Store tidak bisa dibaca -> fail-closed: jangan tampilkan dialog.
             prefsSc.edit().remove("bgSecondConfirm").apply()
             return
         }
@@ -8219,6 +10631,10 @@ class MainActivity : Activity() {
         fun finishVc229(approved: Boolean) {
             bgSecondConfirmShownVc229 = false
             prefsSc.edit().remove("bgSecondConfirm").apply()
+            // vc305 H-K1: cancel/dismiss -> resumeSecondConfirm menulis
+            // status=REJECTED set-once di store durable (pemilik tunggal
+            // decision) + menghapus kartu; di sini batalkan juga notif 7704.
+            try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(7704) } catch (e: Exception) {}
             BgBrain.resumeSecondConfirm(this, approved, o)
         }
         AlertDialog.Builder(this).setTitle("🛡️ Konfirmasi kedua — izinkan?")
@@ -8257,6 +10673,80 @@ class MainActivity : Activity() {
         return "tc-$n"
     }
 
+    // vc304 B2: tawaran perpanjangan +10 langkah (dialog / popup melayang).
+    // Diekstrak dari proceedTool supaya switchSession bisa menawarkannya
+    // ULANG saat user kembali ke sesi pemilik giliran background — tanpa
+    // itu giliran yang diparkir menunggu selamanya (pendingTool diset,
+    // tidak ada kelanjutan). Dipanggil hanya bila sesi pemilik aktif
+    // (parkir ditangani pemanggil proceedTool), TAPI callback float tetap
+    // dijaga: float bisa diketuk SESUDAH user pindah sesi.
+    private fun offerExtendStepsVc304() {
+        runOnUiThread {
+            var floatHandledS = false
+            if (!activityResumed) {
+                val shownS = ApprovalFloat.show(applicationContext, "Batas langkah tercapai",
+                    "Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})",
+                    "Tambah 10 langkah", "Berhenti", false,
+                    onApprove = {
+                        // vc304 B2: float bisa diketuk SESUDAH user pindah sesi —
+                        // keputusan +10 hanya berlaku di sesi pemilik; bila sesi
+                        // sudah beda, parkir lagi (ditawarkan ulang saat kembali).
+                        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) {
+                            extendOfferPendingVc304 = true
+                        } else {
+                            // VC303-P3-16: catat perpanjangan + progres saat ini.
+                            extendCountVc303++
+                            extendOkMarkVc303 = okCountVc303()
+                            stepBudget += 10
+                            val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
+                            if (p != null) proceedTool(p.first, p.second, true, cVc272)
+                        }
+                    },
+                    onReject = {
+                        // vc304 B2: sama seperti onApprove — tolak dari sesi lain
+                        // bukan keputusan atas giliran ini; parkir lagi.
+                        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) {
+                            extendOfferPendingVc304 = true
+                        } else {
+                            pendingTool = null
+                            addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user dari popup melayang). Hasil sementara ada di kartu-kartu tool di atas.", false, turn = true)
+                            TurnMetrics.finish(this, "anggaran-langkah")
+                        }
+                    },
+                    onOpenApp = {})
+                if (shownS) {
+                    floatHandledS = true
+                } else {
+                    pendingTool = null
+                    addBubble("⛔ Dihentikan: batas $stepBudget langkah (app tidak di depan). Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true) // vc232 S5
+                    TurnMetrics.finish(this, "anggaran-langkah")
+                    floatHandledS = true
+                }
+            }
+            if (!floatHandledS) {
+            extendDialogVc304 = AlertDialog.Builder(this)
+                .setTitle("Batas langkah tercapai")
+                .setMessage("Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})")
+                .setPositiveButton("Tambah 10 langkah") { _, _ ->
+                    extendDialogVc304 = null
+                    // VC303-P3-16: catat perpanjangan + progres saat ini.
+                    extendCountVc303++
+                    extendOkMarkVc303 = okCountVc303()
+                    stepBudget += 10
+                    val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
+                    if (p != null) proceedTool(p.first, p.second, true, cVc272)
+                }
+                .setNegativeButton("Berhenti") { _, _ ->
+                    extendDialogVc304 = null
+                    pendingTool = null
+                    addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user). Hasil sementara ada di kartu-kartu tool di atas.", false, turn = true)
+                    TurnMetrics.finish(this, "anggaran-langkah")
+                }
+                .show()
+            }
+        }
+    }
+
     private fun proceedTool(tool: String, args: JSONObject, counted: Boolean, callId: String = "") {
         // v4.48.3: pengunci giliran StuckDetector — detektor bukan lagi
         // sekadar tempelan teks. Begitu kunci aktif, panggilan tool
@@ -8268,7 +10758,7 @@ class MainActivity : Activity() {
                 // Model sudah 3x mengabaikan kunci: hentikan giliran
                 // sepenuhnya (gelembung final sistem, tanpa kelanjutan).
                 runOnUiThread {
-                    addMsg("⛔ Dihentikan: StuckDetector — agent berputar tanpa progres dan mengabaikan kunci giliran 3x. Tugas berhenti di sini — hasil sementara ada di kartu-kartu tool di atas.", "meta")
+                    addMsg("⛔ Dihentikan: StuckDetector — agent berputar tanpa progres dan mengabaikan kunci giliran 3x. Tugas berhenti di sini — hasil sementara ada di kartu-kartu tool di atas.", "meta", turn = true)
                     pendingEndReason = "kunci-putaran"
                     endUserTurn()
                 }
@@ -8326,54 +10816,14 @@ class MainActivity : Activity() {
                 // (berhenti jujur seperti ask=false) — dialognya sendiri
                 // DIPERTAHANKAN (garis SF-C5), hanya dibatasi.
                 if (ask && AgentPrompt.mayExtendVc303(extendCountVc303, okCountVc303(), extendOkMarkVc303)) {
-                    runOnUiThread {
-                        var floatHandledS = false
-                        if (!activityResumed) {
-                            val shownS = ApprovalFloat.show(applicationContext, "Batas langkah tercapai",
-                                "Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})",
-                                "Tambah 10 langkah", "Berhenti", false,
-                                onApprove = {
-                                    // VC303-P3-16: catat perpanjangan + progres saat ini.
-                                    extendCountVc303++
-                                    extendOkMarkVc303 = okCountVc303()
-                                    stepBudget += 10
-                                    val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
-                                    if (p != null) proceedTool(p.first, p.second, true, cVc272)
-                                },
-                                onReject = {
-                                    pendingTool = null
-                                    addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user dari popup melayang). Hasil sementara ada di kartu-kartu tool di atas.", false)
-                                    TurnMetrics.finish(this, "anggaran-langkah")
-                                },
-                                onOpenApp = {})
-                            if (shownS) {
-                                floatHandledS = true
-                            } else {
-                                pendingTool = null
-                                addBubble("⛔ Dihentikan: batas $stepBudget langkah (app tidak di depan). Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false) // vc232 S5
-                                TurnMetrics.finish(this, "anggaran-langkah")
-                                floatHandledS = true
-                            }
-                        }
-                        if (!floatHandledS) {
-                        AlertDialog.Builder(this)
-                            .setTitle("Batas langkah tercapai")
-                            .setMessage("Batas $stepBudget langkah tool untuk perintah ini habis, tapi tugas kelihatannya belum selesai. Tambah 10 langkah lagi? (perpanjangan ${extendCountVc303 + 1} dari maks ${AgentPrompt.MAX_EXTEND_VC303})")
-                            .setPositiveButton("Tambah 10 langkah") { _, _ ->
-                                // VC303-P3-16: catat perpanjangan + progres saat ini.
-                                extendCountVc303++
-                                extendOkMarkVc303 = okCountVc303()
-                                stepBudget += 10
-                                val p = pendingTool; pendingTool = null; val cVc272 = pendingCallIdVc272; pendingCallIdVc272 = ""
-                                if (p != null) proceedTool(p.first, p.second, true, cVc272)
-                            }
-                            .setNegativeButton("Berhenti") { _, _ ->
-                                pendingTool = null
-                                addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user). Hasil sementara ada di kartu-kartu tool di atas.", false)
-                                TurnMetrics.finish(this, "anggaran-langkah")
-                            }
-                            .show()
-                        }
+                    // vc304 B2: giliran background — JANGAN tampilkan dialog
+                    // +10 / float di sesi lain; parkir tawaran sampai user
+                    // kembali ke sesi pemilik (switchSession menawarkan ulang
+                    // via offerExtendStepsVc304). Giliran TIDAK dihentikan.
+                    if (SessionBackgroundVc304.shouldParkDecision(turnActive, turnSessionId, currentSessionId)) {
+                        extendOfferPendingVc304 = true
+                    } else {
+                        offerExtendStepsVc304()
                     }
                 } else if (!capStopSentVc277) {
                     // vc277 O15(b): berhenti yang jujur — model diminta
@@ -8387,7 +10837,7 @@ class MainActivity : Activity() {
                     sendContinuation("⛔ CAP LANGKAH TERCAPAI — kamu BERHENTI DI TENGAH pada langkah $agentSteps dari $stepBudget untuk tugas: $taskVc277. Jawab FINAL sekarang dengan jujur, format persis: \"berhenti di tengah pada langkah $agentSteps dari tugas $taskVc277 — ini yang sudah selesai: …; ini yang belum: …\". Sebutkan dari kartu tool di atas apa yang sudah selesai dan apa yang belum. JANGAN panggil tool lagi — panggilan tool berikutnya akan ditolak.")
                 } else {
                     pendingTool = null
-                    addBubble("⛔ Dihentikan: batas $stepBudget langkah tool per perintah tercapai dan app tidak di depan. Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false)
+                    addBubble("⛔ Dihentikan: batas $stepBudget langkah tool per perintah tercapai dan app tidak di depan. Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true)
                     TurnMetrics.finish(this, "anggaran-langkah")
                 }
                 return
@@ -8402,14 +10852,28 @@ class MainActivity : Activity() {
             // vc229 R-04(a)(b): autoAllow dicek SEBELUM mandat, tapi kini lewat
             // gerbang yang sama dengan kunci vc227 (kelas terkunci diblokir,
             // TTL 24 jam, ikatan sesi). Entri tak valid di-pruning diam-diam.
+            // vc304 B2: ikatan sesi approval/mandat adalah SESI PEMILIK
+            // giliran (turnSessionId), bukan sesi aktif saat ini — giliran
+            // background tidak boleh jalan lewat autoAllow/mandat sesi lain.
             if (tool in autoAllow) {
-                if (ApprovalPanelStore.autoAllowValid(this, tool, currentSessionId)) { execToolAndContinue(tool, args); return }
+                if (ApprovalPanelStore.autoAllowValid(this, tool, turnSessionId)) { execToolAndContinue(tool, args); return }
                 try { val pruned = HashSet(autoAllow); pruned.remove(tool); prefsR.edit().putStringSet("autoAllowTools", pruned).apply(); ApprovalPanelStore.revokeAutoAllow(this, tool) } catch (e: Exception) {}
             }
             // vc226 Panel Approval: mandat aktif (jalur chat tidak punya roomId,
             // scope utama = sessionId) -> jalan tanpa dialog, tanpa posting chat.
             // vc229 R-04(e): mandat dicek sadar tool + argumen (kolom syarat).
-            if (ApprovalPanelStore.hasActiveMandateForTool(this, "", currentSessionId, tool, args)) { execToolAndContinue(tool, args); return }
+            if (ApprovalPanelStore.hasActiveMandateForTool(this, "", turnSessionId, tool, args)) { execToolAndContinue(tool, args); return }
+            // vc304 B2: giliran background yang butuh approval HARUS parkir —
+            // jangan daftarkan panel/dialog di sesi lain, jangan auto-approve,
+            // jangan eksekusi HIGH tanpa PIN (lubang H-K1). Menunggu user
+            // kembali ke sesi pemilik (switchSession memanggil ulang
+            // proceedTool dengan tool/args yang diparkir). Cabang ini mati
+            // selama ToolGate.GATES_DISABLED = true — gerbang ini pertahanan
+            // bila gate dihidupkan lagi.
+            if (SessionBackgroundVc304.shouldParkDecision(turnActive, turnSessionId, currentSessionId)) {
+                approvalParkedVc304 = Triple(tool, args, callId)
+                return
+            }
             runOnUiThread {
                 val pinHash = prefsR.getString("pinHash", "") ?: ""
                 // vc226: daftarkan ke Panel Approval (tanpa posting pesan chat).
@@ -8417,10 +10881,10 @@ class MainActivity : Activity() {
                 // kelanjutannya sendiri + markResolved (tidak ganda).
                 val panelReq = ToolGate.describe(tool, args, this@MainActivity)
                 val panelSummary = (if (panelReq.preview.isNotBlank()) panelReq.preview else tool).take(140)
-                val panelId = ApprovalPanelStore.register(this, "", currentSessionId, "DeepSeek", tool,
+                val panelId = ApprovalPanelStore.register(this, "", turnSessionId, "DeepSeek", tool,
                     panelSummary, if (tool == "create_skill") panelReq.explanation + "\n" + Tools.skillUpdateDiff(this, args).take(400) else panelReq.explanation, argsFull = args.toString()) { approved ->
                     if (approved) execToolAndContinue(tool, args, callId)
-                    else { addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta"); sendContinuation("User MENOLAK aksi tool $tool. Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.") } // vc232 S9 tahap 1
+                    else { addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta", turn = true); sendContinuation("User MENOLAK aksi tool $tool. Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.") } // vc232 S9 tahap 1
                 }
                 var floatHandled = false
                 if (!activityResumed) {
@@ -8433,8 +10897,12 @@ class MainActivity : Activity() {
                     val shownF = ApprovalFloat.show(applicationContext, "Izinkan aksi?",
                         "DeepSeek ingin menjalankan: $tool\n" + ToolGate.label(reqF.risk) + (if (reqF.preview.isNotBlank()) "\nPratinjau: ${reqF.preview}" else "") + "\n" + reqF.explanation + (if (reqF.affected.isNotEmpty()) "\nSasaran: ${reqF.affected.joinToString(", ")}" else "") + "\nArgumen: $args" + (if (tool == "create_skill") "\n\nDIFF vs skill aktif lama:\n" + Tools.skillUpdateDiff(this, args) else ""),
                         "Izinkan", "Tolak", pinNeededF,
-                        onApprove = { ApprovalPanelStore.markResolved(this, panelId, true, "popup melayang"); execToolAndContinue(tool, args) },
-                        onReject = { ApprovalPanelStore.markResolved(this, panelId, false, "popup melayang"); addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta"); sendContinuation("User MENOLAK aksi tool $tool (dari popup persetujuan melayang). Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.") }, // vc232 S9 tahap 1
+                        // vc304 B2: float bisa diketuk SESUDAH user pindah sesi —
+                        // persetujuan hanya berlaku di sesi pemilik; bila sesi
+                        // sudah beda, parkir lagi (bukan eksekusi / tolak dari
+                        // sesi lain — HIGH tanpa PIN dilarang, lubang H-K1).
+                        onApprove = { if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) approvalParkedVc304 = Triple(tool, args, callId) else { ApprovalPanelStore.markResolved(this, panelId, true, "popup melayang"); execToolAndContinue(tool, args) } },
+                        onReject = { if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) approvalParkedVc304 = Triple(tool, args, callId) else { ApprovalPanelStore.markResolved(this, panelId, false, "popup melayang"); addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta", turn = true); sendContinuation("User MENOLAK aksi tool $tool (dari popup persetujuan melayang). Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.") } }, // vc232 S9 tahap 1
                         onOpenApp = {
                             try { startActivity(Intent(this@MainActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) {}
                             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ try { proceedTool(tool, args, true, callId) } catch (e: Exception) {} }, 700)
@@ -8476,6 +10944,9 @@ class MainActivity : Activity() {
                     .setTitle("Izinkan aksi?")
                     .setView(ScrollView(this).apply { addView(box) })
                     .setPositiveButton("Izinkan") { _, _ ->
+                        // vc304 B2: user memutuskan di sini — tawaran parkir
+                        // tidak berlaku lagi (giliran lanjut dari keputusan ini).
+                        approvalParkedVc304 = null
                         val pinTyped = pinField?.text?.toString() ?: ""
                         if (pinField != null && pinTyped.isBlank()) {
                             // Kasus nyata 2026-10-22: user menekan Izinkan tanpa
@@ -8496,7 +10967,8 @@ class MainActivity : Activity() {
                                 if (ToolGate.level(tool, args) == RiskLevel.HIGH && pinHash.isBlank()) {
                                     Toast.makeText(this, "PIN belum diatur — autoAllow untuk tool HIGH tidak dibuat.", Toast.LENGTH_LONG).show()
                                 } else {
-                                    ApprovalPanelStore.grantAutoAllow(this, tool, currentSessionId)
+                                    // vc304 B2: ikatan sesi autoAllow = sesi pemilik giliran.
+                                    ApprovalPanelStore.grantAutoAllow(this, tool, turnSessionId)
                                 }
                             }
                             ApprovalPanelStore.markResolved(this, panelId, true, "dialog dalam app")
@@ -8504,16 +10976,27 @@ class MainActivity : Activity() {
                         }
                     }
                     .setNegativeButton("Tolak") { _, _ ->
+                        // vc304 B2: user memutuskan di sini (lihat positif).
+                        approvalParkedVc304 = null
                         ApprovalPanelStore.markResolved(this, panelId, false, "dialog dalam app")
-                        addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta") // vc232 S9 tahap 1
+                        addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta", turn = true) // vc232 S9 tahap 1
                         sendContinuation("User MENOLAK aksi tool $tool. Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.")
                     }
                     .create()
+                // vc304 B2: catat tawaran yang sedang tampil — bila user
+                // pindah sesi selagi dialog tampil, switchSession menutup
+                // dialognya DAN tawaran tetap diparkir (ditawarkan ulang
+                // saat kembali ke sesi pemilik); tombol di atas yang
+                // memutuskan akan membersihkannya lebih dulu.
+                approvalParkedVc304 = Triple(tool, args, callId)
                 activeToolDialogVc246 = approvalDlg
                 try {
                     if (isFinishing || isDestroyed) throw IllegalStateException("activity tidak aktif")
                     approvalDlg.show()
                 } catch (e: Exception) {
+                    // vc304 B2: dialog tidak tampil — keputusan pindah ke
+                    // jalur parkir notifikasi (di bawah), bukan ke dialog.
+                    approvalParkedVc304 = null
                     try {
                         val parkedVc242 = BgBrain.parkExternal(this, currentTurnUser, "User: " + currentTurnUser, tool, args)
                         if (parkedVc242) {
@@ -8558,7 +11041,7 @@ class MainActivity : Activity() {
             if (arr != null) for (i in 0 until arr.length()) planItems.add("☐ " + arr.optString(i))
             persistPlan()
             runOnUiThread {
-                planCard = addActivityRow("🗺️ Rencana", planCountTextVc254(), planStepsTextVc254())
+                planCard = addActivityRow("🗺️ Rencana", planCountTextVc254(), planStepsTextVc254(), turn = true, tool = "make_plan")
                 sendContinuation("Rencana tercatat (${planItems.size} langkah). Mulai langkah 1 sekarang: panggil tool yang sesuai, jangan mengulang make_plan.")
             }
         } else {
@@ -8704,6 +11187,10 @@ class MainActivity : Activity() {
     private fun endUserTurn() {
         TurnMetrics.finish(this, pendingEndReason ?: "final")
         pendingEndReason = null
+        // vc304 B2: giliran berakhir -> keputusan yang diparkir (bila ada)
+        // tidak berlaku lagi; tawarannya tidak ditawarkan ulang.
+        extendOfferPendingVc304 = false
+        approvalParkedVc304 = null
         persistPlan()
         // VC303-P2-8 (CX-1): flush di akhir giliran (sesudah jawaban
         // final) — catatan tidak lagi menunggu pesan 1-1 berikut; proses
@@ -8717,11 +11204,19 @@ class MainActivity : Activity() {
         val noQueuedVc303 = synchronized(followQueue) { followQueue.isEmpty() } && autoQueue.isEmpty()
         turnActive = false
         userTurnActive = false
+        // vc306 Worker B: giliran selesai = stop hangus; composer kembali
+        // ke state idle (hint asal, tombol mic, pill otomasi ke baris atas).
+        stopRequestedVc306 = false
+        refreshComposerButtonsVc306()
         refreshLiveCard()
         refreshQueueChips()
         consumeAutoQueue()
         if (!turnActive) drainFollowQueue()
         if (noQueuedVc303 && !turnActive) offerResumeVc303()
+        // vc308 Worker C (BUG 4): ganti tema yang sempat ditunda karena
+        // giliran berjalan — terapkan sekarang (dicek ulang + dijeda di
+        // dalam, supaya giliran lanjutan tidak terbunuh).
+        maybeApplyPendingThemeVc308()
     }
 
     private fun drainFollowQueue() {
@@ -9159,7 +11654,11 @@ class MainActivity : Activity() {
     }
 
     /** Analisa foto: kecilkan -> base64 -> lampirkan ke chat Web -> tanya DeepSeek. */
-    private fun analyzePhotoAndContinue(args: JSONObject) {
+    // vc304 B2: param `turn = true` = dipanggil sebagai tool giliran
+    // (execToolAndContinue) — baris aktivitas + bubble-nya di-gate ke sesi
+    // pemilik. Jalur lampiran user (handleAttachment/fallback) memakai
+    // default false: itu output UI sesi aktif, bukan output giliran.
+    private fun analyzePhotoAndContinue(args: JSONObject, turn: Boolean = false) {
         // vc282: validasi skema O3 di pintu masuk — menutup celah bypass
         // (pemanggil langsung dari UI/PDF tidak lewat proceedTool).
         // Argumen app-built selalu valid, jadi perilaku lama tak berubah.
@@ -9176,7 +11675,7 @@ class MainActivity : Activity() {
         // aktivitas analyze_photo (diperbarui di tiap titik akhir).
         val t0PhotoVc254 = System.currentTimeMillis()
         lateinit var photoRowVc254: ActivityRowHandle
-        runOnUiThread { photoRowVc254 = addActivityRow(ActivityTitle.title("analyze_photo", args), "menjalankan…", "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args)) }
+        runOnUiThread { photoRowVc254 = addActivityRow(ActivityTitle.title("analyze_photo", args), "menjalankan…", "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args), turn = turn, tool = "analyze_photo") }
         Thread {
             try {
                 val bmp = android.graphics.BitmapFactory.decodeFile(path)
@@ -9215,20 +11714,20 @@ class MainActivity : Activity() {
                         }
                     }, { err ->
                         runOnUiThread {
-                            addBubble("⚠️ Foto via API internal gagal — jatuh ke jalur Web. ($err)", false)
+                            addBubble("⚠️ Foto via API internal gagal — jatuh ke jalur Web. ($err)", false, turn = turn)
                             photoRowVc254.status = "jalur API gagal — mencoba jalur Web…"
-                            webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args)
+                            webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn)
                         }
                     }, { note ->
                         // v4.10.7: penanda sesi (♻️) tampil juga di giliran foto.
-                        if (note.startsWith("♻️")) runOnUiThread { addBubble(note, false) }
+                        if (note.startsWith("♻️")) runOnUiThread { addBubble(note, false, turn = turn) }
                     })
                 } else {
-                    runOnUiThread { webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args) }
+                    runOnUiThread { webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn) }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    addBubble("⚠️ Analisa foto gagal: ${e.message}", false)
+                    addBubble("⚠️ Analisa foto gagal: ${e.message}", false, turn = turn)
                     renderPendingAskVc229()
                     val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
                     photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, false)
@@ -9245,7 +11744,7 @@ class MainActivity : Activity() {
      *  kini hanya cadangan bila jalur API internal gagal. */
     // vc254: baris + t0 + args foto diteruskan dari analyzePhotoAndContinue
     // agar titik akhir jalur Web juga memperbarui baris yang sama.
-    private fun webAnalyzePhoto(b64: String, question: String, photoRowVc254: ActivityRowHandle?, t0PhotoVc254: Long, photoArgsVc254: JSONObject) {
+    private fun webAnalyzePhoto(b64: String, question: String, photoRowVc254: ActivityRowHandle?, t0PhotoVc254: Long, photoArgsVc254: JSONObject, turn: Boolean = false) {
         showTab("Web")
         agent.analyzeImage(b64, question, { resp ->
             endStreamBubble()
@@ -9262,7 +11761,7 @@ class MainActivity : Activity() {
         }, { err ->
             endStreamBubble()
             showTab("Chat")
-            addBubble("⚠️ Analisa foto gagal: $err", false)
+            addBubble("⚠️ Analisa foto gagal: $err", false, turn = turn)
             renderPendingAskVc229()
             val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
             photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, false)
@@ -9649,9 +12148,20 @@ class MainActivity : Activity() {
     //   kegagalan dilaporkan di blok gabungan dan model yang memutuskan
     //   strategi berikutnya — retry di dalam batch akan mengacaukan urutan.
     private fun execBatchAndContinueVc273(calls: List<JSONObject>) {
+        // vc306 Worker B: stop dari tombol ■ composer (lihat
+        // execToolAndContinue) — batch tidak jalan bila stop diminta.
+        if (stopRequestedVc306) {
+            stopRequestedVc306 = false
+            runOnUiThread { addMsg("⛔ Dihentikan: dihentikan user dari composer", "meta", turn = true) }
+            pendingEndReason = "user-stop"
+            turnStoppedReason = "dihentikan user dari composer"
+            sendContinuation("⛔ STOP DIMINTA oleh user dari composer. HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh user.")
+            refreshComposerButtonsVc306()
+            return
+        }
         // F1.0: kill switch — sama seperti execToolAndContinue.
         if (getSharedPreferences("harness", MODE_PRIVATE).getBoolean("f1Off", false)) {
-            runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta") }
+            runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta", turn = true) }
             pendingEndReason = "kill-switch"
             turnStoppedReason = "kill switch F1 dimatikan user"
             sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.")
@@ -9671,7 +12181,7 @@ class MainActivity : Activity() {
         // Satu baris aktivitas untuk seluruh batch (vc254).
         lateinit var rowBatchVc273: ActivityRowHandle
         runOnUiThread {
-            rowBatchVc273 = addActivityRow("Batch tool (${batch.size} panggilan)", "menjalankan…", "Argumen: " + batch.mapIndexed { i, o -> callIds[i] + " " + o.optString("tool") }.joinToString(", "))
+            rowBatchVc273 = addActivityRow("Batch tool (${batch.size} panggilan)", "menjalankan…", "Argumen: " + batch.mapIndexed { i, o -> callIds[i] + " " + o.optString("tool") }.joinToString(", "), turn = true)
         }
         Thread {
             val outcomes = ArrayList<BatchOutcomeVc273>()
@@ -9771,7 +12281,7 @@ class MainActivity : Activity() {
                 if (unknownStop) {
                     val tried = invalidNames.joinToString(", ")
                     pendingEndReason = "berhenti-invalid-ke-3"
-                    addBubble("⛔ Dihentikan: 3x tool tidak dikenal berturut-turut (nama yang dicoba: $tried). Tidak ada tool yang dieksekusi untuk nama-nama itu; bukti kerja sebelumnya tetap ada di kartu-kartu tool di atas. Ulangi perintah dengan nama tool dari katalog (mis. run_terminal, get_screen, read_file) atau jelaskan tugasnya dengan kata-kata biasa.", false)
+                    addBubble("⛔ Dihentikan: 3x tool tidak dikenal berturut-turut (nama yang dicoba: $tried). Tidak ada tool yang dieksekusi untuk nama-nama itu; bukti kerja sebelumnya tetap ada di kartu-kartu tool di atas. Ulangi perintah dengan nama tool dari katalog (mis. run_terminal, get_screen, read_file) atau jelaskan tugasnya dengan kata-kata biasa.", false, turn = true)
                     endUserTurn()
                     return@runOnUiThread
                 }
@@ -10008,16 +12518,29 @@ class MainActivity : Activity() {
     }
 
     private fun execToolAndContinue(tool: String, args: JSONObject, callId: String = "") {
+        // vc306 Worker B: stop dari tombol ■ composer — pola sama seperti
+        // kill switch F1 di bawah: langkah berikutnya ditolak, model diminta
+        // menutup giliran. Berlakunya di batas tool-call berikut (panggilan
+        // jaringan yang sedang berjalan tidak bisa dibatalkan dari sini).
+        if (stopRequestedVc306) {
+            stopRequestedVc306 = false
+            runOnUiThread { addMsg("⛔ Dihentikan: dihentikan user dari composer", "meta", turn = true) }
+            pendingEndReason = "user-stop"
+            turnStoppedReason = "dihentikan user dari composer"
+            sendContinuation("⛔ STOP DIMINTA oleh user dari composer. HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh user.")
+            refreshComposerButtonsVc306()
+            return
+        }
         // F1.0: kill switch — langkah berikutnya ditolak, giliran berakhir.
         if (getSharedPreferences("harness", MODE_PRIVATE).getBoolean("f1Off", false)) {
-            runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta") }
+            runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta", turn = true) }
             pendingEndReason = "kill-switch"
             turnStoppedReason = "kill switch F1 dimatikan user" // vc232 S4: jawaban final paksa sesudahnya tidak lagi mendapat pill Selesai
             sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.")
             return
         }
         val isAutoRetry = autoRetryTools.remove(tool)
-        if (tool == "analyze_photo") { analyzePhotoAndContinue(args); return }
+        if (tool == "analyze_photo") { analyzePhotoAndContinue(args, turn = true); return }
         if (tool == "delete_session") {
             // vc265 V-M2: hormati argumen session_id — hapus HANYA sesi
             // yang dinamai; sesi AKTIF DITOLAK (katalog AgentPrompt.kt:378),
@@ -10047,7 +12570,7 @@ class MainActivity : Activity() {
         // vc254: kartu eksekusi tool mentah diganti baris aktivitas
         // (judul bahasa Indonesia, default tertutup, detail = argumen).
         lateinit var rowVc254: ActivityRowHandle
-        runOnUiThread { rowVc254 = addActivityRow(ActivityTitle.title(tool, args), "menjalankan…", "Argumen: " + ActivityTitle.shortArgs(tool, args)) }
+        runOnUiThread { rowVc254 = addActivityRow(ActivityTitle.title(tool, args), "menjalankan…", "Argumen: " + ActivityTitle.shortArgs(tool, args), turn = true, tool = tool) }
         Thread {
             val t0 = System.currentTimeMillis()
             val outcomeVc278 = executeToolWithTimeoutVc278(tool, args)
@@ -10062,7 +12585,7 @@ class MainActivity : Activity() {
             turnWork.add(WorkItem(tool, System.currentTimeMillis() - t0, !WorkLog.isFailed(result), displayResult.take(120), evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…" else displayResult, args = args.toString().take(4000), resultId = resultId ?: "", callId = callId, totalChars = resultTotal)) // VC303-P2-12 (CX-6): total char dibawa ke baris WorkNotes; v4.48.5 (P2): evidence 800 char/langkah + penanda vc230 R-07(a) — cap eksplisit — jalur PoW tanpa limit token; summary tetap 120 untuk UI/footer.
         if (tool == "use_skill" && result.startsWith("PROSEDUR SKILL")) {
             val nmSk = Regex("PROSEDUR SKILL '([^']+)'").find(result)?.groupValues?.get(1) ?: ""
-            addMsg("🧩 Skill '$nmSk' dimuat — prosedurnya diikuti untuk tugas ini.", "meta")
+            addMsg("🧩 Skill '$nmSk' dimuat — prosedurnya diikuti untuk tugas ini.", "meta", turn = true)
         }
             runOnUiThread {
                 // vc254: baris aktivitas diperbarui (status + detail
@@ -10165,7 +12688,7 @@ class MainActivity : Activity() {
                         // StuckDetector) + endUserTurn langsung, tanpa kunci.
                         val tried = invalidNames.joinToString(", ")
                         pendingEndReason = "berhenti-invalid-ke-3"
-                        addBubble("⛔ Dihentikan: 3x tool tidak dikenal berturut-turut (nama yang dicoba: $tried). Tidak ada tool yang dieksekusi untuk nama-nama itu; bukti kerja sebelumnya tetap ada di kartu-kartu tool di atas. Ulangi perintah dengan nama tool dari katalog (mis. run_terminal, get_screen, read_file) atau jelaskan tugasnya dengan kata-kata biasa.", false)
+                        addBubble("⛔ Dihentikan: 3x tool tidak dikenal berturut-turut (nama yang dicoba: $tried). Tidak ada tool yang dieksekusi untuk nama-nama itu; bukti kerja sebelumnya tetap ada di kartu-kartu tool di atas. Ulangi perintah dengan nama tool dari katalog (mis. run_terminal, get_screen, read_file) atau jelaskan tugasnya dengan kata-kata biasa.", false, turn = true)
                         endUserTurn()
                     } else {
                         val steerTxt = consumeSteer()
@@ -12514,6 +15037,11 @@ private fun showApiTokenDialog() {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        // vc309 Worker A — terapkan ulang bar di onResume: mode "sistem"
+        // (night mode OS berubah saat app di latar) + kembali dari activity
+        // lain (SlotBrowser). Listener inset tidak dipasang ulang (tetap
+        // hidup dari onCreate).
+        try { SystemBarsVc309.applySystemBars(window, isDarkTheme()) } catch (e: Exception) {}
         try { showBgSecondConfirmVc229() } catch (e: Exception) {}
         try { serveF3Tick() } catch (e: Exception) {}
         if (!ckptChecked) { ckptChecked = true; try { maybeResumeTurn() } catch (e: Exception) {} }
@@ -12522,6 +15050,10 @@ private fun showApiTokenDialog() {
             for (p in drained) if (autoQueue.size < 5) autoQueue.addLast(p)
             if (autoQueue.isNotEmpty() && !agent.busy && !internalTurn) consumeAutoQueue()
         } catch (e: Exception) {}
+        // vc308 Worker C (BUG 4): ganti tema yang sempat ditunda — terapkan
+        // bila giliran sudah selesai (pengaman bila endUserTurn terlewat
+        // karena app sempat ke latar).
+        maybeApplyPendingThemeVc308()
     }
 
     override fun onPause() {
@@ -13397,7 +15929,7 @@ private fun showApiTokenDialog() {
                         val aj = org.json.JSONObject(m.optString("text"))
                         val aq = aj.optString("question")
                         val aarr = aj.optJSONArray("options")
-                        msgBox.addView(tv("❓ " + aq, 13f, ACCENT, true).apply { setPadding(0, dp(4), 0, dp(4)) })
+                        msgBox.addView(tv("❓ " + aq, 13f, th.tileTint, true).apply { setPadding(0, dp(4), 0, dp(4)) })
                         if (aarr != null) for (k in 0 until aarr.length()) {
                             val opt = aarr.optString(k)
                             if (opt.isBlank()) continue
@@ -13415,13 +15947,13 @@ private fun showApiTokenDialog() {
                 if (sender == "sistem") {
                     val actVc254 = ActivityTitle.parseText(m.optString("text"))
                     if (actVc254 != null) {
-                        val rowVc254 = buildActivityRow(actVc254.title, ActivityTitle.statusText(actVc254.ms, actVc254.ok), (if (actVc254.args.isNotBlank()) "Argumen: " + actVc254.args + "\n" else "") + "Hasil: " + actVc254.result)
+                        val rowVc254 = buildActivityRow(actVc254.title, ActivityTitle.statusText(actVc254.ms, actVc254.ok), (if (actVc254.args.isNotBlank()) "Argumen: " + actVc254.args + "\n" else "") + "Hasil: " + actVc254.result, actVc254.tool)
                         msgBox.addView(rowVc254.root)
                         continue
                     }
                 }
                 val label = when (sender) { "user" -> "Anda"; "sistem" -> "Sistem"; "laporan" -> "📋 Laporan"; else -> sender }
-                msgBox.addView(tv(label, 12f, if (sender == "user") ACCENT else th.dim, true).apply { background = rounded(if (sender == "user") ACCENT else th.tileBg, 12); setPadding(dp(8), dp(2), dp(8), dp(2)) })
+                msgBox.addView(tv(label, 12f, if (sender == "user") Color.WHITE else th.dim, true).apply { background = rounded(if (sender == "user") ACCENT else th.tileBg, 12); setPadding(dp(8), dp(2), dp(8), dp(2)) })
                 msgBox.addView(tv(m.optString("text"), 13f, th.text).apply { setPadding(0, 0, 0, dp(8)); if (sender == "sistem") typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.ITALIC) })
             }
             // vc243 GELOMBANG 2 (GR-M3, sumber terpisah): hasil koordinator
@@ -13436,7 +15968,7 @@ private fun showApiTokenDialog() {
                         for (i in coord.length() - 1 downTo from) {
                             val c = coord.optJSONObject(i) ?: continue
                             val ot = c.optString("originTitle").ifBlank { "sesi #" + c.optLong("originSession") }
-                            msgBox.addView(tv("Koordinator #" + c.optLong("taskId") + " (sesi asal: " + ot + ")", 12f, ACCENT, true))
+                            msgBox.addView(tv("Koordinator #" + c.optLong("taskId") + " (sesi asal: " + ot + ")", 12f, th.tileTint, true))
                             msgBox.addView(tv(c.optString("result").take(600), 13f, th.text).apply { setPadding(0, 0, 0, dp(8)) })
                         }
                     }
@@ -15861,5 +18393,287 @@ private fun showApiTokenDialog() {
                 Toast.makeText(this, "Ketuk kembali untuk keluar dari app", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+}
+
+// ===== vc306 Worker C — ChatCardsVc306: logika MURNI kartu chat =====
+// Objek top-level TANPA dependensi Android supaya bisa diuji JVM murni
+// (TestChatCardsVc306.kt). Semua nilai visual di sini = nilai spek
+// SPEC-SAMAKAN-CHAT-DSHGO.md (a.1/a.8/a.9/a.14, C6/C7/C8/C12); bila spek
+// vs skill #14/#15 konflik, SKILL MENANG — penyimpangan dicatat di
+// komentar masing-masing konstanta.
+// - Tone tool: bg per kategori dari spek (light/dark). Teks on-container
+//   (fg) TIDAK ada di spek kecuali read (#173F65/#C0DBF8) — fg lain
+//   dipilih supaya kontras vs bg >= 4.5:1 (dihitung Python, rumus WCAG;
+//   lihat TestChatCardsVc306.kt (a)).
+// - Glyph = huruf pertama verb kategori (terminal "$" = prompt shell);
+//   BUKAN ikon per tool — tidak ada data ikon per tool di Harness.
+// - Pemetaan nama tool -> tone: eksplisit dari ToolRegistry.kt; nama
+//   yang tidak terdaftar -> NEUTRAL (terdokumentasi, bukan ditebak).
+// - Token/biaya TIDAK PERNAH dikarang: TurnMetrics hanya mencatat char
+//   prompt (bukan token), DsApiClient hanya mencatat token KUMULATIF
+//   per sesi (tokInSess/tokOutSess, bukan per giliran), dan tidak ada
+//   data biaya/Rp di mana pun — formatFootnote menerima token/biaya
+//   nullable dan menghilangkannya bila null.
+object ChatCardsVc306 {
+    enum class Tone { TERMINAL, READ, EDIT, SEARCH, WEB, AGENT, PLAN, NEUTRAL }
+
+    const val GROUP_THRESHOLD = 3
+    const val CODE_WELL_MAX_HEIGHT_DP = 280
+    const val THINK_GLYPH_RADIUS_DP = 8 // spek 7.68 -> dibulatkan ke dp (tanpa pecahan dp di Views)
+
+    private val TERMINAL_TOOLS = setOf("run_terminal", "run_privileged")
+    private val READ_TOOLS = setOf(
+        "read_file", "list_files", "storage_info", "get_screen", "get_notifications",
+        "get_timeline", "get_current_app", "get_app_usage", "get_battery",
+        "get_device_info", "list_apps", "get_location", "get_calendar_today",
+        "get_clipboard", "read_sms", "read_call_log", "gmail_unread", "otak_read",
+        "recall_facts", "recall_lessons", "list_tools", "list_skills",
+        "read_skill_version", "list_skill_versions", "list_artifacts", "list_goals",
+        "list_reminders", "list_schedules", "list_fact_candidates",
+        "list_rule_triggers", "list_geofences", "graph_neighbors", "graph_overview",
+        "graph_path", "get_result", "wait_change", "wait_for_app", "wait_confirm",
+        "watch_screen", "take_screenshot", "priv_capture", "browser_tabs",
+        "rote_status", "preview_worker_result"
+    )
+    private val EDIT_TOOLS = setOf(
+        "write_file", "edit_file", "generate_document", "generate_presentation",
+        "create_artifact", "edit_artifact", "delete_artifact", "artifact_bundle",
+        "otak_write", "memory_add", "memory_forget", "forget_fact", "remember_fact",
+        "remember_lesson", "learn_rule", "promote_fact", "propose_fact",
+        "rebuild_fact_links", "make_goal", "update_goal", "set_reminder",
+        "cancel_reminder", "set_alarm", "schedule_task", "cancel_schedule",
+        "set_clipboard", "import_skill_file", "restore_skill_version",
+        "add_geofence", "delete_geofence", "add_rule_trigger", "delete_rule_trigger",
+        "add_calendar_event", "send_email", "gmail_send", "send_sms", "reply_notification"
+    )
+    private val SEARCH_TOOLS = setOf(
+        "web_search", "search_youtube", "memory_search", "recall_search",
+        "graph_search", "gmail_search", "grep_result"
+    )
+    private val WEB_TOOLS = setOf(
+        "web_fetch", "http_request", "browser_open", "browser_tap", "browser_type",
+        "browser_read", "browser_shot", "api_read", "api_write"
+    )
+    private val AGENT_TOOLS = setOf(
+        "delegate_task", "delegate_session", "delegate_result", "delegate_wait",
+        "delegate_status", "run_team", "chain_tasks", "use_skill", "create_subroom",
+        "oc_checkpoint", "coord_rule", "ask_operator", "check_operator", "mcp_call",
+        "mcp_list_servers", "mcp_list_tools", "mcp_setup", "judge_skill",
+        "export_skill", "export_skill_version", "create_skill", "delete_skill",
+        "sync_memory", "rote_run", "transcribe_media", "analyze_photo"
+    )
+    private val PLAN_TOOLS = setOf("make_plan", "update_plan")
+
+    fun toneForTool(name: String): Tone = when (name.trim()) {
+        in TERMINAL_TOOLS -> Tone.TERMINAL
+        in READ_TOOLS -> Tone.READ
+        in EDIT_TOOLS -> Tone.EDIT
+        in SEARCH_TOOLS -> Tone.SEARCH
+        in WEB_TOOLS -> Tone.WEB
+        in AGENT_TOOLS -> Tone.AGENT
+        in PLAN_TOOLS -> Tone.PLAN
+        else -> Tone.NEUTRAL // nama tak dikenal / batch / generik — netral, bukan ditebak
+    }
+
+    // Fallback judul Bahasa Indonesia (ActivityTitle.title) bila nama tool
+    // tidak diteruskan ke buildActivityRow — pencocokan awalan judul saja.
+    fun toneForTitle(title: String): Tone {
+        val t = title.trim()
+        return when {
+            t.contains("Rencana") || t.contains("rencana") -> Tone.PLAN
+            t.startsWith("Perintah dijalankan") -> Tone.TERMINAL
+            t.startsWith("Mencari") -> Tone.SEARCH
+            t.startsWith("Mengambil isi") || t.startsWith("Membuka halaman") ||
+                t.startsWith("Membuka ") && t.contains("http") -> Tone.WEB
+            t.startsWith("Membaca") || t.startsWith("Melihat") || t.startsWith("Memeriksa") ||
+                t.startsWith("Lihat ") || t.startsWith("Mengingat") -> Tone.READ
+            t.startsWith("Menulis") || t.startsWith("Mengedit") || t.startsWith("Membuat") ||
+                t.startsWith("Menambah") || t.startsWith("Menyimpan") || t.startsWith("Menghapus") ||
+                t.startsWith("Mengubah") || t.startsWith("Mengirim") || t.startsWith("Menyalin") -> Tone.EDIT
+            t.startsWith("Mendelegasikan") || t.startsWith("Menjalankan tim") ||
+                t.startsWith("Memuat skill") || t.startsWith("Melempar tugas") -> Tone.AGENT
+            else -> Tone.NEUTRAL
+        }
+    }
+
+    // Verb spek hanya menyebut Run/Read/Edit/Thinking; kategori lain memakai
+    // verb kategorinya (Search/Fetch/Agent/Plan/Tool) — didokumentasikan.
+    fun verbForTone(tone: Tone): String = when (tone) {
+        Tone.TERMINAL -> "Run"; Tone.READ -> "Read"; Tone.EDIT -> "Edit"
+        Tone.SEARCH -> "Search"; Tone.WEB -> "Fetch"; Tone.AGENT -> "Agent"
+        Tone.PLAN -> "Plan"; Tone.NEUTRAL -> "Tool"
+    }
+
+    // Glyph satu huruf dari verb ("$" = prompt shell untuk terminal).
+    fun glyphForTone(tone: Tone): String = when (tone) {
+        Tone.TERMINAL -> "$"; Tone.READ -> "R"; Tone.EDIT -> "E"
+        Tone.SEARCH -> "S"; Tone.WEB -> "W"; Tone.AGENT -> "A"
+        Tone.PLAN -> "P"; Tone.NEUTRAL -> "•"
+    }
+
+    private fun nounForTone(tone: Tone, n: Int): String {
+        val singular = when (tone) {
+            Tone.TERMINAL -> "command"; Tone.READ -> "file"; Tone.EDIT -> "edit"
+            Tone.SEARCH -> "search"; Tone.WEB -> "fetch"; Tone.AGENT -> "agent call"
+            Tone.PLAN -> "plan"; Tone.NEUTRAL -> "call"
+        }
+        val plural = when (tone) {
+            Tone.TERMINAL -> "commands"; Tone.READ -> "files"; Tone.EDIT -> "edits"
+            Tone.SEARCH -> "searches"; Tone.WEB -> "fetches"; Tone.AGENT -> "agent calls"
+            Tone.PLAN -> "plans"; Tone.NEUTRAL -> "calls"
+        }
+        return if (n == 1) singular else plural
+    }
+
+    // --- Warna tone tool (spek a.1/C6, literal hex) ---
+    // Dark: terminal #303540, read #21374E, edit #443116, search #39304B,
+    // web #1D3D2D, agent #452C3D, plan #0F3D3D, neutral #32353D.
+    // Light: terminal #E6EAF2, read #DAECFF, edit #FAE6CD, search #EDE5FE,
+    // web #D7F1E2, agent #F9E2F0, plan #D0F1F0, neutral #E7E9EF.
+    fun toneBgHex(tone: Tone, dark: Boolean): String = when (tone) {
+        Tone.TERMINAL -> if (dark) "#303540" else "#E6EAF2"
+        Tone.READ -> if (dark) "#21374E" else "#DAECFF"
+        Tone.EDIT -> if (dark) "#443116" else "#FAE6CD"
+        Tone.SEARCH -> if (dark) "#39304B" else "#EDE5FE"
+        Tone.WEB -> if (dark) "#1D3D2D" else "#D7F1E2"
+        Tone.AGENT -> if (dark) "#452C3D" else "#F9E2F0"
+        Tone.PLAN -> if (dark) "#0F3D3D" else "#D0F1F0"
+        Tone.NEUTRAL -> if (dark) "#32353D" else "#E7E9EF"
+    }
+
+    // Teks on-container: read dari spek (#173F65 light / #C0DBF8 dark);
+    // sisanya dipilih agar kontras vs bg >= 4.5:1 (terukur, lihat tes (a)).
+    fun toneFgHex(tone: Tone, dark: Boolean): String = when (tone) {
+        Tone.TERMINAL -> if (dark) "#D5DAE6" else "#2B3345"
+        Tone.READ -> if (dark) "#C0DBF8" else "#173F65"
+        Tone.EDIT -> if (dark) "#F5D9A8" else "#6B4A1D"
+        Tone.SEARCH -> if (dark) "#DCD2F2" else "#4A3670"
+        Tone.WEB -> if (dark) "#BFE8CF" else "#1F5C38"
+        Tone.AGENT -> if (dark) "#F2CBE3" else "#7A2E5E"
+        Tone.PLAN -> if (dark) "#BDE8E6" else "#14524F"
+        Tone.NEUTRAL -> if (dark) "#D8DBE3" else "#33363F"
+    }
+
+    // --- Warna semantik (spek a.1) ---
+    // Dark (teks): success #8BCCA6, warning #E6BD7C, danger #E69089, info #8CBDE8.
+    // Light (teks): success #337250, warning #936123, danger #A54743, info #2971A7.
+    fun semanticTextHex(kind: String, dark: Boolean): String = when (kind) {
+        "success" -> if (dark) "#8BCCA6" else "#337250"
+        "warning" -> if (dark) "#E6BD7C" else "#936123"
+        "danger" -> if (dark) "#E69089" else "#A54743"
+        "info" -> if (dark) "#8CBDE8" else "#2971A7"
+        else -> if (dark) "#B6BBC5" else "#4F5562"
+    }
+
+    // Container kartu claim-check / StuckDetector (C12).
+    // Light dari spek: warning #F9E9CE, danger #FFE2E0. Dark TIDAK ada di
+    // spek — dipakai container gelap hangat (#33291A warning, #33201F danger)
+    // supaya teks semantik dark tetap >= 4.5:1 (terukur, lihat tes (a)).
+    // PENYIMPANGAN SKILL-MENANG: teks warning light spek (#936123) di atas
+    // container #F9E9CE hanya 4.42:1 (GAGAL AA) — dipakai #7A4E1B (5.99:1).
+    fun claimContainerHex(dark: Boolean): String = if (dark) "#33291A" else "#F9E9CE"
+    fun claimTextHex(dark: Boolean): String = if (dark) "#E6BD7C" else "#7A4E1B"
+    fun stuckContainerHex(dark: Boolean): String = if (dark) "#33201F" else "#FFE2E0"
+    fun stuckTextHex(dark: Boolean): String = if (dark) "#E69089" else "#A54743"
+
+    // Surface untuk uji kontras teks semantik (spek C1: dark #1C1F28, light #F0F4FD).
+    const val SURFACE_DARK_HEX = "#1C1F28"
+    const val SURFACE_LIGHT_HEX = "#F0F4FD"
+
+    fun hexToArgb(hex: String): Int {
+        val h = hex.trim().removePrefix("#")
+        val v = h.toLong(16).toInt()
+        return (0xFF000000.toInt() or v)
+    }
+
+    fun contrastRatio(fgArgb: Int, bgArgb: Int): Double {
+        fun lin(c: Int): Double {
+            val s = c / 255.0
+            return if (s <= 0.03928) s / 12.92 else Math.pow((s + 0.055) / 1.055, 2.4)
+        }
+        fun lum(argb: Int): Double {
+            val r = lin((argb shr 16) and 0xFF)
+            val g = lin((argb shr 8) and 0xFF)
+            val b = lin(argb and 0xFF)
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+        val l1 = lum(fgArgb); val l2 = lum(bgArgb)
+        val hi = maxOf(l1, l2); val lo = minOf(l1, l2)
+        return (hi + 0.05) / (lo + 0.05)
+    }
+
+    fun shouldGroup(toolCalls: Int): Boolean = toolCalls >= GROUP_THRESHOLD
+
+    // "Run 2 commands · Read 3 files" — urutan kategori tetap (bukan urutan
+    // kemunculan) supaya ringkasan stabil; kategori 0 tidak ditampilkan.
+    fun groupSummary(counts: Map<Tone, Int>): String {
+        val order = listOf(Tone.TERMINAL, Tone.READ, Tone.EDIT, Tone.SEARCH, Tone.WEB, Tone.AGENT, Tone.PLAN, Tone.NEUTRAL)
+        return order.mapNotNull { t ->
+            val n = counts[t] ?: 0
+            if (n <= 0) null else "${verbForTone(t)} $n ${nounForTone(t, n)}"
+        }.joinToString(" · ")
+    }
+
+    // "Completed · N tool calls · M messages" (+ "· N thinking blocks"
+    // bila HANYA thinking — turn tanpa tool dan tanpa pesan).
+    fun turnSummary(toolCalls: Int, messages: Int, thinkingBlocks: Int): String {
+        if (toolCalls == 0 && messages == 0 && thinkingBlocks > 0)
+            return "Completed · $thinkingBlocks thinking block" + if (thinkingBlocks == 1) "" else "s"
+        val tools = "$toolCalls tool call" + if (toolCalls == 1) "" else "s"
+        val msgs = "$messages message" + if (messages == 1) "" else "s"
+        return "Completed · $tools · $msgs"
+    }
+
+    // Format token ringkas: 34000 -> "34K"; <1000 apa adanya.
+    fun formatTokens(tokens: Long): String =
+        if (tokens >= 1000) "${tokens / 1000}K" else "$tokens"
+
+    // Footnote giliran (a.14): "N sec · M steps · ~RpX · N tokens ›".
+    // Dipendekkan bertahap BILA melebihi maxLen: tokens dulu, lalu langkah,
+    // lalu biaya; durasi + sumber SELALU ada. Token/biaya null = tidak
+    // tersedia (TIDAK dikarang) -> segmennya hilang sejak awal.
+    // Durasi null/<=0 -> "? sec" (durasi selalu ada sebagai segmen).
+    fun formatFootnote(durationSec: Double?, steps: Int?, tokens: Long?, costRp: Double?, source: String?, maxLen: Int = 64): String {
+        val dur = if (durationSec == null || durationSec <= 0.0) "? sec"
+            else String.format(java.util.Locale.US, "%.1f", durationSec).replace('.', ',') + " sec"
+        var segs = mutableListOf(dur)
+        if (steps != null && steps > 0) segs.add("$steps steps")
+        if (costRp != null && costRp > 0) {
+            val rp = String.format(java.util.Locale.US, "%,.0f", costRp).replace(',', '.')
+            segs.add("~Rp$rp")
+        }
+        if (tokens != null && tokens > 0) segs.add("${formatTokens(tokens)} tokens")
+        if (!source.isNullOrBlank()) segs.add("via $source")
+        fun join(list: List<String>) = list.joinToString(" · ") + " ›"
+        if (join(segs).length <= maxLen) return join(segs)
+        // Tahap 1: buang tokens.
+        segs = segs.filter { !it.endsWith("tokens") }.toMutableList()
+        if (join(segs).length <= maxLen) return join(segs)
+        // Tahap 2: buang langkah.
+        segs = segs.filter { !it.endsWith("steps") }.toMutableList()
+        if (join(segs).length <= maxLen) return join(segs)
+        // Tahap 3: buang biaya (durasi + sumber tetap).
+        segs = segs.filter { !it.startsWith("~Rp") }.toMutableList()
+        return join(segs)
+    }
+
+    // Label diff edit file "+18 −4" — null bila data diff tidak tersedia
+    // (WorkItem tidak membawa jumlah baris +/-; JANGAN dikarang).
+    fun diffLabel(added: Int?, removed: Int?): String? {
+        if (added == null || removed == null) return null
+        return "+$added −$removed"
+    }
+
+    // Predikat kartu tone (C12) — dipakai addMsg supaya call-site tidak berubah.
+    fun isClaimWarningText(text: String): Boolean {
+        val t = text.trimStart()
+        return t.startsWith("⚠️ Peringatan sistem: klaim") ||
+            t.contains("JAWABAN INI TIDAK DIDUKUNG HASIL TOOL")
+    }
+
+    fun isStuckStoppedText(text: String): Boolean {
+        val t = text.trimStart()
+        return t.startsWith("⛔ Dihentikan:") && t.contains("StuckDetector")
     }
 }

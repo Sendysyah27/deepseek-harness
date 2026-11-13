@@ -15,14 +15,27 @@ import java.io.File
  *  4.48.9: logika yang sama dijalankan lewat Backend (direktori + prefs +
  *  kunci counter) — produksi memakai backend default (perilaku tak berubah),
  *  Uji Mandiri memakai backend uji (direktori + prefs terpisah) lewat
- *  putIn/getIn/testBackend/wipeBackend. API publik put/get/wipe tak berubah. */
+ *  putIn/getIn/testBackend/wipeBackend. API publik put/get/wipe tak berubah.
+ *  vc304 B3 (get_result sebagai bukti baca gate): tiap entri juga mencatat
+ *  `turn` (epoch `TurnMetrics` saat hasil direkam, -1 = tidak diketahui /
+ *  entri lama) + `slug` (slug skill untuk baca per-skill, "" untuk
+ *  `list_skills` / tool lain) — ditulis `putIn` dari hook simpan
+ *  `Tools.execute`, dibaca `getIn`. `tool` SUDAH tercatat sejak awal;
+ *  `turn` adalah yang belum ada dan ditambahkan di sini (titik perekaman
+ *  hasil). Entri lama tanpa kedua field dibaca dengan default -1/""
+ *  (tidak pernah dihitung sebagai bukti — lihat
+ *  `LiveReadGateVc302.noteRidReadVc304`). */
 object ResultStore {
     private const val PREFS = "harness"
     private const val SEQ_KEY = "resultSeq"
     private const val MAX_TOTAL_BYTES = 10L * 1024 * 1024
     private const val MAX_CHARS = 400000
 
-    data class Entry(val id: String, val tool: String, val ts: Long, val total: Int, val truncated: Boolean, val text: String)
+    // vc304 B3: turn = epoch giliran saat put (TurnMetrics.currentTurnNo(),
+    // -1 bila tidak diketahui / entri lama); slug = slug skill untuk baca
+    // per-skill ("" bila bukan baca per-skill). Default menjaga
+    // kompatibilitas entri lama + pemanggil lama.
+    data class Entry(val id: String, val tool: String, val ts: Long, val total: Int, val truncated: Boolean, val text: String, val turn: Int = -1, val slug: String = "")
 
     private val lock = Any()
 
@@ -120,7 +133,18 @@ object ResultStore {
 
     fun put(ctx: Context, tool: String, text: String): String = putIn(prodBackend(ctx), tool, text)
 
-    fun putIn(b: Backend, tool: String, text: String): String {
+    // vc304 B3: varian dengan bukti baca — turnNo = epoch giliran saat
+    // put (TurnMetrics.currentTurnNo(), -1 = jangan catat bukti), slug =
+    // slug skill untuk baca per-skill ("" = bukan baca per-skill).
+    // Hanya hook simpan Tools.execute yang mengisi keduanya (untuk tool
+    // qualifying read yang handler-nya sudah membuktikan sukses baca);
+    // pemanggil lain (WorkerRegistry, analyze_photo) memakai default.
+    fun put(ctx: Context, tool: String, text: String, turnNo: Int, slug: String): String =
+        putIn(prodBackend(ctx), tool, text, turnNo, slug)
+
+    fun putIn(b: Backend, tool: String, text: String): String = putIn(b, tool, text, -1, "")
+
+    fun putIn(b: Backend, tool: String, text: String, turnNo: Int, slug: String): String {
         if (text.isBlank()) return ""
         return try {
             synchronized(lock) {
@@ -134,7 +158,7 @@ object ResultStore {
                 val now = System.currentTimeMillis()
                 val pinnedVc303 = pinnedIds(b) // VC303-P2-13 (CX-8)
                 sweep(b, idx, now, id, pinnedVc303)
-                idx.put(id, JSONObject().put("tool", tool).put("ts", now).put("total", text.length).put("truncated", truncated))
+                idx.put(id, JSONObject().put("tool", tool).put("ts", now).put("total", text.length).put("truncated", truncated).put("turn", turnNo).put("slug", slug))
                 enforceTotal(b, idx, id, pinnedVc303)
                 writeIndex(b, idx)
                 id
@@ -163,7 +187,10 @@ object ResultStore {
                 }
                 val f = dataFile(b, id)
                 if (!f.exists()) { idx.remove(id); writeIndex(b, idx); return null }
-                Entry(id, o.optString("tool", ""), o.optLong("ts", 0), o.optInt("total", 0), o.optBoolean("truncated", false), f.readText(Charsets.UTF_8))
+                // vc304 B3: turn/slug dibaca dengan default (entri lama
+                // tanpa field = -1/"" — tidak pernah dihitung sebagai
+                // bukti baca oleh noteRidReadVc304).
+                Entry(id, o.optString("tool", ""), o.optLong("ts", 0), o.optInt("total", 0), o.optBoolean("truncated", false), f.readText(Charsets.UTF_8), o.optInt("turn", -1), o.optString("slug", ""))
             }
         } catch (e: Exception) { null }
     }
