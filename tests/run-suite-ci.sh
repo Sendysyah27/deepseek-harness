@@ -68,8 +68,10 @@ if [ "$R2FAIL" = 1 ]; then
 fi
 
 echo "== C. Diff vs origin/main: DsFailure.kt berubah + RustCore.kt baru =="
-git diff --name-only origin/main...HEAD -- app/src/main/java/com/senzwh/deepharness/DsFailure.kt | grep -q DsFailure.kt || { echo "GAGAL C: DsFailure.kt tidak berubah vs main"; FAIL=1; }
-git diff --name-status origin/main...HEAD -- app/src/main/java/harness/core/RustCore.kt | grep -q "^A" || { echo "GAGAL C: RustCore.kt bukan file baru vs main"; FAIL=1; }
+# Diff dua-titik (bukan tiga-titik): tidak butuh merge-base — branch ini
+# sempat lahir sebagai root commit sebelum di-rebase ke main.
+git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/DsFailure.kt | grep -q DsFailure.kt || { echo "GAGAL C: DsFailure.kt tidak berubah vs main"; FAIL=1; }
+git diff --name-status origin/main HEAD -- app/src/main/java/harness/core/RustCore.kt | grep -q "^A" || { echo "GAGAL C: RustCore.kt bukan file baru vs main"; FAIL=1; }
 echo "C dicek (bila tidak ada GAGAL di atas = LULUS)"
 
 echo "== D. Sapu tree =="
