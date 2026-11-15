@@ -288,7 +288,10 @@ def build_rust_so():
         return None
     prebuilt = os.path.join(ndk, "toolchains", "llvm", "prebuilt", "linux-x86_64")
     sysroot_lib = os.path.join(prebuilt, "sysroot", "usr", "lib", "aarch64-linux-android", "26")
-    clang_lib = os.path.join(prebuilt, "lib", "clang", "21", "lib", "linux", "aarch64")
+    # Direktori clang NDK dinamis (versi clang ikut rilis NDK: 21 di r30,
+    # bisa berbeda bila NDK fallback ke versi lain di CI).
+    clang_cands = sorted(glob.glob(os.path.join(prebuilt, "lib", "clang", "*", "lib", "linux", "aarch64")))
+    clang_lib = clang_cands[-1] if clang_cands else os.path.join(prebuilt, "lib", "clang", "21", "lib", "linux", "aarch64")
     env = dict(os.environ)
     env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = rust_lld
     llvm_ar = os.path.join(prebuilt, "bin", "llvm-ar")
