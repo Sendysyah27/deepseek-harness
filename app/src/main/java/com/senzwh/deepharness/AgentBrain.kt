@@ -5,7 +5,7 @@ import java.io.File
 
 /**
  * Agen Native (Brief v4 Rel 2, v3.12.0) — otak agen sebagai FILE, meniru
- * tumpukan operator Operator: SOUL.md (jiwa), AGENTS.md (aturan kerja & flow),
+ * tumpukan operator Jhon: SOUL.md (jiwa), AGENTS.md (aturan kerja & flow),
  * MEMORY.md (ingatan terkurasi). Disimpan di filesDir/otak/, diedit user dari
  * Setup 41 atau oleh agen sendiri lewat tool otak_read/otak_write, dan
  * ditempel berlapis ke prompt sistem oleh AgentPrompt.buildSystemPrompt.
@@ -14,12 +14,12 @@ object AgentBrain {
     val FILES = listOf("SOUL.md", "AGENTS.md", "MEMORY.md")
 
     private fun activeId(ctx: Context): String =
-        ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("activeAgent", "asisten") ?: "asisten"
+        ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("activeAgent", "senz") ?: "senz"
 
-    /** Namespace otak per agen: Asisten = otak/ (warisan v3.12), agen lain otak-<id>/. */
+    /** Namespace otak per agen: Senz = otak/ (warisan v3.12), agen lain otak-<id>/. */
     private fun dir(ctx: Context): File {
         val id = activeId(ctx)
-        val name = if (id == "asisten") "otak" else "otak-$id"
+        val name = if (id == "senz") "otak" else "otak-$id"
         return File(ctx.filesDir, name).apply { mkdirs() }
     }
 
@@ -80,7 +80,7 @@ Kamu adalah asisten pribadi yang tinggal di HP pengguna. Kamu BUKAN chatbot — 
             var soul = DEFAULT_SOUL
             val legacy = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
                 .getString("persona", "")?.trim().orEmpty()
-            if (legacy.isNotBlank() && activeId(ctx) == "asisten") {
+            if (legacy.isNotBlank() && activeId(ctx) == "senz") {
                 soul += "\n## Persona warisan dari pengaturan lama\n" + legacy + "\n"
             }
             soulF.writeText(soul)
@@ -195,11 +195,11 @@ Kamu adalah asisten pribadi yang tinggal di HP pengguna. Kamu BUKAN chatbot — 
      *  (tanpa ensureSeeded — anggota yang belum pernah aktif tidak dibuatkan
      *  file). Cap lebih ketat dari 1-1 demi anggaran prompt grup. */
     fun promptBlocksFor(ctx: Context, id: String): String {
-        val d = File(ctx.filesDir, if (id == "asisten") "otak" else "otak-$id")
+        val d = File(ctx.filesDir, if (id == "senz") "otak" else "otak-$id")
         if (!d.exists()) return ""
         val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
         val persona = prefs.getString("persona", "")?.trim().orEmpty()
-        val legacy = if (id == "asisten") persona else null
+        val legacy = if (id == "senz") persona else null
         return blockText(d, "SOUL.md", "JIWA AGEN (SOUL.md):", 1000, legacy) +
             blockText(d, "AGENTS.md", "ATURAN KERJA (AGENTS.md):", 1000, null) +
             blockText(d, "MEMORY.md", "INGATAN JANGKA PANJANG (MEMORY.md):", 1500, null)

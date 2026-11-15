@@ -16,7 +16,7 @@ import android.widget.TextView
  * v4.10.4 — IZIN MELAYANG: kartu persetujuan sebagai popup WindowManager yang
  * tampil DI ATAS aplikasi apa pun, bukan dialog activity.
  *
- * Akar masalah (kasus user 2026-10-23 10:47): persetujuan tool go_back
+ * Akar masalah (kasus Sendy 2026-10-23 10:47): persetujuan tool go_back
  * menunggu 26 menit tak terlihat — dialog AlertDialog pada activity yang
  * hidup tapi sedang di latar TIDAK melempar exception saat show(), jadi
  * jalur parkir v4.6.0 tidak pernah terpicu dan giliran menggantung sampai

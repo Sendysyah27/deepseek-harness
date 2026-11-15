@@ -57,7 +57,7 @@ class CameraVision(private val ctx: Context) {
         }
 
         fun cameraDir(): File {
-            val d = File("/sdcard/Harness/camera")
+            val d = File("/sdcard/S&Harness/camera")
             try {
                 d.mkdirs()
             } catch (e: Exception) {

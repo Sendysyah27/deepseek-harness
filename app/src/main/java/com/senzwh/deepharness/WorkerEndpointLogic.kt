@@ -4,7 +4,7 @@ import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-/** vc258 Fase 2 — logika MURNI endpoint worker :4200 (tanpa import Android).
+/** vc258 Fase 2 — logika MURNI endpoint worker :4198 (tanpa import Android).
  *  Dipakai WorkerEndpoint (server socket) + diuji kotlinc di JVM.
  *  Kontrak: BRIEF-DEVICE-SERVER.md §4 Fase 2 + §3.1/§3.4/§3.7.
  *  Auth: token Bearer, banding waktu-konstan (tolak timing leak).
@@ -12,7 +12,7 @@ import javax.crypto.spec.SecretKeySpec
  *  Cap: baca hasil endpoint maks READ_MAX_CHARS; preview default
  *  PREVIEW_DEFAULT_CHARS, maks PREVIEW_MAX_CHARS (WorkerLogic). */
 object WorkerEndpointLogic {
-    const val PORT = 4200
+    const val PORT = 4198
     const val MAX_BODY_BYTES = 1024 * 1024
 
     /** Banding token waktu-konstan. Kosong -> tolak. */
@@ -96,17 +96,17 @@ object WorkerEndpointLogic {
             return Route("readResult", workerId = seg[1], name = seg[3])
         if (seg.size == 5 && seg[0] == "workers" && seg[2] == "tasks" && seg[4] == "result" && m == "POST")
             return Route("writeTaskResult", workerId = seg[1], name = seg[3])
-        if (seg.isNotEmpty() && seg[0] == "queue" && seg.size >= 2 && seg[1] == "operator") {
+        if (seg.isNotEmpty() && seg[0] == "queue" && seg.size >= 2 && seg[1] == "jhon") {
             if (seg.size == 3 && seg[2] == "tasks") {
                 return when (m) {
-                    "GET" -> Route("operatorListTasks")
-                    "POST" -> Route("operatorEnqueue")
+                    "GET" -> Route("jhonListTasks")
+                    "POST" -> Route("jhonEnqueue")
                     else -> null
                 }
             }
-            if (seg.size == 3 && seg[2] == "results" && m == "GET") return Route("operatorListResults")
-            if (seg.size == 4 && seg[2] == "tasks" && m == "GET") return Route("operatorReadTask", name = seg[3])
-            if (seg.size == 5 && seg[2] == "tasks" && seg[4] == "result" && m == "POST") return Route("operatorWriteResult", name = seg[3])
+            if (seg.size == 3 && seg[2] == "results" && m == "GET") return Route("jhonListResults")
+            if (seg.size == 4 && seg[2] == "tasks" && m == "GET") return Route("jhonReadTask", name = seg[3])
+            if (seg.size == 5 && seg[2] == "tasks" && seg[4] == "result" && m == "POST") return Route("jhonWriteResult", name = seg[3])
         }
         return null
     }
@@ -119,7 +119,7 @@ object WorkerEndpointLogic {
     }
 
     // vc261 N-M4: aksi yang BOLEH diakses dengan token per-worker (hanya
-    // rute ber-workerId itu sendiri). listWorkers/spawn/operator*/setQuota
+    // rute ber-workerId itu sendiri). listWorkers/spawn/jhon*/setQuota
     // dan health HANYA token master. vc281: resetWorker HANYA token
     // master (destruktif). vc284 N4-M2: verifyTask BOLEH token per-worker
     // — worker memverifikasi tugasnya lewat endpoint (kunci HMAC tinggal

@@ -3,16 +3,23 @@
 import argparse, os, re, shutil, subprocess, sys, zipfile
 
 HOME = os.path.expanduser("~")
-# PROJ: lokasi repo ini (otomatis = direktori build.py; bisa di-override
-# lewat env HARNESS_PROJ). Dulu hard-coded ke ~/workspace/deepseek-harness.
-PROJ = os.environ.get("HARNESS_PROJ", os.path.dirname(os.path.abspath(__file__)))
+PROJ = os.environ.get("HARNESS_PROJ") or os.path.dirname(os.path.abspath(__file__))
 BUILD = f"{PROJ}/build-manual"
-SDK = f"{HOME}/android-sdk"
-BT = f"{SDK}/build-tools/34.0.0"
+SDK = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or f"{HOME}/android-sdk"
+def _resolve_bt():
+    if os.environ.get("HARNESS_BT"):
+        return os.environ["HARNESS_BT"]
+    preferred = f"{SDK}/build-tools/34.0.0"
+    if os.path.isdir(preferred):
+        return preferred
+    import glob as _glob
+    cands = sorted(_glob.glob(f"{SDK}/build-tools/*"))
+    return cands[-1] if cands else preferred
+BT = _resolve_bt()
 ANDROID_JAR = f"{SDK}/platforms/android-34/android.jar"
-KOTLINC = f"{HOME}/kotlin-dist/kotlinc/bin/kotlinc"
-STDLIB = f"{HOME}/kotlin-dist/kotlinc/lib/kotlin-stdlib.jar"
-JH = f"{HOME}/jdk-21.0.12.1+1"
+KOTLINC = os.environ.get("HARNESS_KOTLINC") or f"{HOME}/kotlin-dist/kotlinc/bin/kotlinc"
+STDLIB = os.path.join(os.path.dirname(os.path.dirname(KOTLINC)), "lib", "kotlin-stdlib.jar")
+JH = os.environ.get("JAVA_HOME") or (f"{HOME}/jdk-21-sys" if os.path.isdir(f"{HOME}/jdk-21-sys") else "/usr/lib/jvm/java-21-openjdk-amd64")
 # ---- Flavor pure-original (Fase E2, PURE-VARIANT-SPEC.md §4) ----
 # REPLACEMENTS_PURE: daftar (tag, pola, pengganti, is_regex), URUT.
 # Literal = str.replace (case-sensitive); regex = re.subn (word-boundary).
@@ -217,8 +224,8 @@ def prepare_flavor_src(flavor):
         sys.exit(1)
     print("  residual 0f: 0 baris (allowlist: DeepSeek/deepseek berdiri sendiri + Harness)")
     return src
-VERSION_CODE = 309
-VERSION_NAME = "4.48.9.143"
+VERSION_CODE = 317
+VERSION_NAME = "4.48.9.151"
 ORT_JAR = f"{PROJ}/vendor/ort/classes.jar"
 ORT_JNI = f"{PROJ}/vendor/ort/jni/arm64-v8a"
 BC_JAR = f"{PROJ}/vendor/bc/bcprov.jar"
@@ -239,6 +246,71 @@ def run(cmd, fail=""):
         sys.exit(1)
     return r
 
+def build_rust_so():
+    """Langkah 0r (vc317 slice 0+1): build harness-core -> libharness_core.so.
+
+    Linker rust-lld + sysroot NDK (resep terverifikasi 03:17 WIB 16 Nov 2026:
+    NDK clang + ld.lld VM symlink putus). Bila cargo/NDK/rust-lld tidak ada
+    -> None (APK tetap jalan via fallback Kotlin di DsFailure); bila cargo
+    ada tapi build gagal -> sys.exit(1) (jangan diam-diam tanpa .so).
+    """
+    import glob
+    cargo = shutil.which("cargo")
+    if not cargo:
+        cand = os.path.expanduser("~/.cargo/bin/cargo")
+        cargo = cand if os.path.isfile(cand) else None
+    if not cargo:
+        print("  0r: cargo tidak ada — lanjut tanpa .so (fallback Kotlin)")
+        return None
+    crate = os.path.join(PROJ, "harness-core")
+    if not os.path.isdir(crate):
+        print("  0r: harness-core tidak ada — lanjut tanpa .so")
+        return None
+    ndk = os.environ.get("ANDROID_NDK_HOME") or os.environ.get("ANDROID_NDK_ROOT")
+    if not ndk:
+        cands = sorted(glob.glob(os.path.join(SDK, "ndk", "*")))
+        ndk = cands[-1] if cands else None
+    if not ndk or not os.path.isdir(ndk):
+        print("  0r: NDK tidak ada — lanjut tanpa .so (fallback Kotlin)")
+        return None
+    bindir = os.path.dirname(cargo)
+    rustc = os.path.join(bindir, "rustc")
+    r = subprocess.run([rustc, "--print", "sysroot"], capture_output=True, text=True)
+    sysroot = r.stdout.strip() if r.returncode == 0 else ""
+    r2 = subprocess.run([rustc, "-vV"], capture_output=True, text=True)
+    host = ""
+    for line in r2.stdout.splitlines():
+        if line.startswith("host:"):
+            host = line.split(None, 1)[1].strip()
+    rust_lld = os.path.join(sysroot, "lib", "rustlib", host, "bin", "rust-lld")
+    if not sysroot or not host or not os.path.isfile(rust_lld):
+        print(f"  0r: rust-lld tidak ada ({rust_lld}) — lanjut tanpa .so")
+        return None
+    prebuilt = os.path.join(ndk, "toolchains", "llvm", "prebuilt", "linux-x86_64")
+    sysroot_lib = os.path.join(prebuilt, "sysroot", "usr", "lib", "aarch64-linux-android", "26")
+    clang_lib = os.path.join(prebuilt, "lib", "clang", "21", "lib", "linux", "aarch64")
+    env = dict(os.environ)
+    env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = rust_lld
+    llvm_ar = os.path.join(prebuilt, "bin", "llvm-ar")
+    if os.path.isfile(llvm_ar):
+        env["CARGO_TARGET_AARCH64_LINUX_ANDROID_AR"] = llvm_ar
+    env["CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS"] = (
+        "-C linker-flavor=ld.lld "
+        f"-C link-arg=-L{sysroot_lib} -C link-arg=-L{clang_lib}")
+    env["PATH"] = bindir + ":" + env.get("PATH", "")
+    print("  0r: cargo build --release --target aarch64-linux-android ...")
+    r3 = subprocess.run([cargo, "build", "--release", "--target", "aarch64-linux-android"],
+                        cwd=crate, env=env, capture_output=True, text=True)
+    if r3.returncode != 0:
+        print("GAGAL 0r: cargo build libharness_core.so:")
+        print(r3.stderr[-4000:])
+        print(r3.stdout[-2000:])
+        sys.exit(1)
+    so = os.path.join(crate, "target", "aarch64-linux-android", "release", "libharness_core.so")
+    print(f"  0r: libharness_core.so ok ({os.path.getsize(so)} byte)")
+    return so
+
+
 def main():
     os.environ["JAVA_HOME"] = JH
     os.environ["PATH"] = f"{JH}/bin:" + os.environ.get("PATH", "")
@@ -251,6 +323,7 @@ def main():
         os.makedirs(f"{BUILD}/{d}", exist_ok=True)
 
     SRC_DIR = prepare_flavor_src(FLAVOR) or f"{PROJ}/app/src/main"
+    RUST_SO = build_rust_so()
     print("== 0. aset (UI React pensiun sejak T6 — tanpa npm) ==")
     assets_dir = f"{SRC_DIR}/assets"
     os.makedirs(assets_dir, exist_ok=True)
@@ -294,8 +367,7 @@ def main():
     print("  kotlinc ok")
 
     print("== 4. strip MethodParameters di stdlib ==")
-    sys.path.insert(0, f"{HOME}/workspace/senz-browser/tools")
-    sys.path.insert(0, os.path.join(PROJ, "tools"))  # salinan repo (diutamakan)
+    sys.path.insert(0, f"{PROJ}/tools")
     import strip_methodparams as smp
     stdlib_stripped = f"{BUILD}/kotlin-stdlib-stripped.jar"
     shutil.copy(STDLIB, stdlib_stripped)
@@ -336,6 +408,9 @@ def main():
         # nativeLibraryDir (lolos W^X targetSdk 34); dieksekusi dari sana.
         for so in ("libproot.so", "libprootloader.so", "libtalloc.so", "libandroid-shmem.so"):
             z.write(os.path.join(PROOT_JNI, so), f"lib/arm64-v8a/{so}")
+        # libharness_core.so (vc317 slice 0+1) — bila ada (fallback Kotlin bila absen).
+        if RUST_SO:
+            z.write(RUST_SO, "lib/arm64-v8a/libharness_core.so")
     run([f"{BT}/zipalign", "-f", "4", unsigned, f"{BUILD}/app-aligned.apk"], "zipalign GAGAL")
     ks = f"{PROJ}/{FLAVOR['keystore']}"
     if not os.path.exists(ks):

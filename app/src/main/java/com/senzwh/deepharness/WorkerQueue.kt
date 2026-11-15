@@ -3,14 +3,14 @@ package com.senzwh.deepharness
 import java.io.File
 
 /** vc256 Fase 1 Device-as-Server — antrean tugas generik berbasis file
- *  (Jalur A brief §3.4). Generalisasi pola ~/operator-inbox/outbox ke folder
+ *  (Jalur A brief §3.4). Generalisasi pola ~/jhon-inbox/outbox ke folder
  *  per worker: inbox `task-<ts>.md`, outbox `<task>.result.md`.
  *  File-based murni (File in/out, tanpa Context) supaya bisa diuji di JVM.
  *  Canonical = filesDir/workers/<id>/ ; mirror = /sdcard/Harness-Workers/<id>/
  *  (K2 opsi b). Worker (proot) membaca/menulis LEWAT MIRROR — bind /sdcard
  *  sudah ada di proot, jadi tanpa perubahan bind. Agen menulis tugas ke
  *  canonical + mirror, dan mengumpulkan hasil dari mirror ke canonical.
- *  ask_operator/check_operator TIDAK disentuh — file lama tetap dibaca jalur lama
+ *  ask_jhon/check_jhon TIDAK disentuh — file lama tetap dibaca jalur lama
  *  (kompatibel mundur = tidak ada migrasi/rename file lama). */
 object WorkerQueue {
     fun inboxDir(canonicalWorkerDir: File): File = File(canonicalWorkerDir, "inbox")

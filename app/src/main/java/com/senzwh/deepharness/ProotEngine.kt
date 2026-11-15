@@ -83,7 +83,7 @@ object ProotEngine {
             conn.instanceFollowRedirects = true
             conn.connectTimeout = 30000
             conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", "Harness")
+            conn.setRequestProperty("User-Agent", "S&Harness")
             conn.connect()
             if (conn.responseCode !in 200..299) return "Unduhan gagal: HTTP " + conn.responseCode
             val total = conn.contentLengthLong

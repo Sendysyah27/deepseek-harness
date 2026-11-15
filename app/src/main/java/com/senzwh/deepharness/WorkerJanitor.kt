@@ -128,17 +128,17 @@ object WorkerJanitor {
         } catch (e: Exception) { null }
     }
 
-    /** Sweep antrean Operator (vc284 N4-M3): operator bukan baris registry,
+    /** Sweep antrean Jhon (vc284 N4-M3): jhon bukan baris registry,
      *  jadi sweepAll tidak pernah menyentuhnya. Baris sintetis dengan
      *  kuota default (quotaMb=0 -> 1024 MB); notifikasi + EventDb ikut
      *  pola yang sama dengan worker biasa (di dalam sweepWorker). */
-    fun sweepOperator(ctx: Context): SweepReport? {
+    fun sweepJhon(ctx: Context): SweepReport? {
         val w = WorkerRegistry.Worker(
-            id = "operator", name = "Operator", kind = "operator", session = "worker1",
+            id = "jhon", name = "Jhon", kind = "jhon", session = "worker1",
             command = "", scriptPath = "", pid = 0L, logPath = "",
             status = "STOPPED", stoppedExplicit = true, createdMs = 0L,
             lastSeenMs = 0L, lastEvent = "", owner = "",
-            workDir = "/sdcard/Harness-Workers/operator", quotaMb = 0
+            workDir = "/sdcard/Harness-Workers/jhon", quotaMb = 0
         )
         return sweepWorker(ctx, w)
     }
@@ -151,8 +151,8 @@ object WorkerJanitor {
             for (w in WorkerRegistry.list(ctx)) {
                 try { sweepWorker(ctx, w)?.let { out.add(it) } } catch (e: Exception) {}
             }
-            // vc284 N4-M3: antrean Operator ikut di-sweep (bukan baris registry).
-            try { sweepOperator(ctx)?.let { out.add(it) } } catch (e: Exception) {}
+            // vc284 N4-M3: antrean Jhon ikut di-sweep (bukan baris registry).
+            try { sweepJhon(ctx)?.let { out.add(it) } } catch (e: Exception) {}
         } catch (e: Exception) {}
         return out
     }

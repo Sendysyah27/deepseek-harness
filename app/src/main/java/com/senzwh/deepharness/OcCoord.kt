@@ -26,15 +26,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * hasil akhir dikirim ke riwayat chat + notifikasi (pola Otak Latar).
  *
  * Jalur serve: "resmi" (4097 utama, 4096 cadangan — harness bisa menyalakan
- * 4097 sendiri via Termux) atau "mandiri" (serve MILIK harness di 4100,
- * working dir ~/harness-pure-oc, boot script 44-harness-pure-oc.sh dipasang harness).
+ * 4097 sendiri via Termux) atau "mandiri" (serve MILIK harness di 4099,
+ * working dir ~/harness-oc, boot script 44-harness-oc.sh dipasang harness).
  * Aturan koordinasi tersimpan di tabel coord_rules — bisa diedit dari
  * Panel/Setup maupun bahasa natural lewat tool coord_rule.
  */
 object OcCoord {
 
     val RULE_DEFAULTS: Map<String, String> = linkedMapOf(
-        "path_mode" to "mandiri",
+        "path_mode" to "resmi",
         "auto_approve" to "",
         "session_ctx_limit" to "350000",
         "chain_max" to "3",
@@ -72,7 +72,7 @@ object OcCoord {
         // Sanitasi baca (v3.3.2): nilai tidak sah yang sempat tersimpan oleh
         // model sebelum ada validasi tulis dinetralkan di sini.
         return when (key) {
-            "path_mode" -> if (raw.trim().lowercase() in listOf("resmi", "mandiri")) raw.trim().lowercase() else "mandiri"
+            "path_mode" -> if (raw.trim().lowercase() in listOf("resmi", "mandiri")) raw.trim().lowercase() else "resmi"
             "auto_approve" -> if (raw.trim().lowercase() in listOf("on", "true", "yes", "aktif")) "" else raw
             else -> raw
         }
@@ -213,7 +213,7 @@ object OcCoord {
             }
             db.setOcTask(task.id, sessionId = sid)
             val baseline = OcClient.messages(base, sid).length()
-            val prompt = "Tugas dari Harness (asisten di HP user — hasil akhirmu diteruskan ke chat HP user, jadi akhiri dengan ringkasan jelas tentang apa yang dikerjakan & hasilnya):\n\n" + task.text
+            val prompt = "Tugas dari Harness Senz (asisten di HP user — hasil akhirmu diteruskan ke chat HP user, jadi akhiri dengan ringkasan jelas tentang apa yang dikerjakan & hasilnya):\n\n" + task.text
             // vc265 N2-m7: berhenti sebelum prompt dikirim bila F1
             // dimatikan selama pembuatan/rotasi sesi.
             if (f1Off(ctx)) {
@@ -815,7 +815,7 @@ object OcCoord {
 
     /** Intip teks asisten terakhir di sesi serve tugas (progres langsung). */
     private fun peekSessionText(sid: String): String {
-        val base = listOf(4097, 4096, 4100).firstOrNull { OcClient.probe(it) }?.let { OcClient.base(it) } ?: return ""
+        val base = listOf(4097, 4096, 4099).firstOrNull { OcClient.probe(it) }?.let { OcClient.base(it) } ?: return ""
         return try {
             val msgs = OcClient.messages(base, sid)
             var last = ""
@@ -835,7 +835,7 @@ object OcCoord {
     /**
      * TUNGGU tugas sampai selesai/gagal/dibatalkan (maks timeoutSec), lalu
      * kembalikan HASILNYA — perilaku mandor: mantau koordinator sampai beres,
-     * bukan berhenti di laporan status (permintaan user, v3.3.3).
+     * bukan berhenti di laporan status (permintaan Sendy, v3.3.3).
      */
     fun waitForTaskText(ctx: Context, id: Long, timeoutSec: Int): String {
         val cap = timeoutSec.coerceIn(15, 600)
@@ -869,14 +869,14 @@ object OcCoord {
     fun ensureServe(ctx: Context): Pair<String?, String> {
         val mode = rule(ctx, "path_mode")
         if (mode == "mandiri") {
-            if (OcClient.probe(4100)) return Pair(OcClient.base(4100), "")
-            startServeViaTermux(ctx, 4100)
+            if (OcClient.probe(4099)) return Pair(OcClient.base(4099), "")
+            startServeViaTermux(ctx, 4099)
             Thread.sleep(6000)
-            if (OcClient.probe(4100)) return Pair(OcClient.base(4100), "(Serve mandiri 4100 dinyalakan harness.)")
+            if (OcClient.probe(4099)) return Pair(OcClient.base(4099), "(Serve mandiri 4099 dinyalakan harness.)")
             for (port in listOf(4097, 4096)) {
                 if (OcClient.probe(port)) return Pair(OcClient.base(port), "(Serve mandiri gagal — fallback jalur resmi $port.)")
             }
-            return Pair(null, "serve mandiri 4100 gagal dinyalakan dan jalur resmi (4097/4096) mati semua.")
+            return Pair(null, "serve mandiri 4099 gagal dinyalakan dan jalur resmi (4097/4096) mati semua.")
         }
         for (port in listOf(4097, 4096)) {
             if (OcClient.probe(port)) return Pair(OcClient.base(port), "")
@@ -890,8 +890,8 @@ object OcCoord {
     }
 
     private fun startServeViaTermux(ctx: Context, port: Int) {
-        val cmd = if (port == 4100) {
-            "mkdir -p ~/harness-pure-oc && cd ~/harness-pure-oc && (curl -s -m 2 http://127.0.0.1:4100/session >/dev/null 2>&1 || (nohup opencode serve --hostname 127.0.0.1 --port 4100 >> ~/harness-pure-oc/serve.log 2>&1 &)) ; echo START-DIKIRIM"
+        val cmd = if (port == 4099) {
+            "mkdir -p ~/harness-oc && cd ~/harness-oc && (curl -s -m 2 http://127.0.0.1:4099/session >/dev/null 2>&1 || (nohup opencode serve --hostname 127.0.0.1 --port 4099 >> ~/harness-oc/serve.log 2>&1 &)) ; echo START-DIKIRIM"
         } else {
             "cd ~/serve-cwd && (curl -s -m 2 http://127.0.0.1:4097/session >/dev/null 2>&1 || (nohup opencode serve --hostname 127.0.0.1 --port 4097 >> ~/opencode-serve-4097.log 2>&1 &)) ; echo START-DIKIRIM"
         }
@@ -902,26 +902,26 @@ object OcCoord {
     fun installBootAndStart(ctx: Context): String {
         val script = """
             #!/data/data/com.termux/files/usr/bin/sh
-            # Serve OpenCode MILIK Harness (port 4100, dir ~/harness-pure-oc)
+            # Serve OpenCode MILIK Harness Senz (port 4099, dir ~/harness-oc)
             # Dipasang oleh Harness v3.3.0 (Tahap D) — pola guard sama seperti serve 4097.
             termux-wake-lock
             pgrep -af 'opencode serve.*--port 409[9]' >/dev/null 2>&1 || {
-              mkdir -p ~/harness-pure-oc
-              cd ~/harness-pure-oc || exit 1
+              mkdir -p ~/harness-oc
+              cd ~/harness-oc || exit 1
               while true; do
-                opencode serve --hostname 127.0.0.1 --port 4100 >> ~/harness-pure-oc/serve.log 2>&1
+                opencode serve --hostname 127.0.0.1 --port 4099 >> ~/harness-oc/serve.log 2>&1
                 sleep 5
               done
             }
         """.trimIndent() + "\n"
         val b64 = Base64.encodeToString(script.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        val install = "mkdir -p ~/.termux/boot && printf %s '$b64' | base64 -d > ~/.termux/boot/44-harness-pure-oc.sh && chmod +x ~/.termux/boot/44-harness-pure-oc.sh && echo BOOT-OK"
+        val install = "mkdir -p ~/.termux/boot && printf %s '$b64' | base64 -d > ~/.termux/boot/44-harness-oc.sh && chmod +x ~/.termux/boot/44-harness-oc.sh && echo BOOT-OK"
         val r = try { Tools.runTerminal(ctx, install, "termux") } catch (e: Exception) { "gagal: ${e.message}" }
-        startServeViaTermux(ctx, 4100)
+        startServeViaTermux(ctx, 4099)
         Thread.sleep(6000)
-        val up = OcClient.probe(4100)
-        return "Boot script 44-harness-pure-oc.sh: ${if (r.contains("BOOT-OK")) "TERPASANG" else "cek manual ($r)"}. " +
-            "Serve mandiri 4100: ${if (up) "HIDUP ✅" else "belum merespons — tunggu beberapa detik lalu cek lagi (Setup 33)."}" +
+        val up = OcClient.probe(4099)
+        return "Boot script 44-harness-oc.sh: ${if (r.contains("BOOT-OK")) "TERPASANG" else "cek manual ($r)"}. " +
+            "Serve mandiri 4099: ${if (up) "HIDUP ✅" else "belum merespons — tunggu beberapa detik lalu cek lagi (Setup 33)."}" +
             "\nAktifkan sebagai jalur utama lewat aturan path_mode=mandiri (tool coord_rule / chat: 'jadikan jalur koordinator mandiri')."
     }
 
@@ -939,7 +939,7 @@ object OcCoord {
                 }.toMap()
             }
         }
-        val res = mapOf(4097 to OcClient.probe(4097), 4096 to OcClient.probe(4096), 4100 to OcClient.probe(4100))
+        val res = mapOf(4097 to OcClient.probe(4097), 4096 to OcClient.probe(4096), 4099 to OcClient.probe(4099))
         p.edit().putString("ocProbeCache", res.entries.joinToString(",") { "${it.key}=${if (it.value) 1 else 0}" })
             .putLong("ocProbeTs", System.currentTimeMillis()).apply()
         return res
@@ -950,7 +950,7 @@ object OcCoord {
         val probes = probeCached(ctx, forceProbe)
         fun st(b: Boolean) = if (b) "HIDUP" else "MATI"
         val sb = StringBuilder()
-        sb.append("Jalur mode: ${rule(ctx, "path_mode")} • 4097 (resmi): ${st(probes[4097] == true)} • 4096 (cadangan): ${st(probes[4096] == true)} • 4100 (mandiri): ${st(probes[4100] == true)}\n")
+        sb.append("Jalur mode: ${rule(ctx, "path_mode")} • 4097 (resmi): ${st(probes[4097] == true)} • 4096 (cadangan): ${st(probes[4096] == true)} • 4099 (mandiri): ${st(probes[4099] == true)}\n")
         val cur = prefs(ctx).getLong("ocCurrentTask", 0)
         sb.append("Antrean: ${db.countOcTasks("queued")} menunggu • ${db.countOcTasks("running")} berjalan")
         if (cur > 0) sb.append(" (tugas #$cur)")

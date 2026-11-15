@@ -20,7 +20,18 @@ object TurnMetrics {
     // 4.48.9 giliran_ke: counter persisten (tidak pernah di-reset Setup 17 —
     // clearSnapshot hanya menghapus KEY_LAST), naik tiap beginTurn.
     private const val KEY_TURN = "giliran_ke"
-    const val DEFAULT_CAP = 400000
+    // vc316 IXL: 200.000 char ≈ 58.800 token (@3,4 char/token, kalibrasi
+    // DsApiClient.recordTokens) — DI BAWAH buffer konteks chat web
+    // DeepSeek ~64.000 token (batas yang mengikat di chat.deepseek.com;
+    // API V3 128k / V4 1M lebih longgar). Cap lama 400.000 char
+    // (≈117.600 token) berada DI ATAS batas server, jadi guard lokal
+    // tidak pernah bisa mencegah input_exceeds_limit — prompt yang
+    // lolos guard pun ditolak server. Cap ini per-prompt; akumulasi
+    // antar-POST di sesi server yang sama ditangani lanjutan delta
+    // (MainActivity.sendContinuation + BgBrain.continuationPrompt).
+    // KEY_CAP tidak pernah ditulis UI/kode lain, jadi nilai ini berlaku
+    // untuk semua instalasi (bukan hanya instalasi baru).
+    const val DEFAULT_CAP = 200000
 
     // Lapisan prompt yang diukur (7 lapis, sesuai brief Butir 2).
     const val L_SYSTEM = "sistem_minus_katalog"
@@ -135,9 +146,10 @@ object TurnMetrics {
     fun recordQueueWait(waitedMs: Long) { if (begun) { queueCount++; queueWaitMsTotal += waitedMs } }
     fun recordQueueRejected() { if (begun) queueRejected++ }
 
-    /** vc278 O19: ambang proaktif pemangkas prompt = 80% cap (320.000
-     *  char pada cap default 400.000). Dipakai 1-1 (sendContinuation)
-     *  dan latar (BgBrain) supaya ambangnya selaras. */
+    /** vc278 O19: ambang proaktif pemangkas prompt = 80% cap (160.000
+     *  char pada cap default vc316 200.000; dulu 320.000 pada cap
+     *  400.000). Dipakai 1-1 (sendContinuation) dan latar (BgBrain)
+     *  supaya ambangnya selaras. */
     fun proactiveThreshold(cap: Int): Int = (cap * 4) / 5
 
     /** vc278 O19(c): char yang dipangkas PEMANGKAS PROAKTIF per giliran

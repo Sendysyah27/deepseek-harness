@@ -26,7 +26,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * v4.10.0 — Kerangka PANTAU LAYAR (permintaan user: popup tombol Izinkan di
+ * v4.10.0 — Kerangka PANTAU LAYAR (permintaan Sendy: popup tombol Izinkan di
  * LUAR app agar bot bisa terus mengecek pergerakan layar).
  *
  * Alur: agen memanggil tool watch_screen{action:"start"} -> popup melayang

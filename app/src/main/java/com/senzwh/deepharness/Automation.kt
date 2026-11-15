@@ -599,7 +599,7 @@ object Automation {
                 if (sr.isNotBlank()) dropRoutineIds.add(sr)
             }
         }
-        val rootRaw = prefs(ctx).getString("sessOutRoot", "/sdcard/Harness/") ?: "/sdcard/Harness/"
+        val rootRaw = prefs(ctx).getString("sessOutRoot", "/sdcard/S&Harness/") ?: "/sdcard/S&Harness/"
         val rootCanon = try { File(rootRaw).canonicalPath } catch (e: Exception) { rootRaw }
         val candidates = LinkedHashSet<String>()
         for (i in 0 until sessArr.length()) {
@@ -892,7 +892,7 @@ object Automation {
     fun outputDirFor(ctx: Context, room: JSONObject, sess: JSONObject): String {
         val stored = sess.optString("outDir", "")
         if (stored.isNotBlank()) return stored
-        val root = prefs(ctx).getString("sessOutRoot", "/sdcard/Harness/") ?: "/sdcard/Harness/"
+        val root = prefs(ctx).getString("sessOutRoot", "/sdcard/S&Harness/") ?: "/sdcard/S&Harness/"
         val base = if (root.endsWith("/")) root else root + "/"
         return base + sanitizeTitle(room.optString("title")) + "__" + sanitizeTitle(sess.optString("title")) + "/"
     }
@@ -935,7 +935,7 @@ object Automation {
         s.put("schedTime", schedTime)
         s.put("schedIntervalMin", schedIntervalMin)
         s.put("schedRoutineId", "")
-        val root = prefs(ctx).getString("sessOutRoot", "/sdcard/Harness/") ?: "/sdcard/Harness/"
+        val root = prefs(ctx).getString("sessOutRoot", "/sdcard/S&Harness/") ?: "/sdcard/S&Harness/"
         val base = if (root.endsWith("/")) root else root + "/"
         s.put("outDir", base + sanitizeTitle(room.optString("title")) + "__" + sanitizeTitle(s.optString("title")) + "/")
         val arr = sessions(room)
@@ -1261,7 +1261,7 @@ object Automation {
         solo.put("id", room.optString("id") + "_solo1")
         solo.put("mode", "solo")
         solo.put("title", room.optString("task", "").take(60).ifBlank { "Sesi Solo" })
-        solo.put("agent", "asisten")
+        solo.put("agent", "senz")
         solo.put("members", JSONArray())
         solo.put("divMode", "bebas")
         solo.put("primaryAgent", "")
@@ -1283,7 +1283,7 @@ object Automation {
         multi.put("title", room.optString("task", "").take(60).ifBlank { "Sesi Multi" })
         multi.put("agent", "")
         val mem = JSONArray()
-        mem.put("asisten"); mem.put("mandor"); mem.put("mentor"); mem.put("agen4")
+        mem.put("senz"); mem.put("mandor"); mem.put("mentor"); mem.put("agen4")
         multi.put("members", mem)
         multi.put("divMode", "bebas")
         multi.put("primaryAgent", "mandor")

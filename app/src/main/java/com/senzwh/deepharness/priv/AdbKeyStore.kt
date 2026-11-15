@@ -23,7 +23,7 @@ import javax.security.auth.x500.X500Principal
  * inilah identitas yang didaftarkan ke adbd saat pairing S3.
  */
 object AdbKeyStore {
-    const val KEY_NAME = "harness@device"
+    const val KEY_NAME = "harness@senz"
     private const val PRIV_FILE = "adb_key.pk8"
     private const val CERT_FILE = "adb_cert.der"
 

@@ -70,7 +70,7 @@ object DecisionLedger {
 
     fun exportText(ctx: Context): String {
         val sb = StringBuilder()
-        sb.append("# Decision Ledger — Harness (vc262)\n\n")
+        sb.append("# Decision Ledger — S&Harness (vc262)\n\n")
         val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale("id", "ID"))
         sb.append("Diekspor: ").append(fmt.format(java.util.Date())).append("\n\n")
         val rows = try {

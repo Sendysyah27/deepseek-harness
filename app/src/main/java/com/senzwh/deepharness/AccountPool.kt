@@ -12,7 +12,7 @@ object AccountPool {
      *  memakai slot terisi pertama yang bukan slot giliran + sesi server
      *  ephemeral baru tiap review, sehingga puluhan chat "Review klaim"
      *  menumpuk di Browser 1 dan akun itu kena SUSPEND DeepSeek 12 Nov
-     *  2026. Slot 5 = akun Browser 5 (login ulang sendiri oleh user di
+     *  2026. Slot 5 = akun Browser 5 (login ulang sendiri oleh Sendy di
      *  HP, 11 Nov — bukan bagian kode ini). Nilai = ReviewerVc298.SLOT
      *  (satu sumber kebenaran; logika murni + tes di sana). */
     const val REVIEWER_SLOT: Int = ReviewerVc298.SLOT

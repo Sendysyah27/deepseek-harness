@@ -7,7 +7,7 @@ import java.net.URLEncoder
 import org.json.JSONObject
 
 /** vc201 T2 API-Buatan — FRAMEWORK saja, tanpa klien app nyata.
- *  Tesis 2 DIBALIK (keputusan user): untuk app yang BELUM punya API, kita
+ *  Tesis 2 DIBALIK (keputusan Sendy): untuk app yang BELUM punya API, kita
  *  BUAT API-nya — pelajari cara app bicara ke servernya, bangun klien API di
  *  harness, kontrol full app lewat API; layar jadi verifikasi + fallback.
  *  Prinsip yang dikunci di sini:

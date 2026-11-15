@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  prootToolsInstalled; log /root/proot-tools-install.log; jalan di BACKGROUND
  *  (Thread, sekali saja — flag + guard running) tanpa memblokir perintah.
  *  mitmproxy TIDAK ikut (jatah build T2). Snapshot murah: /root/work +
- *  dpkg --get-selections → /sdcard/Harness/proot-snapshots/<nama>/;
+ *  dpkg --get-selections → /sdcard/S&Harness/proot-snapshots/<nama>/;
  *  restore = ekstrak + dselect-upgrade. TIDAK PERNAH salin rootfs penuh
  *  (storage 93%). */
 object ProotTools {
@@ -165,7 +165,7 @@ object ProotTools {
             val rootfs = File(ctx.filesDir, "proot/ubuntu")
             val dir = File(rootfs, "root/.harness").apply { mkdirs() }
             File(rootfs, "root/work").mkdirs()
-            try { File("/sdcard/Harness/proot-snapshots").mkdirs() } catch (e: Exception) {}
+            try { File("/sdcard/S&Harness/proot-snapshots").mkdirs() } catch (e: Exception) {}
             val snap = File(dir, "proot-snapshot.sh")
             val rest = File(dir, "proot-restore.sh")
             snap.writeText(SNAPSHOT_SCRIPT)
@@ -178,14 +178,14 @@ object ProotTools {
 
     private const val SNAPSHOT_SCRIPT = """
         #!/bin/bash
-        # Snapshot murah proot (vc200): /root/work + daftar paket -> /sdcard/Harness/proot-snapshots/<nama>/
+        # Snapshot murah proot (vc200): /root/work + daftar paket -> /sdcard/S&Harness/proot-snapshots/<nama>/
         # TIDAK menyalin rootfs penuh (storage kritis).
         nama=$(echo "${'$'}1" | tr -cd 'A-Za-z0-9_-')
         [ -z "${'$'}nama" ] && { echo "pakai: proot-snapshot.sh <nama>"; exit 1; }
-        mkdir -p /root/work "/sdcard/Harness/proot-snapshots/${'$'}nama"
-        tar -czf "/sdcard/Harness/proot-snapshots/${'$'}nama/work.tar.gz" -C /root work
-        dpkg --get-selections > "/sdcard/Harness/proot-snapshots/${'$'}nama/selections.txt"
-        echo "Snapshot tersimpan: /sdcard/Harness/proot-snapshots/${'$'}nama/ (work.tar.gz + selections.txt)"
+        mkdir -p /root/work "/sdcard/S&Harness/proot-snapshots/${'$'}nama"
+        tar -czf "/sdcard/S&Harness/proot-snapshots/${'$'}nama/work.tar.gz" -C /root work
+        dpkg --get-selections > "/sdcard/S&Harness/proot-snapshots/${'$'}nama/selections.txt"
+        echo "Snapshot tersimpan: /sdcard/S&Harness/proot-snapshots/${'$'}nama/ (work.tar.gz + selections.txt)"
     """
 
     private const val RESTORE_SCRIPT = """
@@ -193,7 +193,7 @@ object ProotTools {
         # Restore snapshot proot (vc200). HATI-HATI: mengembalikan /root/work DAN daftar paket
         # (dselect-upgrade bisa menambah/menghapus paket agar sesuai snapshot).
         nama=$(echo "${'$'}1" | tr -cd 'A-Za-z0-9_-')
-        dir="/sdcard/Harness/proot-snapshots/${'$'}nama"
+        dir="/sdcard/S&Harness/proot-snapshots/${'$'}nama"
         [ -z "${'$'}nama" ] || [ ! -f "${'$'}dir/work.tar.gz" ] || [ ! -f "${'$'}dir/selections.txt" ] && { echo "snapshot tidak ditemukan: ${'$'}dir"; exit 1; }
         export DEBIAN_FRONTEND=noninteractive
         tar -xzf "${'$'}dir/work.tar.gz" -C /root

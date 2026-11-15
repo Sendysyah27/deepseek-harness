@@ -306,6 +306,79 @@ object SkillJudge {
         return text.lowercase().split(Regex("[^a-z0-9]+")).filter { it.length >= 4 && it !in STOPWORDS }.toSet()
     }
 
+    // ---------- vc312 Opsi A — sinyal negatif dari bagian "JANGAN PICU:" ----------
+    // S1=A: bagian larangan dikenali via marker eksplisit di deskripsi.
+    // Baris yang diawali marker (case-insensitive, toleran spasi) membuka
+    // bagian larangan; sisa baris itu + baris-baris berikut sampai baris
+    // kosong berikutnya / akhir deskripsi = bagian larangan, sisanya =
+    // bagian positif. Tanpa marker -> bagian larangan kosong (no-op:
+    // perilaku sinyal persis seperti sebelum vc312).
+    private val NEG_MARKER_REGEX = Regex("^\\s*jangan\\s+picu\\s*:\\s*(.*)$", RegexOption.IGNORE_CASE)
+
+    // S2=A: bobot negatif w=1 (lunak). Skor bersih = pos − w×neg.
+    private const val NEG_WEIGHT_VC312 = 1
+
+    /** Hasil pemecahan deskripsi: bagian positif, bagian larangan, dan
+     *  apakah marker ditemukan. */
+    data class DescrSections(val positive: String, val negative: String, val markerFound: Boolean)
+
+    /** Skor sinyal trigger satu query (vc312 Opsi A). */
+    data class TriggerScore(val trigger: Boolean, val posOverlap: Int, val negOverlap: Int, val netScore: Int)
+
+    /** Pecah deskripsi jadi bagian positif + bagian larangan (S1=A).
+     *  Hanya marker PERTAMA yang dikenali; kata markernya sendiri
+     *  ("JANGAN PICU:") BUKAN kata konten larangan — hanya sisa baris
+     *  sesudah ":" yang masuk bagian larangan. */
+    fun splitDescrSections(descr: String): DescrSections {
+        val lines = descr.lines()
+        val markerIdx = lines.indexOfFirst { NEG_MARKER_REGEX.matches(it) }
+        if (markerIdx < 0) return DescrSections(descr, "", false)
+        val markerMatch = NEG_MARKER_REGEX.find(lines[markerIdx])!!
+        val negLines = ArrayList<String>()
+        negLines.add(markerMatch.groupValues[1])
+        var end = markerIdx + 1
+        while (end < lines.size && lines[end].isNotBlank()) {
+            negLines.add(lines[end])
+            end++
+        }
+        val posLines = ArrayList<String>()
+        for (i in lines.indices) {
+            if (i < markerIdx || i > end) posLines.add(lines[i])
+        }
+        return DescrSections(posLines.joinToString("\n"), negLines.joinToString("\n"), true)
+    }
+
+    /** Kata negatif sinyal trigger (vc312 Opsi A).
+     *  ATURAN MINUS-POSITIF (WAJIB): negWords = contentWords(bagian larangan)
+     *  MINUS contentWords(bagian positif). Kata yang ada di KEDUA bagian
+     *  (mis. "telegram" dalam "berita/artikel Telegram" di daftar larangan)
+     *  TIDAK masuk negWords dan TIDAK terpenalti — bila aturan ini lupa,
+     *  kata pemicu utama ikut terpenalti. */
+    fun negWordsOf(descr: String): Set<String> {
+        val sections = splitDescrSections(descr)
+        if (!sections.markerFound) return emptySet()
+        return contentWords(sections.negative) - contentWords(sections.positive)
+    }
+
+    /** Skor sinyal trigger satu query (vc312 Opsi A, S2=A w=1, S5=A ambang
+     *  tetap >=2 atas skor bersih). Skor dijepit minimum 0 (negatif -> 0,
+     *  tetap TIDAK). Tanpa marker (negWords kosong) skor = overlap lama —
+     *  perilaku identik sebelum vc312. */
+    fun triggerScore(descr: String, query: String): TriggerScore {
+        val sections = splitDescrSections(descr)
+        val posWords = contentWords(sections.positive)
+        val negWords = if (sections.markerFound) contentWords(sections.negative) - posWords else emptySet()
+        return triggerScore(posWords, negWords, query)
+    }
+
+    private fun triggerScore(posWords: Set<String>, negWords: Set<String>, query: String): TriggerScore {
+        val qWords = contentWords(query)
+        val pos = qWords.intersect(posWords).size
+        val neg = qWords.intersect(negWords).size
+        val net = (pos - NEG_WEIGHT_VC312 * neg).coerceAtLeast(0)
+        return TriggerScore(net >= 2, pos, neg, net)
+    }
+
     // ---------- Evaluasi trigger deskripsi (forge_trigger_eval) ----------
     // vc301 SF-A10 — agent_votes: 3 vote TRIGGER/TIDAK per query; mayoritas
     // dihitung tool (bukan diklaim di chat). Tanpa vote = sinyal saja.
@@ -405,18 +478,20 @@ object SkillJudge {
         val nTrain = (sorted.size * 60) / 100
         val train = sorted.subList(0, nTrain)
         val test = sorted.subList(nTrain, sorted.size)
-        val descrWords = contentWords(descr)
-        fun predict(q: String): Pair<Boolean, Int> {
-            val overlap = contentWords(q).intersect(descrWords).size
-            // Ambang tetap >=2 (vc301 SF-A11). Usulan proporsional (overlap >=2
-            // ATAU >=50% kata konten query) dicatat sebagai KEPUTUSAN TERTUNDA —
-            // jangan diubah diam-diam: mengubah sensitivitas semua eval lama.
-            return Pair(overlap >= 2, overlap)
-        }
+        val sections = splitDescrSections(descr)
+        val posWords = contentWords(sections.positive)
+        // ATURAN MINUS-POSITIF (WAJIB, vc312 Opsi A): kata yang ada di kedua
+        // bagian TIDAK masuk negWords — lihat negWordsOf di atas.
+        val negWords = if (sections.markerFound) contentWords(sections.negative) - posWords else emptySet()
+        fun predict(q: String): TriggerScore = triggerScore(posWords, negWords, q)
+        // Ambang tetap >=2 atas skor bersih (vc312 Opsi A, S5=A). Usulan
+        // proporsional (overlap >=2 ATAU >=50% kata konten query) dicatat
+        // sebagai KEPUTUSAN TERTUNDA — jangan diubah diam-diam: mengubah
+        // sensitivitas semua eval lama.
         fun acc(rows: List<TrigQuery>): Int {
             if (rows.isEmpty()) return 0
             var ok = 0
-            for (r in rows) if (predict(r.query).first == r.should) ok++
+            for (r in rows) if (predict(r.query).trigger == r.should) ok++
             return ok * 100 / rows.size
         }
         val trainAcc = acc(train)
@@ -466,7 +541,14 @@ object SkillJudge {
         sb.append("Eval set: ").append(list.size).append(" query (train ").append(train.size).append(" / test ").append(test.size).append(", split 60/40 by hash query).\n")
         sb.append("Query set hash (SHA-256, simpan bersama eval sebagai trigger_query_hash): ").append(setHash).append("\n")
         sb.append("TRAIN: ").append(trainAcc).append("% — TEST: ").append(testAcc).append("% (ambang lolos: TEST >=80% DAN TRAIN >=80%).\n")
-        sb.append("Prediksi sinyal = TRIGGER bila >=2 kata konten query muncul di deskripsi.\n")
+        sb.append("Prediksi sinyal = TRIGGER bila skor bersih >=2 (skor bersih = overlap positif − overlap negatif, dijepit min 0; tanpa bagian JANGAN PICU, skor = overlap lama).\n")
+        // vc312 Opsi A (R1): sebut apakah bagian larangan terdeteksi — bila 0,
+        // agen tahu marker belum ada di deskripsi.
+        if (sections.markerFound) {
+            sb.append("negWords: ").append(negWords.size).append(" kata dari bagian JANGAN PICU (skor bersih = overlap positif − overlap negatif, TRIGGER bila skor >=2).\n")
+        } else {
+            sb.append("negWords: 0 kata dari bagian JANGAN PICU — marker \"JANGAN PICU:\" tidak ditemukan di deskripsi, sinyal memakai rumus lama (overlap >=2).\n")
+        }
         if (voteList == null) {
             sb.append("Hasil ini SINYAL (tanpa vote): penilaian agen 3x per query belum dicatat. Angka sinyal di atas TIDAK boleh disimpan sebagai trigger_train/trigger_test — forge_eval_save menolak trigger_* tanpa agent_votes. Untuk menyimpan benchmark trigger, panggil lagi dengan agent_votes (3 vote TRIGGER/TIDAK per query).\n")
         } else {
@@ -487,13 +569,13 @@ object SkillJudge {
                 }
             }
         }
-        val failed = sorted.filter { predict(it.query).first != it.should }
+        val failed = sorted.filter { predict(it.query).trigger != it.should }
         if (failed.isEmpty()) sb.append("Semua query diprediksi benar oleh sinyal.\n")
         else {
             sb.append("Query yang diprediksi SALAH oleh sinyal (").append(failed.size).append("):\n")
             for (f in failed) {
                 val p = predict(f.query)
-                sb.append("- [harusnya ").append(if (f.should) "TRIGGER" else "TIDAK").append(", sinyal: ").append(if (p.first) "TRIGGER" else "TIDAK").append(", overlap ").append(p.second).append("] ").append(f.query.take(100)).append("\n")
+                sb.append("- [harusnya ").append(if (f.should) "TRIGGER" else "TIDAK").append(", sinyal: ").append(if (p.trigger) "TRIGGER" else "TIDAK").append(", skor ").append(p.netScore).append(" (pos ").append(p.posOverlap).append(", neg ").append(p.negOverlap).append(")] ").append(f.query.take(100)).append("\n")
             }
         }
         val passSignal = testAcc >= 80 && trainAcc >= 80

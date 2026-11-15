@@ -34,14 +34,14 @@ import java.util.concurrent.TimeUnit
  *  2. TIDAK ADA failover global: bila akun slot ini suspend / kena batas
  *     laju, error dilempar apa adanya sesudah tangga retry. Memindahkan
  *     giliran ke akun lain diam-diam akan melanggar pilihan slot user.
- *  3. TIDAK ADA recordDiag (diagnostik Mode Operator tetap milik DsApiClient).
+ *  3. TIDAK ADA recordDiag (diagnostik Mode Jhon tetap milik DsApiClient).
  *  4. TIDAK ADA unggah berkas (slot chat = teks; analisa foto tetap lewat
  *     jalur utama).
  *  5. Token/cookie TIDAK PERNAH di-log, di-print, atau dimasukkan ke
  *     bubble/UI. Log jejak sesi hanya berisi nomor slot + nomor sesi
  *     harness + jenis peristiwa.
  *
- * Disiplin sesi (spesifikasi user 2026-10-23 09:17, berlaku per slot):
+ * Disiplin sesi (spesifikasi Sendy 2026-10-23 09:17, berlaku per slot):
  * SATU slot = SATU sesi server per sesi harness. Sesi dibuat SEKALI lalu
  * dipakai ulang; sesi pengganti HANYA bila server menolak sesi itu secara
  * eksplisit (isSessionInvalidSignal), atau SEKALI via forceFresh sesudah
@@ -99,17 +99,13 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 val res = try {
                     runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer)
                 } catch (e: Exception) {
+                    // vc316 P1: klasifikasi via DsFailure.classifyFailure —
+                    // SAMA dengan DsApiClient (hapus duplikasi string-matching).
+                    // Retry-After dibaca dari suffix "[retry_after=<n>]"
+                    // yang ditempel postJson/postCompletion.
+                    val failure = DsFailure.classifyFailure(0, "", e)
                     val m = e.message ?: ""
-                    val rateLimited = m.contains("rate_limit", ignoreCase = true) || m.contains("too frequent", ignoreCase = true)
-                    val transient = rateLimited ||
-                        m.contains("failed to connect", ignoreCase = true) ||
-                        m.contains("timeout", ignoreCase = true) ||
-                        m.contains("resolve host", ignoreCase = true) ||
-                        m.contains("No address associated", ignoreCase = true) ||
-                        m.contains("UnknownHost", ignoreCase = true)
-                    val streamCut = m.contains("stream_terputus", ignoreCase = true) ||
-                        m.contains("jawaban_kosong", ignoreCase = true)
-                    if (streamCut) {
+                    if (DsFailure.isStreamCut(m)) {
                         var lastErr2: Exception = e
                         var out2: Pair<String, String>? = null
                         val waits2 = longArrayOf(2_000, 5_000)
@@ -119,8 +115,8 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                             try { out2 = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
-                                if (isSuspendSignal(m2)) throw e2
-                                if (!(m2.contains("stream_terputus", ignoreCase = true) || m2.contains("jawaban_kosong", ignoreCase = true))) throw e2
+                                if (DsFailure.isSuspendSignal(m2)) throw e2
+                                if (!DsFailure.isStreamCut(m2)) throw e2
                                 lastErr2 = e2
                             }
                         }
@@ -129,29 +125,50 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                             try { runChat(prompt, thinking, search, onPartial, forceFresh = true, freshEphemeral = freshEphemeral, reviewer = reviewer) }
                             catch (e3: Exception) { throw e3 }
                         }
-                    } else if (isSuspendSignal(m)) {
+                    } else if (DsFailure.isSuspendSignal(m)) {
                         // Slot ini ditandai mati di runChat. TIDAK ADA failover
                         // ke slot lain: pilihan slot adalah pilihan user.
                         throw e
-                    } else if (!transient) throw e
-                    else if (!rateLimited) {
-                        Thread.sleep(1500)
-                        runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer)
-                    } else {
-                        var lastErr: Exception = e
-                        var out: Pair<String, String>? = null
-                        val waits = longArrayOf(10_000, 20_000, 35_000)
-                        for (w in waits) {
-                            onPartial("⏳ Browser $slot kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
-                            Thread.sleep(w)
-                            try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
-                            catch (e2: Exception) {
-                                val m2 = e2.message ?: ""
-                                if (!(m2.contains("rate_limit", ignoreCase = true) || m2.contains("too frequent", ignoreCase = true))) throw e2
-                                lastErr = e2
+                    } else when (failure.kind) {
+                        FailureKind.RATE_LIMIT -> {
+                            // vc316 P1: jeda PERTAMA = header Retry-After
+                            // bila ada (fallback 10/20/35 dtk).
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            val waits = DsFailure.rateLimitWaits(DsFailure.parseRetryAfterSeconds(m))
+                            for (w in waits) {
+                                onPartial("⏳ Browser $slot kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
+                                catch (e2: Exception) {
+                                    if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
+                                    lastErr = e2
+                                }
                             }
+                            out ?: throw lastErr
                         }
-                        out ?: throw lastErr
+                        FailureKind.UPSTREAM, FailureKind.OVERLOADED -> {
+                            // vc316 P1: 5xx kini RETRYABLE (dulu langsung
+                            // dilempar). Maks 2x, jeda pendek 2/5 dtk.
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            for (w in DsFailure.UPSTREAM_WAITS_MS) {
+                                onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
+                                catch (e2: Exception) {
+                                    val k2 = DsFailure.classifyFailure(0, "", e2).kind
+                                    if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
+                                    lastErr = e2
+                                }
+                            }
+                            out ?: throw lastErr
+                        }
+                        FailureKind.TIMEOUT, FailureKind.UNAVAILABLE -> {
+                            Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
+                            runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer)
+                        }
+                        else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
                 }
                 queue.finish()
@@ -262,18 +279,11 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         } catch (e: Exception) {}
     }
 
-    private fun isSuspendSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        return m.contains("suspended") || m.contains("violation") || m.contains("40003") ||
-            m.contains("invalid_token") || m.contains("account_banned")
-    }
+    /** vc316 P1: daftar sinyal hidup di DsFailure (satu tempat) —
+     *  hapus duplikasi dengan DsApiClient. */
+    private fun isSuspendSignal(msg: String?): Boolean = DsFailure.isSuspendSignal(msg)
 
-    private fun isSessionInvalidSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        if (m.contains("session_not_found") || m.contains("invalid_session") || m.contains("session not found")) return true
-        return m.contains("session") && (m.contains("not found") || m.contains("invalid") ||
-            m.contains("not exist") || m.contains("does not exist") || m.contains("deleted") || m.contains("no such"))
-    }
+    private fun isSessionInvalidSignal(msg: String?): Boolean = DsFailure.isSessionInvalidSignal(msg)
 
     /** Pemetaan EKSKET per slot — TIDAK ADA adopsi lintas slot.
      *  vc298: reviewer=true memakai kunci reviewer sendiri
@@ -365,7 +375,11 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
         if (code !in 200..299) {
-            throw Exception("HTTP $code di $path: ${text.take(250)}")
+            // vc316 P1: baca Retry-After; suffix "[retry_after=<n>]" dibaca
+            // DsFailure.classifyFailure di chat() sebagai jeda pertama
+            // tangga rate-limit.
+            val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
+            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
         }
         return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
     }
@@ -379,9 +393,11 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         headers(conn, token, cookie, ua, powHeader)
         conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = conn.responseCode
+        // vc316 P1: tangkap Retry-After SEKALI di sini (lihat DsApiClient).
+        val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
         if (code !in 200..299) {
             val err = try { conn.errorStream?.bufferedReader()?.readText()?.take(250) ?: "" } catch (e: Exception) { "" }
-            throw Exception("HTTP $code di completion: $err")
+            throw Exception("HTTP $code di completion: $err" + DsFailure.retryAfterSuffix(retryAfterSec))
         }
         val content = StringBuilder()
         val thinkingBuf = StringBuilder()
@@ -415,7 +431,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         if (full.isBlank()) {
             val rawStr = rawSample.toString()
             if (rawStr.contains("rate_limit") || rawStr.contains("too frequent", ignoreCase = true)) {
-                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final.")
+                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final." + DsFailure.retryAfterSuffix(retryAfterSec))
             }
             if (!state.sawFinish) {
                 throw Exception("stream_terputus: koneksi ke server putus sebelum jawaban selesai (baris data: $dataLines, fragmen berpikir ${thinkingBuf.length} karakter). Cuplikan mentah: ${rawStr.take(400)}")

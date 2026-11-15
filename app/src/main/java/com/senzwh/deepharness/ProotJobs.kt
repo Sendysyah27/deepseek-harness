@@ -7,7 +7,7 @@ import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 // vc208 (4.48.9.42) L1 — Supervisor + registry job proot, tangan WORKER saja.
-// Serve (serve:4199 + tailscaled) TIDAK PERNAH disentuh di sini: bukan
+// Serve (serve:4197 + tailscaled) TIDAK PERNAH disentuh di sini: bukan
 // dikelola, bukan dibunuh, bukan di-restart. Itu milik ServeHealth/Standby.
 // Supervisor TIDAK mengganti job registry prompt-only vc200 (jobs bash
 // builtin + file hasil + poll) — ia menggeneralisirnya menjadi registry

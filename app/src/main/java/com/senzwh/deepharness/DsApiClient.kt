@@ -48,20 +48,14 @@ class DsApiClient(private val webView: WebView) {
                 val res = try {
                     runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
                 } catch (e: Exception) {
+                    // vc316 P1: klasifikasi via DsFailure.classifyFailure —
+                    // JANGAN lagi contains(...) manual di sini. Kode HTTP di-parse
+                    // dari pesan ("HTTP <code> di ...") dan/atau dari body;
+                    // Retry-After dibaca dari suffix "[retry_after=<n>]"
+                    // yang ditempel postJson/postCompletion.
+                    val failure = DsFailure.classifyFailure(0, "", e)
                     val m = e.message ?: ""
-                    // Gangguan jaringan sesaat (termasuk DNS ngadat: "Unable to resolve
-                    // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
-                    // sebelum menyerah ke jalur WebView.
-                    val rateLimited = m.contains("rate_limit", ignoreCase = true) || m.contains("too frequent", ignoreCase = true)
-                    val transient = rateLimited ||
-                        m.contains("failed to connect", ignoreCase = true) ||
-                        m.contains("timeout", ignoreCase = true) ||
-                        m.contains("resolve host", ignoreCase = true) ||
-                        m.contains("No address associated", ignoreCase = true) ||
-                        m.contains("UnknownHost", ignoreCase = true)
-                    val streamCut = m.contains("stream_terputus", ignoreCase = true) ||
-                        m.contains("jawaban_kosong", ignoreCase = true)
-                    if (streamCut) {
+                    if (DsFailure.isStreamCut(m)) {
                         // v4.12.2: stream putus / selesai tanpa jawaban —
                         // ulang maks 2x di sesi yang sama (klien stateless:
                         // POST ulang tidak menumpuk konteks server).
@@ -74,8 +68,8 @@ class DsApiClient(private val webView: WebView) {
                             try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
-                                if (isSuspendSignal(m2)) throw e2
-                                if (!(m2.contains("stream_terputus", ignoreCase = true) || m2.contains("jawaban_kosong", ignoreCase = true))) throw e2
+                                if (DsFailure.isSuspendSignal(m2)) throw e2
+                                if (!DsFailure.isStreamCut(m2)) throw e2
                                 lastErr2 = e2
                             }
                         }
@@ -90,43 +84,73 @@ class DsApiClient(private val webView: WebView) {
                             try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode) }
                             catch (e3: Exception) { throw e3 }
                         }
-                    } else if (isSuspendSignal(m)) {
+                    } else if (DsFailure.isSuspendSignal(m)) {
                         // v4.10.2: akun suspend — runChat sudah menandai akun
                         // ini mati. Pindah SEKALI ke akun sehat (failover kini
                         // melewati akun mati), lalu coba sekali. Tanpa akun
                         // sehat: menyerah dengan alasan yang sebenarnya.
+                        // (Failover NONAKTIF — AccountPool.FAILOVER_ENABLED
+                        // = false — jadi cabang ini praktis melempar dengan
+                        // suffix di bawah; jangan hapus, failover bisa
+                        // dihidupkan lagi sesudah SlotManager dispek ulang.)
                         val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                         if (!switched) throw Exception((e.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         onPartial("⏳ Akun DeepSeek ter-suspended — pindah ke akun cadangan yang sehat, lanjut…")
                         runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
-                    } else if (!transient) throw e
-                    else if (!rateLimited) {
-                        Thread.sleep(1500)
-                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
-                    } else {
-                        // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
-                        // langkah tidak boleh putus hanya karena jendela laju server.
-                        var lastErr: Exception = e
-                        var out: Pair<String, String>? = null
-                        val waits = longArrayOf(10_000, 20_000, 35_000)
-                        for (w in waits) {
-                            onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
-                            Thread.sleep(w)
-                            try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
-                            catch (e2: Exception) {
-                                val m2 = e2.message ?: ""
-                                if (!(m2.contains("rate_limit", ignoreCase = true) || m2.contains("too frequent", ignoreCase = true))) throw e2
-                                lastErr = e2
+                    } else when (failure.kind) {
+                        FailureKind.RATE_LIMIT -> {
+                            // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
+                            // langkah tidak boleh putus hanya karena jendela laju server.
+                            // vc316 P1: jeda PERTAMA = header Retry-After bila
+                            // server mengirimnya (fallback 10/20/35 dtk).
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            val waits = DsFailure.rateLimitWaits(DsFailure.parseRetryAfterSeconds(m))
+                            for (w in waits) {
+                                onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                                catch (e2: Exception) {
+                                    if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
+                                    lastErr = e2
+                                }
                             }
-                        }
-                        if (out == null) {
-                            val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
-                            if (switched) {
-                                onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode) } catch (e4: Exception) { lastErr = e4 }
+                            if (out == null) {
+                                val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
+                                if (switched) {
+                                    onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
+                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode) } catch (e4: Exception) { lastErr = e4 }
+                                }
                             }
+                            out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         }
-                        out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
+                        FailureKind.UPSTREAM, FailureKind.OVERLOADED -> {
+                            // vc316 P1: 5xx kini RETRYABLE (dulu langsung
+                            // dilempar — kebalikan dari yang benar). Maks 2x,
+                            // jeda pendek 2/5 dtk; gagal ketiga dilempar apa
+                            // adanya. Error lain di tengah jalan dilempar.
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            for (w in DsFailure.UPSTREAM_WAITS_MS) {
+                                onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                                catch (e2: Exception) {
+                                    val k2 = DsFailure.classifyFailure(0, "", e2).kind
+                                    if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
+                                    lastErr = e2
+                                }
+                            }
+                            out ?: throw lastErr
+                        }
+                        FailureKind.TIMEOUT, FailureKind.UNAVAILABLE -> {
+                            // Gangguan jaringan sesaat (termasuk DNS ngadat: "Unable to resolve
+                            // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
+                            // sebelum menyerah ke jalur WebView.
+                            Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
+                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
+                        }
+                        else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
                 }
                 queue.finish()
@@ -153,7 +177,7 @@ class DsApiClient(private val webView: WebView) {
         // lagi sama sekali — panggilan dihentikan sebelum menyentuh jaringan.
         if (AccountPool.isDead(ctx, fp)) throw Exception("AKUN DITANDAI TIDAK AKTIF oleh pemutus arus lokal (dari respons server sebelumnya) — tidak ada panggilan yang dikirim untuk akun ini. Bila akun sebenarnya sehat (token tadi mungkin cuma kedaluwarsa): login ulang, atau buka Pool Akun > Reset Tanda Akun. Pakai akun/slot lain juga bisa.")
 
-        // v4.10.2 — SATU SESI HARNESS = SATU SESI SERVER (spesifikasi user
+        // v4.10.2 — SATU SESI HARNESS = SATU SESI SERVER (spesifikasi Sendy
         // 2026-10-23 09:17). Design lama membuat sesi server BARU pada SETIAP
         // panggilan -> ratusan sesi menumpuk di akun -> suspend otomatis.
         // Kini sesi server dibuat SEKALI per (akun, sesi harness) lalu dipakai
@@ -245,18 +269,18 @@ class DsApiClient(private val webView: WebView) {
 
     private fun hprefs() = webView.context.getSharedPreferences("harness", android.content.Context.MODE_PRIVATE)
 
-    /** v4.43.17 MODE OPERATOR: saklar diagnostik — paksa API Internal + rekam
+    /** v4.43.17 MODE JHON: saklar diagnostik — paksa API Internal + rekam
      *  diagnostik mentah. Token TIDAK PERNAH direkam utuh: hanya 12 karakter
      *  pertama (pola rekaman browser); nilai x-ds-pow-response tidak
      *  direkam sama sekali, hanya panjangnya. */
-    private fun operatorMode(): Boolean = try { hprefs().getBoolean("operatorMode", false) } catch (e: Exception) { false }
+    private fun jhonMode(): Boolean = try { hprefs().getBoolean("jhonMode", false) } catch (e: Exception) { false }
 
     private fun bearer12(token: String): String = try { token.take(12) } catch (e: Exception) { "" }
 
     /** Satu baris diagnostik per panggilan API (maks 20 baris, terlama dibuang).
-     *  Hanya aktif bila Mode Operator nyala. Dibaca viewer Setup Mode Operator. */
+     *  Hanya aktif bila Mode Jhon nyala. Dibaca viewer Setup Mode Jhon. */
     private fun recordDiag(kind: String, code: Int, dataLines: Int, sawFinish: Boolean, token: String, powLen: Int, err: String, sample: String) {
-        if (!operatorMode()) return
+        if (!jhonMode()) return
         try {
             val p = hprefs()
             val stamp = java.text.SimpleDateFormat("dd/MM HH:mm:ss", java.util.Locale.US).format(java.util.Date())
@@ -282,21 +306,14 @@ class DsApiClient(private val webView: WebView) {
         } catch (e: Exception) {}
     }
 
-    /** v4.10.2: sinyal suspend/blokir akun dari teks error server. */
-    private fun isSuspendSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        return m.contains("suspended") || m.contains("violation") || m.contains("40003") ||
-            m.contains("invalid_token") || m.contains("account_banned")
-    }
+    /** v4.10.2: sinyal suspend/blokir akun dari teks error server.
+     *  vc316 P1: daftar sinyal hidup di DsFailure (satu tempat). */
+    private fun isSuspendSignal(msg: String?): Boolean = DsFailure.isSuspendSignal(msg)
 
     /** v4.10.6: sinyal EKSPLISIT dari server bahwa sesi chat tidak berlaku
-     * lagi. Hanya sinyal ini yang boleh memicu pembuatan sesi pengganti. */
-    private fun isSessionInvalidSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        if (m.contains("session_not_found") || m.contains("invalid_session") || m.contains("session not found")) return true
-        return m.contains("session") && (m.contains("not found") || m.contains("invalid") ||
-            m.contains("not exist") || m.contains("does not exist") || m.contains("deleted") || m.contains("no such"))
-    }
+     *  lagi. Hanya sinyal ini yang boleh memicu pembuatan sesi pengganti.
+     *  vc316 P1: daftar sinyal hidup di DsFailure (satu tempat). */
+    private fun isSessionInvalidSignal(msg: String?): Boolean = DsFailure.isSessionInvalidSignal(msg)
 
     /** v4.10.6: cari sesi server tersimpan untuk sesi harness ini — sidik
      * token persis. H1 (4.48.8.1): adopsi lintas sidik dinonaktifkan;
@@ -434,8 +451,13 @@ class DsApiClient(private val webView: WebView) {
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
         if (code !in 200..299) {
+            // vc316 P1: baca Retry-After; ditempel sebagai suffix
+            // "[retry_after=<n>]" supaya DsFailure.classifyFailure di
+            // chat() bisa memakainya sebagai jeda pertama tangga
+            // rate-limit (tanpa state bersama antar-thread).
+            val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
             recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "HTTP $code", text.take(200))
-            throw Exception("HTTP $code di $path: ${text.take(250)}")
+            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
         }
         recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "", "")
         return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
@@ -450,10 +472,14 @@ class DsApiClient(private val webView: WebView) {
         headers(conn, token, cookie, ua, powHeader)
         conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = conn.responseCode
+        // vc316 P1: tangkap Retry-After SEKALI di sini — dipakai (a) untuk
+        // error HTTP non-2xx di bawah, dan (b) untuk rate_limit yang baru
+        // ketahuan dari body SSE (HTTP 200 tapi stream kosong).
+        val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
         if (code !in 200..299) {
             val err = try { conn.errorStream?.bufferedReader()?.readText()?.take(250) ?: "" } catch (e: Exception) { "" }
             recordDiag("completion", code, 0, false, token, powHeader.length, "HTTP $code", err)
-            throw Exception("HTTP $code di completion: $err")
+            throw Exception("HTTP $code di completion: $err" + DsFailure.retryAfterSuffix(retryAfterSec))
         }
         val content = StringBuilder()
         val thinkingBuf = StringBuilder()
@@ -494,7 +520,7 @@ class DsApiClient(private val webView: WebView) {
             val rawStr = rawSample.toString()
             if (rawStr.contains("rate_limit") || rawStr.contains("too frequent", ignoreCase = true)) {
                 recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "rate_limit", rawStr)
-                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final.")
+                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final." + DsFailure.retryAfterSuffix(retryAfterSec))
             }
             // v4.12.2: bedakan PUTUS (tanpa penanda selesai resmi) dari
             // selesai-resmi-tanpa-jawaban. Keduanya ditandai agar chat()
@@ -695,7 +721,7 @@ class DsApiClient(private val webView: WebView) {
 
     /** v4.10.3: analisa berkas/gambar LEWAT API INTERNAL — unggah berkas lalu
      *  completion dengan ref_file_ids di sesi server yang sama (dipakai
-     *  analyze_photo; perintah user 2026-10-23 agar gambar tidak lagi membuka
+     *  analyze_photo; perintah Sendy 2026-10-23 agar gambar tidak lagi membuka
      *  sesi chat baru lewat jalur Web). */
     fun uploadFileAndAsk(bytes: ByteArray, fileName: String, mime: String, prompt: String, thinking: Boolean,
                          onDone: (String) -> Unit, onError: (String) -> Unit, onNote: (String) -> Unit = { }) {
@@ -916,10 +942,10 @@ class DsApiClient(private val webView: WebView) {
         return result
     }
 
-    /** v4.43.17 MODE OPERATOR: shim rekaman browser DeepSeek — hanya untuk /api/v0/chat/completion.
+    /** v4.43.17 MODE JHON: shim rekaman browser DeepSeek — hanya untuk /api/v0/chat/completion.
      *  Pasif: membungkus fetch/XHR halaman, merekam request terakhir ke
      *  window.__dsCap + localStorage __dsCapComp/__dsCap. Disuntik dari
-     *  MainActivity.onPageFinished hanya bila Mode Operator nyala. */
+     *  MainActivity.onPageFinished hanya bila Mode Jhon nyala. */
     private val dsCaptureShim = """(function(){if(window.__dsCap)return;window.__dsCap={count:0,last:null};function normHeaders(h){var o={};try{if(!h)return o;if(typeof h.forEach==="function"){h.forEach(function(v,k){o[k]=v;});}else if(h instanceof Array){for(var i=0;i<h.length;i++){o[h[i][0]]=h[i][1];}}else{for(var k in h){o[k]=h[k];}}}catch(e){}return o;}function rec(url,headers,body){try{var b=null;if(typeof body==="string")b=body;else if(body)b="[non-string]";var item={url:String(url),headers:normHeaders(headers),body:b,ts:Date.now()};window.__dsCap.last=item;window.__dsCap.count++;try{localStorage.setItem("__dsCapComp",JSON.stringify(item));}catch(e){}try{localStorage.setItem("__dsCap",JSON.stringify(item));}catch(e){}}catch(e){}}var of=window.fetch;window.fetch=function(url,opts){try{var u=String(url);if(u.indexOf("/api/v0/chat/completion")!==-1){rec(u,(opts&&opts.headers)||null,(opts&&opts.body)||null);}}catch(e){}return of.apply(this,arguments);};var ox=XMLHttpRequest.prototype.open,xs=XMLHttpRequest.prototype.send,xh=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{this.__dsH=this.__dsH||{};this.__dsH[k]=v;}catch(e){}return xh.apply(this,arguments);};XMLHttpRequest.prototype.open=function(m,u){this.__dsU=String(u);return ox.apply(this,arguments);};XMLHttpRequest.prototype.send=function(b){try{if(this.__dsU&&this.__dsU.indexOf("/api/v0/chat/completion")!==-1){rec(this.__dsU,this.__dsH||null,b);}}catch(e){}return xs.apply(this,arguments);};})();"""
 
     fun injectDeepSeekCaptureShim() {
@@ -954,7 +980,7 @@ class DsApiClient(private val webView: WebView) {
             try {
                 val raw = evalJsSync("""(function(){try{var w=window.__dsCap||{};var c=w.last||null;if(!c){var s=localStorage.getItem('__dsCapComp')||localStorage.getItem('__dsCap');if(s)c=JSON.parse(s);}return JSON.stringify({count:(w.count||0),last:c});}catch(e){return JSON.stringify({error:String(e)});}})()""")
                 if (raw == null) {
-                    lines.add("Belum ada rekaman. Nyalakan Mode Operator (tombol 12b), buka tab Web, chat di chat.deepseek.com, lalu tap tombol ini lagi.")
+                    lines.add("Belum ada rekaman. Nyalakan Mode Jhon (tombol 12b), buka tab Web, chat di chat.deepseek.com, lalu tap tombol ini lagi.")
                 } else {
                     val rep = JSONObject(raw)
                     if (rep.has("error")) {
@@ -962,7 +988,7 @@ class DsApiClient(private val webView: WebView) {
                     } else {
                         val last = rep.optJSONObject("last")
                         if (last == null) {
-                            lines.add("Belum ada rekaman (0 chat terekam). Nyalakan Mode Operator, buka tab Web, chat di chat.deepseek.com, lalu tap tombol ini lagi.")
+                            lines.add("Belum ada rekaman (0 chat terekam). Nyalakan Mode Jhon, buka tab Web, chat di chat.deepseek.com, lalu tap tombol ini lagi.")
                         } else {
                             lines.add("Rekaman ke-" + rep.optInt("count", 0) + " • URL: " + last.optString("url").take(120))
                             val headers = last.optJSONObject("headers") ?: JSONObject()

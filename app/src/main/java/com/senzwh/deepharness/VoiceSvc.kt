@@ -14,7 +14,7 @@ import android.speech.RecognitionService
 
 /** Layanan asisten default Android: saat user memanggil asisten
  *  (tahan tombol home / power / gesture asisten), yang dibuka adalah
- *  chat Harness. Daftarkan lewat Pengaturan > Aplikasi >
+ *  chat DeepSeek Harness. Daftarkan lewat Pengaturan > Aplikasi >
  *  Aplikasi default > Asisten digital. */
 class HarnessVoiceService : VoiceInteractionService() {
     override fun onReady() { super.onReady() }

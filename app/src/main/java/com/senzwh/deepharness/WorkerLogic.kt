@@ -6,7 +6,7 @@ package com.senzwh.deepharness
  *  ProotSession.WORKER_SESSIONS (sumber kebenaran) supaya file ini tetap
  *  kompilabel di JVM.
  *  Kontrak: BRIEF-DEVICE-SERVER.md §4 Fase 1 + keputusan terkunci K1–K5,
- *  Q1–Q3 (2026-11-07). K6 (endpoint :4200) = Fase 2 (vc257), BUKAN di sini. */
+ *  Q1–Q3 (2026-11-07). K6 (endpoint :4198) = Fase 2 (vc257), BUKAN di sini. */
 object WorkerLogic {
     const val MAX_RUNNING = 5
     const val SCRIPT_DIR = "/root/.harness/workers"
@@ -18,7 +18,7 @@ object WorkerLogic {
     // WorkerQueue.enqueue (kembalikan "").
     const val TASK_MAX_CHARS = 262144
 
-    // vc258 Fase 2: cap preview hasil worker (dipakai endpoint :4200 +
+    // vc258 Fase 2: cap preview hasil worker (dipakai endpoint :4198 +
     // tool preview_worker_result). Preview TIDAK PERNAH mengembalikan
     // isi penuh di luar cap.
     const val PREVIEW_DEFAULT_CHARS = 2000

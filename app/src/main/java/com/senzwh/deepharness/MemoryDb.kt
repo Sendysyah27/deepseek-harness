@@ -583,7 +583,7 @@ class MemoryDb private constructor(ctx: Context) :
     }
 
     // ---------- vc289 Fase 3: graph mini ber-type + dream cycle ----------
-    // Relasi = TIPE EDGE (bukan tipe fakta — keputusan user spek §(f) Q2
+    // Relasi = TIPE EDGE (bukan tipe fakta — keputusan Sendy spek §(f) Q2
     // tetap: fakta hanya punya source + status, tanpa tipe). Kosakata relasi:
     // "bagian-dari" (key anak diawali key induk + pemisah), "menyebut"
     // (nilai fakta A menyebut key fakta B utuh), "terkait" (key berbagi
@@ -826,8 +826,8 @@ class MemoryDb private constructor(ctx: Context) :
     // lesson itu perilaku ("jangan X karena Y"), bukan fakta k/v — punya
     // confidence + penguatan + jalur hapus sendiri, dan TIDAK masuk FAKTA
     // PIN / claim-check / backup fakta. Satu-satunya tipe klaim baru yang
-    // diizinkan (pengecualian Gas user 11 Nov); tipe fakta lain TIDAK
-    // ditambah (keputusan user 10 Nov tetap).
+    // diizinkan (pengecualian Gas Sendy 11 Nov); tipe fakta lain TIDAK
+    // ditambah (keputusan Sendy 10 Nov tetap).
     data class LessonVc294(val id: Long, val text: String, val confidence: Double, val hits: Int, val status: String, val source: String, val reason: String, val ts: Long, val updatedTs: Long)
     data class FactCandidateVc294(val id: Long, val k: String, val v: String, val tags: String, val refPath: String, val source: String, val status: String, val reason: String, val ts: Long, val decidedTs: Long)
 
@@ -2244,7 +2244,7 @@ class MemoryDb private constructor(ctx: Context) :
                 // vc293 + vc299 N6-m8: isi berubah = benchmark milik draf
                 // lama HANGUS; simpan-ulang IDENTIK mempertahankan eval.
                 val newInstrVc299 = instruction.take(60000)
-                // vc300: cap descr 1000 char DIHAPUS (user 12 Nov) —
+                // vc300: cap descr 1000 char DIHAPUS (Sendy 12 Nov) —
                 // deskripsi disimpan utuh berapa pun panjangnya.
                 val newDescrVc299 = descrVc230
                 val wipeVc300 = SkillJudge.evalWipeNeededVc299(listOf(ex.instruction, ex.descr), listOf(newInstrVc299, newDescrVc299))
@@ -2293,7 +2293,7 @@ class MemoryDb private constructor(ctx: Context) :
             ensureSkillCols()
             ensureSkillVersionTable()
             val cv = ContentValues()
-            // vc300: cap descr 1000 char DIHAPUS (user 12 Nov).
+            // vc300: cap descr 1000 char DIHAPUS (Sendy 12 Nov).
             cv.put("name", name.take(80)); cv.put("instruction", instruction.take(60000)); cv.put("descr", descrVc230); cv.put("enabled", 0); cv.put("eval", "")
             // vc301 SF-A4: insert + snapshot v1 dalam satu transaksi —
             // bila snapshot gagal, skill tidak lahir tanpa v1.
@@ -2405,7 +2405,7 @@ class MemoryDb private constructor(ctx: Context) :
             val cur = skills().firstOrNull { it.id == id }
             // vc293 + vc299 N6-m8: benchmark hangus HANYA bila nama/deskripsi
             // benar-benar berubah; simpan tanpa perubahan isi mempertahankan eval.
-            // vc300: cap descr 1000 char DIHAPUS (user 12 Nov) — deskripsi
+            // vc300: cap descr 1000 char DIHAPUS (Sendy 12 Nov) — deskripsi
             // disimpan utuh; pembanding eval memakai nilai yang sama dengan
             // yang disimpan (tanpa take) supaya simpan-ulang identik atas
             // descr >1000 char tidak salah menghanguskan eval.

@@ -258,8 +258,8 @@ object ArtifactStyleVc297 {
 
     fun bundleHowTo(): String {
         return "CARA BUNDLE ARTIFACT (vc297):\n" +
-            "1) Tulis komponen ke satu folder di /sdcard (mis. /sdcard/Harness/artifacts/kalkulator/): index.html + style.css + app.js (+ gambar kecil) — pakai write_file.\n" +
-            "2) Di chat 1-1 panggil artifact_bundle {\"dir\": \"/sdcard/Harness/artifacts/kalkulator\"} — mode auto: tanpa package.json langsung inline; ada package.json -> coba Vite dulu.\n" +
+            "1) Tulis komponen ke satu folder di /sdcard (mis. /sdcard/S&Harness/artifacts/kalkulator/): index.html + style.css + app.js (+ gambar kecil) — pakai write_file.\n" +
+            "2) Di chat 1-1 panggil artifact_bundle {\"dir\": \"/sdcard/S&Harness/artifacts/kalkulator\"} — mode auto: tanpa package.json langsung inline; ada package.json -> coba Vite dulu.\n" +
             "3) Mode lain: {\"mode\": \"inline\"} (Kotlin, tanpa Node), {\"mode\": \"vite\"} (proyek Vite — HANYA vite@4; pasang dulu: run_terminal proot worker1 -> cd <dir> && npm install -D vite@4), {\"mode\": \"worker\"} (skrip Node stdlib di Termux).\n" +
             "4) Hasil = artifact baru (tipe app/html) di store — buka dari kartu chat / list_artifacts. Gambar >200 KB dan import JS relatif TIDAK ikut ter-inline (dicatat di hasil tool)."
     }

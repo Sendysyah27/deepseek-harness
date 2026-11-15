@@ -20,7 +20,7 @@ object Agents {
     private val PALETTE = listOf("#4d8cff", "#e8a33d", "#2fbf9a", "#9a6bff", "#ef6aa5", "#7d8aa0")
 
     val BUILTINS = listOf(
-        Profile("asisten", "Asisten", "#4d8cff", "deepseek", "asisten", true),
+        Profile("senz", "Senz", "#4d8cff", "deepseek", "senz", true),
         Profile("mandor", "Mandor", "#e8a33d", "deepseek", "mandor", true),
         Profile("mentor", "Mentor", "#2fbf9a", "deepseek", "tutor", true),
         Profile("agen4", "Agen 4", "#9a6bff", "deepseek", "agen4", true)
@@ -49,7 +49,7 @@ object Agents {
                             cid, ov(cid, "agentName_") ?: o.optString("name"),
                             o.optString("accent", "#4d8cff"),
                             eng,
-                            ov(cid, "agentPack_") ?: o.optString("pack", "asisten"), false
+                            ov(cid, "agentPack_") ?: o.optString("pack", "senz"), false
                         )
                     )
                 }
@@ -59,7 +59,7 @@ object Agents {
     }
 
     fun active(ctx: Context): Profile {
-        val id = prefs(ctx).getString("activeAgent", "asisten") ?: "asisten"
+        val id = prefs(ctx).getString("activeAgent", "senz") ?: "senz"
         return all(ctx).firstOrNull { it.id == id } ?: BUILTINS[0]
     }
 
@@ -77,7 +77,7 @@ object Agents {
         val customs = all(ctx).filter { !it.builtin }
         val id = "agen" + System.currentTimeMillis()
         val accent = PALETTE[(BUILTINS.size + customs.size) % PALETTE.size]
-        val p = Profile(id, name.take(24), accent, "deepseek", "asisten", false)
+        val p = Profile(id, name.take(24), accent, "deepseek", "senz", false)
         saveCustoms(ctx, customs + p)
         return p
     }
@@ -87,7 +87,7 @@ object Agents {
         if (customs.none { it.id == id }) return false
         val wasActive = active(ctx).id == id
         saveCustoms(ctx, customs.filter { it.id != id })
-        if (wasActive) apply(ctx, "asisten")
+        if (wasActive) apply(ctx, "senz")
         return true
     }
 

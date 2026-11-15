@@ -29,7 +29,7 @@ package com.senzwh.deepharness
  *  (tool + hash args penuh ternormalisasi `normalizeArgsVc277`).
  *
  *  vc304 B3 (get_result sebagai bukti baca — jebakan verify-before-write
- *  vs StuckDetector pada skill besar, laporan user 04:57 13 Nov 2026):
+ *  vs StuckDetector pada skill besar, laporan Sendy 04:57 13 Nov 2026):
  *  `get_result` atas R-id dari live read yang memenuhi syarat DIHITUNG
  *  sebagai bukti baca — HANYA bila R-id itu dibuat di giliran yang SAMA
  *  (epoch `TurnMetrics` sama) dan tool asalnya memang qualifying read

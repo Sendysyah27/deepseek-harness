@@ -40,12 +40,12 @@ object BrainBackup {
     // restore tidak pernah mengubahnya. Awalan dinamis ditangani
     // SETTINGS_ALLOW_PREFIXES di bawah.
     // vc265 N2-M1 + N2-m5: bgPending, bgSecondConfirm (antrean parkir
-    // legacy — restore tidak boleh membangkitkan H-K1) dan browserBlocklist
-    // (daftar blokir domain sensitif) DIKELUARKAN dari allowlist.
+    // legacy — restore tidak boleh membangkitkan H-K1) DIKELUARKAN dari
+    // allowlist. (vc313: daftar blokir domain sensitif dihapus total.)
     val SETTINGS_ALLOWLIST = setOf(
         "apiMode", "askExtendSteps", "bgSessionDead", "debugPromptDump", "defSearch", "defThink",
         "dsLogin", "f2QuietInit", "f2p1PromptFix", "f4Purged", "flowLogin", "flowOnboarded", "flowSetup",
-        "govWifiOnly", "operatorMode", "modeBebas", "notifDigest", "overlayOn", "panelSpeak", "proactiveOn",
+        "govWifiOnly", "jhonMode", "modeBebas", "notifDigest", "overlayOn", "panelSpeak", "proactiveOn",
         "profilLanjutanOpen", "screenWatchOn", "serveStandby", "shakeSummon", "voiceAuto", "wakeWordOn",
         "persona", "bubbleTap", "bubbleAlphaPct", "bubbleSizeDp", "ckptDiff", "dsSessEvents", "emergencyNumber",
         "privAdbHost", "privAdbPort", "rootStatus", "routines", "serveSeenVersion", "briefingHour",

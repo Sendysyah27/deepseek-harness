@@ -267,8 +267,8 @@ object ActivityTitle {
             "oc_checkpoint" -> { val tid = args.optLong("task_id", -1); val a = args.optString("action", "").trim().lowercase(); if (tid <= 0) "Memutuskan checkpoint" else "Memutuskan checkpoint #$tid" + (if (a == "accept" || a == "undo") " ($a)" else "") }
             "coord_rule" -> "Mengatur aturan koordinator"
             "run_team" -> { val s = snip(args, "goal"); if (s == null) "Menjalankan tim agen" else "Menjalankan tim agen: $s" }
-            "ask_operator" -> { val s = snip(args, "task"); if (s == null) "Melempar tugas ke Operator" else "Melempar tugas ke Operator: $s" }
-            "check_operator" -> "Memeriksa hasil Operator"
+            "ask_jhon" -> { val s = snip(args, "task"); if (s == null) "Melempar tugas ke Jhon" else "Melempar tugas ke Jhon: $s" }
+            "check_jhon" -> "Memeriksa hasil Jhon"
             "sync_memory" -> { val s = snip(args, "direction"); if (s == null) "Menyinkronkan memori" else "Menyinkronkan memori: $s" }
             "mcp_setup" -> "Memasang helper MCP"
             "mcp_list_servers" -> "Melihat daftar server MCP"

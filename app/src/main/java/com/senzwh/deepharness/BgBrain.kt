@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * OTAK LATAR (Tahap C, brief §0.9 — keputusan user 2026-10-22 07:36:
+ * OTAK LATAR (Tahap C, brief §0.9 — keputusan Sendy 2026-10-22 07:36:
  * panggilan LLM di background AKTIF, tidak menunggu app dibuka).
  *
  * Mesin: sebuah WebView DeepSeek dipelihara komponen ini (cookie &
@@ -324,24 +324,26 @@ object BgBrain {
 
     // vc302 Fix C: sessionIdVc302 = sesi pemilik tugas (diteruskan loopInner);
     // -1 = tanpa catatan kerja (pemanggil lama / tanpa sesi).
+    // vc316 IXL — LANJUTAN DELTA latar (akar yang sama seperti 1-1,
+    // lihat UKURAN-INPUT-VC316.md §4): sesi server latar (harnessNo
+    // -100) dipakai ulang tiap iterasi, jadi prompt AWAL tugas ini —
+    // system prompt + katalog + skills/pin/fakta/goals + riwayat +
+    // work-notes — SUDAH tersimpan di sesi server; mengirim ulang
+    // semuanya tiap iterasi menumpuk ~1 prompt penuh per langkah tool
+    // sampai input_exceeds_limit. Lanjutan kini hanya membawa yang
+    // BARU: jangkar delta (format tool-call + jalan keluar list_tools,
+    // pengaman bila server ternyata tidak menyimpan konteks antar
+    // POST), tugas verbatim, work-notes sesi (cap kecil, aturan
+    // jangan-ulangi — dipertahankan seperti 1-1), dan transkrip
+    // (hasil tool sejauh ini — info baru, dibatasi 60.000 char oleh
+    // trimTranscriptVc263 + guard cap di loop). Yang DIHAPUS dari
+    // lanjutan: buildSystemPrompt, CTX/PAGING rules, pinned, fakta,
+    // goals — semuanya sudah ada di prompt awal tugas ini di sesi
+    // server yang sama. Perilaku tool latar tidak berubah.
     private fun continuationPrompt(ctx: Context, transcript: StringBuilder, sessionIdVc302: Long = -1L): String {
-        val mdb = MemoryDb.get(ctx)
-        // vc263 (optimasi): transkrip diubah ke String SEKALI per giliran
-        // (dulu take(8000) dipanggil 3x + toString() berulang).
-        val t8Vc263 = transcript.toString().take(8000)
-        // vc241: sama seperti tugas latar — katalog per transkrip + tanpa goal-teratas WorldState.
-        val sb = StringBuilder(AgentPrompt.buildSystemPrompt(ctx, false, t8Vc263, true))
-        sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
-        // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan) — lanjutan latar.
-        sb.append("\n\n").append(AgentPrompt.PAGING_TOTAL_RULE_VC302)
-        val pinnedRawContVc263 = try { mdb.pinnedFactsText() } catch (e: Exception) { "" }
-        val pinnedContVc248 = try { RedactSecrets.redact(pinnedRawContVc263) } catch (e: Exception) { "" }
-        if (pinnedContVc248.isNotBlank()) sb.append("\n\n[FAKTA PIN — selalu berlaku, tidak dibuang diam-diam]:\n").append(pinnedContVc248)
+        val sb = StringBuilder()
+        sb.append("[LANJUTAN SISTEM — vc316 delta: system prompt, katalog tool, memori, dan riwayat tugas ini SUDAH kamu terima di pesan pertama tugas ini DALAM SESI SERVER YANG SAMA — semuanya masih berlaku, jangan minta diulang. Lanjutkan tugas di bawah memakai transkrip hasil tool sejauh ini. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]")
         sb.append("\n\nTUGAS (verbatim baris pertama transkrip giliran ini — jangan diubah, jangan ditambah):\n").append(transcript.toString().substringBefore("\n"))
-        // vc240 M23: continuation latar memakai teks transkrip (yang
-        // diawali teks tugas) sebagai query relevansi, bukan tanpa argumen.
-        val facts = mdb.dedupFactsVsPinned(mdb.factsText(t8Vc263), pinnedRawContVc263); if (facts.isNotBlank()) sb.append("\n\nMEMORI PERSISTEN (fakta tentang user):\n").append(facts)
-        val goals = mdb.goalsText(t8Vc263); if (goals.isNotBlank()) sb.append("\n\nTUJUAN AKTIF:\n").append(goals)
         // vc302 Fix C: prompt lanjutan latar dibangun ulang tiap iterasi —
         // tempel catatan kerja di tiap giliran berikut, seperti prompt awal.
         if (sessionIdVc302 > 0) {
@@ -1263,29 +1265,34 @@ object BgBrain {
         try { if (jobId != null) MemoryDb.get(ctx).logJob(jobId, "gagal", (e.message ?: "").take(120)) } catch (e: Exception) {}
         val msg = e.message ?: ""
         EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] GAGAL: ${msg.take(180)}")
-        // v4.48.9.2: suspend + rate-limit-habis memakai badan cabang token
-        // (parkir + antre + notif 7702 sekali per episode). Deteksi meniru
-        // DsApiClient: rate-limit = "rate_limit"/"too frequent"; suspend =
-        // kata keras isHardSuspend ("suspend"/"violation"/"banned").
-        // Catatan: suspend keras sudah menandai bgSessionDead di runChat,
-        // jadi firstTime=false dan notif 7702 dilewati untuk kasus itu
-        // (tugas tetap diantrekan); rate-limit menandai cooldown 15 mnt.
-        val isRateLimit = msg.contains("rate_limit", ignoreCase = true) || msg.contains("too frequent", ignoreCase = true)
-        val isSuspend = msg.contains("suspend", ignoreCase = true) || msg.contains("violation", ignoreCase = true) || msg.contains("banned", ignoreCase = true)
-        if (msg.contains("token", ignoreCase = true) || isSuspend || isRateLimit) {
-            // Sesi DeepSeek mati: jeda Otak Latar, minta login ulang (sekali per
-            // episode), tugas jatuh ke antrean lama sampai login lagi.
-            val p = prefs(ctx)
-            val firstTime = !p.getBoolean("bgSessionDead", false)
-            if (isRateLimit) p.edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
-            p.edit().putBoolean("bgSessionDead", true).apply()
-            MemoryDb.enqueuePrompt(ctx, task)
-            if (firstTime) {
-                notify(ctx, 7702, "🔐 Sesi DeepSeek berakhir — Otak Latar jeda",
-                    "Buka app & login ulang di tab Web. Tugas latar sementara diantrekan dan jalan saat app dibuka.",
-                    "Sesi DeepSeek untuk Otak Latar tidak terbaca (kemungkinan kedaluwarsa). Buka Harness, login ulang di tab Web; setelah itu tugas terjadwal, aturan, briefing & konsolidasi kembali dieksekusi langsung di latar. Tugas yang datang selama jeda diantrekan seperti pola lama.")
+        // vc316 P1: klasifikasi via DsFailure.bgActionFor — JANGAN lagi
+        // contains(...) manual di sini. Rate-limit MURNI = COOLDOWN (catat
+        // bgLastRateLimitTs 15 mnt, antrekan tugas) dan JANGAN tandai
+        // bgSessionDead=true + JANGAN notif 7702: rate-limit bukan sesi
+        // mati, hanya perlu menunggu. submit() sudah menahan tugas baru
+        // selama cooldown (alasan "cooldown") dan tick berikutnya
+        // mencoba lagi. Suspend/token tetap SESSION_DEAD seperti dulu.
+        when (DsFailure.bgActionFor(e)) {
+            DsFailure.BgErrorAction.COOLDOWN -> {
+                prefs(ctx).edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
+                MemoryDb.enqueuePrompt(ctx, task)
+                return
             }
-            return
+            DsFailure.BgErrorAction.SESSION_DEAD -> {
+                // Sesi DeepSeek mati: jeda Otak Latar, minta login ulang (sekali per
+                // episode), tugas jatuh ke antrean lama sampai login lagi.
+                val p = prefs(ctx)
+                val firstTime = !p.getBoolean("bgSessionDead", false)
+                p.edit().putBoolean("bgSessionDead", true).apply()
+                MemoryDb.enqueuePrompt(ctx, task)
+                if (firstTime) {
+                    notify(ctx, 7702, "🔐 Sesi DeepSeek berakhir — Otak Latar jeda",
+                        "Buka app & login ulang di tab Web. Tugas latar sementara diantrekan dan jalan saat app dibuka.",
+                        "Sesi DeepSeek untuk Otak Latar tidak terbaca (kemungkinan kedaluwarsa). Buka DeepSeek Harness, login ulang di tab Web; setelah itu tugas terjadwal, aturan, briefing & konsolidasi kembali dieksekusi langsung di latar. Tugas yang datang selama jeda diantrekan seperti pola lama.")
+                }
+                return
+            }
+            DsFailure.BgErrorAction.GENERIC -> { /* jatuh ke notif gagal per origin di bawah */ }
         }
         if (origin in setOf("jadwal", "tujuan", "briefing", "rekap", "tes")) {
             notify(ctx, NotifIds.bgFailId(origin), "⚠️ Tugas latar gagal ($origin)", msg.take(180), msg)

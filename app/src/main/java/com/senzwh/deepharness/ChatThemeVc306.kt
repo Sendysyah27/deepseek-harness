@@ -9,7 +9,7 @@
 //
 // Penyimpangan vs skill #14 (mobile-design-room-ui) — SKILL MENANG bila
 // konflik, tapi tugas vc306 ini MEMERINTAHKAN eksplisit nilai Mist di
-// bawah (diasumsikan keputusan E1 user sudah diambil oleh koordinator):
+// bawah (diasumsikan keputusan E1 Sendy sudah diambil oleh koordinator):
 //  - skill #14 §1/§5: identitas "dark navy gelap, kartu radius 18px,
 //    jangan ganti palet tanpa perintah eksplisit" — diganti palet Mist +
 //    skala radius 6/10/14/20/28 (C1/C2) atas perintah tugas ini.
@@ -38,6 +38,17 @@ object ChatThemeVc306 {
     val darkTileBg: Int = 0xFF232730.toInt()
     val darkUserBubble: Int = 0xFF293144.toInt()
     val darkAccentText: Int = 0xFF97B1F0.toInt()
+    // ---- kode (G11 vc310) ----
+    // Warna blok kode / kode inline, dari mockup MOCKUP-SKILL-UI-B13-G11.html
+    // (palet Mist mockup — acuan presisi Sendy). darkCodeText #BEE0FF ~
+    // hardcode lama rgb(190,220,255) di MdMini; darkCodeBg #14171E =
+    // darkContainerLow yang sudah ada (dipakai ulang, bukan hex baru);
+    // lightCodeText #173F65 + lightCodeBg #EDF0F6 dari mockup (hex baru
+    // hanya karena mockup yang menetapkannya, bukan karangan).
+    val darkCodeText: Int = 0xFFBEE0FF.toInt()
+    val lightCodeText: Int = 0xFF173F65.toInt()
+    val darkCodeBg: Int = darkContainerLow
+    val lightCodeBg: Int = 0xFFEDF0F6.toInt()
     // ---- light (Mist) ----
     val lightBgTop: Int = 0xFFEBF1FE.toInt()
     val lightBgBottom: Int = 0xFFF6F7FC.toInt()

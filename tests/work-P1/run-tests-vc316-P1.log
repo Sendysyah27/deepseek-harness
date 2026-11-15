@@ -1,0 +1,618 @@
+== 1. TestDsFailureVc316 (unit DsFailure + cek sumber) ==
+== 1. classify / classifyFailure ==
+LULUS  1.1 429 -> RATE_LIMIT retryable
+LULUS  1.2 HTTP 429 di pesan -> RATE_LIMIT
+LULUS  1.3 rate_limit body SSE -> RATE_LIMIT
+LULUS  1.4 HTTP 500 -> UPSTREAM retryable
+LULUS  1.4 HTTP 502 -> UPSTREAM retryable
+LULUS  1.4 HTTP 503 -> UPSTREAM retryable
+LULUS  1.4 HTTP 504 -> UPSTREAM retryable
+LULUS  1.5 503 overload -> OVERLOADED retryable
+LULUS  1.6 HTTP 401 -> AUTH non-retryable
+LULUS  1.6 HTTP 403 -> AUTH non-retryable
+LULUS  1.7 suspend 'suspended' -> AUTH non-retryable
+LULUS  1.7 suspend 'violation' -> AUTH non-retryable
+LULUS  1.7 suspend '40003' -> AUTH non-retryable
+LULUS  1.7 suspend 'invalid_token' -> AUTH non-retryable
+LULUS  1.7 suspend 'account_banned' -> AUTH non-retryable
+LULUS  1.7b SERVER 40003 -> AUTH
+LULUS  1.8 HTTP 400 -> non-retryable
+LULUS  1.8 HTTP 402 -> non-retryable
+LULUS  1.8 HTTP 413 -> non-retryable
+LULUS  1.9 input_exceeds_limit -> CONTEXT_WINDOW non-retryable
+LULUS  1.9b context-window-exceeded -> CONTEXT_WINDOW
+LULUS  1.9c context_window_exceeded -> CONTEXT_WINDOW
+LULUS  1.10 400 + input_exceeds_limit -> CONTEXT_WINDOW
+LULUS  1.11 timeout 'Read timed out' -> TIMEOUT retryable
+LULUS  1.11 timeout 'timeout after 20000ms' -> TIMEOUT retryable
+LULUS  1.11 timeout 'SocketTimeoutException: timeout' -> TIMEOUT retryable
+LULUS  1.12 jaringan 'failed to connect to chat.deepseek.com' -> UNAVAILABLE retryable
+LULUS  1.12 jaringan 'Unable to resolve host "chat.deepseek.com"' -> UNAVAILABLE retryable
+LULUS  1.12 jaringan 'UnknownHostException: chat.deepseek.com' -> UNAVAILABLE retryable
+LULUS  1.12 jaringan 'No address associated with hostname' -> UNAVAILABLE retryable
+LULUS  1.13 isStreamCut kenal kedua penanda
+LULUS  1.13b stream_terputus tidak dikira RATE_LIMIT
+LULUS  1.14 error tak dikenal -> non-retryable
+LULUS  1.15 parseHttpCode 429
+LULUS  1.15b parseHttpCode tanpa kode = 0
+LULUS  1.15c parseHttpCode null = 0
+LULUS  1.16 enum 7 kind CCC
+== 2. Retry-After ==
+LULUS  2.1 header detik 30
+LULUS  2.2 header 0 -> clamp 1
+LULUS  2.3 header 600 -> clamp 120
+LULUS  2.4 header null -> null
+LULUS  2.5 header sampah -> null
+LULUS  2.6 header HTTP-date masa depan ~60
+LULUS  2.7 header HTTP-date masa lalu -> null
+LULUS  2.8 parseRetryAfterSeconds dari suffix
+LULUS  2.9 parseRetryAfterSeconds tanpa suffix -> null
+LULUS  2.10 retryAfterSuffix(30)
+LULUS  2.11 retryAfterSuffix(null) kosong
+LULUS  2.12 rateLimitWaits(null) = tangga lama 10/20/35
+LULUS  2.13 rateLimitWaits(45) = [45,20,35] dtk
+LULUS  2.14 rateLimitWaits(300) clamp jeda pertama 120 dtk
+LULUS  2.15 DsApiClient baca Retry-After
+LULUS  2.16 SlotClient baca Retry-After
+LULUS  2.17 DsApiClient tempel suffix retry_after
+LULUS  2.18 SlotClient tempel suffix retry_after
+LULUS  2.19 DsApiClient tangga pakai rateLimitWaits
+LULUS  2.20 SlotClient tangga pakai rateLimitWaits
+== 3. BgBrain cooldown vs sesi-mati ==
+LULUS  3.1 rate_limit murni -> COOLDOWN
+LULUS  3.2 HTTP 429 -> COOLDOWN
+LULUS  3.3 too frequent -> COOLDOWN
+LULUS  3.4 suspended -> SESSION_DEAD
+LULUS  3.5 SERVER 40003 -> SESSION_DEAD
+LULUS  3.6 token hilang -> SESSION_DEAD
+LULUS  3.7 HTTP 500 -> GENERIC (bukan cooldown/dead)
+LULUS  3.8 timeout -> GENERIC
+LULUS  3.9 rate_limit + suspended -> SESSION_DEAD (suspend menang)
+LULUS  3.10 CONTEXT_WINDOW -> GENERIC
+LULUS  3.11 handleError pakai bgActionFor
+LULUS  3.12 handleError tanpa m.contains deteksi
+LULUS  3.13 COOLDOWN catat bgLastRateLimitTs
+LULUS  3.14 COOLDOWN tanpa bgSessionDead
+LULUS  3.15 COOLDOWN tanpa notif 7702
+LULUS  3.16 COOLDOWN tetap antrekan tugas
+LULUS  3.17 SESSION_DEAD set bgSessionDead=true
+LULUS  3.18 SESSION_DEAD notif 7702 sekali per episode
+== 4. SlotClient = classify yang sama ==
+LULUS  4.1 SlotClient panggil classifyFailure
+LULUS  4.2 SlotClient tanpa m.contains duplikat
+LULUS  4.3 SlotClient tanpa val rateLimited/transient lokal
+LULUS  4.4 SlotClient isSuspendSignal delegasi
+LULUS  4.5 SlotClient isSessionInvalidSignal delegasi
+LULUS  4.6 SlotClient cabang UPSTREAM 2x jeda pendek
+LULUS  4.7 SlotClient tanpa failover (pilihan slot user)
+LULUS  4.8 SlotClient tetap tanpa Governor bump ganda (1x di chat)
+== 5. Regresi tangga lama ==
+LULUS  5.1 RATE_LIMIT_WAITS = 10/20/35 dtk
+LULUS  5.2 UPSTREAM_WAITS = 2/5 dtk
+LULUS  5.3 TRANSIENT_WAIT = 1500 ms
+LULUS  5.4 DsApiClient tanpa m.contains di chat
+LULUS  5.5 DsApiClient tanpa val rateLimited/transient lokal
+LULUS  5.6 DsApiClient panggil classifyFailure
+LULUS  5.7 DsApiClient stream-putus 2x jeda 2/5 dtk
+LULUS  5.8 DsApiClient 1 sesi baru sesudah putus 2x
+LULUS  5.9 DsApiClient cabang UPSTREAM 2x jeda pendek
+LULUS  5.10 DsApiClient transien 1x jeda 1,5 dtk
+LULUS  5.11 DsApiClient suspend -> failover sekali + suffix
+LULUS  5.12 DsApiClient AUTH/CONTEXT_WINDOW dilempar (else -> throw e)
+LULUS  5.13 DsApiClient isDead pre-check tetap gerbang pertama
+LULUS  5.14 DsApiClient isSuspendSignal delegasi
+LULUS  5.15 DsApiClient isSessionInvalidSignal delegasi
+LULUS  5.16 Governor bump tetap 1x di chat() DsApiClient
+LULUS  5.17 Governor bump tetap 1x di chat() SlotClient
+LULUS  5.18 FAILOVER_ENABLED=false (AccountPool baseline)
+LULUS  5.19 DsFailure.kt ada + enum + classify
+LULUS  5.20 DsFailure.kt catat PARSIAL
+
+TOTAL: 103 lulus, 0 gagal
+== T. Kompilasi tree penuh (staging merge + overlay 4 file kerja, 0 error wajib) ==
+tree-staging/AgentPrompt.kt:1117:24: warning: parameter 'ctx' is never used
+    fun validToolNames(ctx: Context): List<String> {
+                       ^
+tree-staging/AgentPrompt.kt:1123:25: warning: parameter 'ctx' is never used
+    fun toolGroupCounts(ctx: Context): Map<String, Int> {
+                        ^
+tree-staging/AgentPrompt.kt:1303:13: warning: name shadowed: text
+        val text = stripCtxLabels(text)
+            ^
+tree-staging/AgentPrompt.kt:1332:13: warning: name shadowed: text
+        val text = stripCtxLabels(text)
+            ^
+tree-staging/AgentPrompt.kt:1613:13: warning: name shadowed: text
+        val text = stripCtxLabels(text)
+            ^
+tree-staging/Automation.kt:117:24: warning: parameter 'ctx' is never used
+    fun refreshArchive(ctx: Context, room: JSONObject): JSONObject {
+                       ^
+tree-staging/Automation.kt:329:36: warning: elvis operator (?:) always returns the left operand of non-nullable type JSONObject?
+        val finalRoom = targetRoom ?: return "tidak ada room tujuan"
+                                   ^
+tree-staging/Automation.kt:550:17: warning: variable 'cr' is never used
+            val cr = deleteRoomOne(ctx, ch.optString("id")) ?: continue
+                ^
+tree-staging/BgBrain.kt:556:33: warning: variable 'concBg' is assigned but never accessed
+                            var concBg = false
+                                ^
+tree-staging/BgBrain.kt:561:69: warning: the value 'true' assigned to 'var concBg: Boolean defined in com.senzwh.deepharness.BgBrain.loopInnerVc263' is never used
+                                if (c1BgVc275) { unsBg = u1BgVc275; concBg = true } else {
+                                                                    ^
+tree-staging/BgBrain.kt:564:73: warning: the value 'true' assigned to 'var concBg: Boolean defined in com.senzwh.deepharness.BgBrain.loopInnerVc263' is never used
+                                    if (c2BgVc275) { unsBg = u2BgVc275; concBg = true } else reviewFailBgVc275 = true
+                                                                        ^
+tree-staging/BgBrain.kt:897:93: warning: parameter 'visible' is never used
+                     transcript: StringBuilder, steps: Int, tool: String, args: JSONObject, visible: String, jobId: String? = null, jobTools: Set<String>? = null, ownerSessionId: Long = 0): Boolean {
+                                                                                            ^
+tree-staging/BgBrain.kt:1453:20: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                nb.addAction(android.R.drawable.ic_input_add, "Setujui", approvePi)
+                   ^
+tree-staging/BgBrain.kt:1454:20: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                nb.addAction(android.R.drawable.ic_delete, "Tolak", rejectPi)
+                   ^
+tree-staging/BrainBackup.kt:146:27: warning: variable 'dbItems' initializer is redundant
+            var dbItems = 0
+                          ^
+tree-staging/CameraVision.kt:194:32: warning: 'createCaptureSession((Mutable)List<Surface!>, CameraCaptureSession.StateCallback, Handler?): Unit' is deprecated. Deprecated in Java
+                        camera.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
+                               ^
+tree-staging/DsApiClient.kt:62:29: warning: variable 'lastErr2' is assigned but never accessed
+                        var lastErr2: Exception = e
+                            ^
+tree-staging/DsApiClient.kt:73:33: warning: the value 'e2' assigned to 'var lastErr2: kotlin.Exception /* = java.lang.Exception */ defined in com.senzwh.deepharness.DsApiClient.chat.`<anonymous>`.`<anonymous>`' is never used
+                                lastErr2 = e2
+                                ^
+tree-staging/DsApiClient.kt:240:74: warning: condition 'storedPair != null' is always 'true'
+            if (stored != null && (isSessionInvalidSignal(e.message) || (storedPair != null && storedPair.first != fp))) {
+                                                                         ^
+tree-staging/DsApiClient.kt:250:21: warning: condition 'storedPair != null' is always 'true'
+                if (storedPair != null && storedPair.first != fp) clearServerSession(storedPair.first, harnessNo)
+                    ^
+tree-staging/Embedder.kt:408:22: warning: parameter 'ctx' is never used
+            fun load(ctx: Context, jsonFile: File, cacheFile: File): UnigramTokenizer {
+                     ^
+tree-staging/GroupChat.kt:383:57: warning: unnecessary safe call on a non-null receiver of type JSONObject?
+                            val callIdGrpVc272 = toolObj?.optString("id") ?: ""
+                                                        ^
+tree-staging/GroupChat.kt:477:45: warning: variable 'concGrp' is assigned but never accessed
+                                        var concGrp = false
+                                            ^
+tree-staging/GroupChat.kt:482:84: warning: the value 'true' assigned to 'var concGrp: Boolean defined in com.senzwh.deepharness.GroupChat.startRound.`<anonymous>`' is never used
+                                            if (c1GrpVc275) { unsGrp = u1GrpVc275; concGrp = true } else {
+                                                                                   ^
+tree-staging/GroupChat.kt:485:88: warning: the value 'true' assigned to 'var concGrp: Boolean defined in com.senzwh.deepharness.GroupChat.startRound.`<anonymous>`' is never used
+                                                if (c2GrpVc275) { unsGrp = u2GrpVc275; concGrp = true } else reviewFailGrpVc275 = true
+                                                                                       ^
+tree-staging/HarnessService.kt:75:50: warning: 'MOVE_TO_FOREGROUND: Int' is deprecated. Deprecated in Java
+            if (e.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) fg = e.packageName
+                                                 ^
+tree-staging/HarnessService.kt:159:164: warning: 'constructor Builder(Context!)' is deprecated. Deprecated in Java
+                    val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, "harness_auto_heal") else android.app.Notification.Builder(this)
+                                                                                                                                                                   ^
+tree-staging/HarnessService.kt:252:18: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                .addAction(android.R.drawable.ic_lock_idle_alarm, "Tunda 10 mnt", snoozePi)
+                 ^
+tree-staging/HarnessService.kt:253:18: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                .addAction(android.R.drawable.ic_menu_save, "Tandai selesai", donePi)
+                 ^
+tree-staging/HarnessService.kt:612:40: warning: 'getDefault(): SmsManager!' is deprecated. Deprecated in Java
+                            SmsManager.getDefault().sendTextMessage(emergency, null,
+                                       ^
+tree-staging/LocalAgent.kt:79:44: warning: parameter 'text' is never used
+    private fun parseOpenApp(ctx: Context, text: String, low: String): String? {
+                                           ^
+tree-staging/MainActivity.kt:354:17: warning: parameter 'ev' is never used
+    fun uiEvent(ev: JSONObject) {}
+                ^
+tree-staging/MainActivity.kt:605:23: warning: variable 'summary' initializer is redundant
+        var summary = ""
+                      ^
+tree-staging/MainActivity.kt:2521:34: warning: this declaration overrides deprecated member but not marked as deprecated itself. Please add @Deprecated annotation or suppress. See https://youtrack.jetbrains.com/issue/KT-47902 for details
+                    override fun shouldOverrideUrlLoading(v: WebView?, url: String?): Boolean {
+                                 ^
+tree-staging/MainActivity.kt:2661:61: warning: parameter 'bf' is never used
+    private fun buildCodeWellVc310(code: MdMini.Block.Code, bf: Float): View {
+                                                            ^
+tree-staging/MainActivity.kt:4044:22: warning: 'setter for allowFileAccessFromFileURLs: Boolean' is deprecated. Deprecated in Java
+            settings.allowFileAccessFromFileURLs = false
+                     ^
+tree-staging/MainActivity.kt:4045:22: warning: 'setter for allowUniversalAccessFromFileURLs: Boolean' is deprecated. Deprecated in Java
+            settings.allowUniversalAccessFromFileURLs = false
+                     ^
+tree-staging/MainActivity.kt:4051:30: warning: this declaration overrides deprecated member but not marked as deprecated itself. Please add @Deprecated annotation or suppress. See https://youtrack.jetbrains.com/issue/KT-47902 for details
+                override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = true
+                             ^
+tree-staging/MainActivity.kt:4920:13: warning: variable 'src' is never used
+        val src = turnSource
+            ^
+tree-staging/MainActivity.kt:7151:21: warning: variable 'wv' is never used
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                    ^
+tree-staging/MainActivity.kt:7156:21: warning: variable 'wv' is never used
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                    ^
+tree-staging/MainActivity.kt:8398:33: warning: parameter 'st' is never used
+    private fun setupSkillsCard(st: JSONObject): LinearLayout {
+                                ^
+tree-staging/MainActivity.kt:10142:26: warning: this declaration overrides deprecated member but not marked as deprecated itself. Please add @Deprecated annotation or suppress. See https://youtrack.jetbrains.com/issue/KT-47902 for details
+            override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+                         ^
+tree-staging/MainActivity.kt:11267:17: warning: the value 'finalTxt.length - targetLen' assigned to 'var overVc278: Int defined in com.senzwh.deepharness.MainActivity.sendContinuation.trimPromptVc278' is never used
+                overVc278 = finalTxt.length - targetLen
+                ^
+tree-staging/MainActivity.kt:11512:141: warning: 'constructor Builder(Context!)' is deprecated. Deprecated in Java
+            val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, chId) else android.app.Notification.Builder(this)
+                                                                                                                                            ^
+tree-staging/MainActivity.kt:11617:38: warning: unnecessary safe call on a non-null receiver of type DsApiClient
+            val tok = try { apiClient?.captureTokenNow() } catch (e: Exception) { null }
+                                     ^
+tree-staging/MainActivity.kt:11618:41: warning: unnecessary safe call on a non-null receiver of type DsApiClient
+            val cookie = try { apiClient?.currentCookie() ?: "" } catch (e: Exception) { "" }
+                                        ^
+tree-staging/MainActivity.kt:11618:59: warning: elvis operator (?:) always returns the left operand of non-nullable type String
+            val cookie = try { apiClient?.currentCookie() ?: "" } catch (e: Exception) { "" }
+                                                          ^
+tree-staging/MainActivity.kt:12297:37: warning: variable 'concVc249' is assigned but never accessed
+                                var concVc249 = false
+                                    ^
+tree-staging/MainActivity.kt:12302:72: warning: the value 'true' assigned to 'var concVc249: Boolean defined in com.senzwh.deepharness.MainActivity.handleAgentResponse' is never used
+                                    if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
+                                                                       ^
+tree-staging/MainActivity.kt:12305:76: warning: the value 'true' assigned to 'var concVc249: Boolean defined in com.senzwh.deepharness.MainActivity.handleAgentResponse' is never used
+                                        if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
+                                                                           ^
+tree-staging/MainActivity.kt:14561:17: warning: variable 'secs' is never used
+            val secs = String.format(java.util.Locale.US, "%.1f", (System.currentTimeMillis() - t0) / 1000.0).replace('.', ',')
+                ^
+tree-staging/MainActivity.kt:15023:133: warning: there is more than one label with such a name in this scope
+                    if (command.isBlank()) { Toast.makeText(this, "Perintah tidak boleh kosong.", Toast.LENGTH_SHORT).show(); return@inputDialog }
+                                                                                                                                    ^
+tree-staging/MainActivity.kt:15047:128: warning: there is more than one label with such a name in this scope
+                    if (pid == null || pid <= 0L) { Toast.makeText(this, "PID tidak valid.", Toast.LENGTH_SHORT).show(); return@inputDialog }
+                                                                                                                               ^
+tree-staging/MainActivity.kt:15165:17: warning: variable 'quotaEff' is never used
+            val quotaEff = WorkerJanitorLogic.effectiveQuotaMb(w.quotaMb)
+                ^
+tree-staging/MainActivity.kt:15259:145: warning: there is more than one label with such a name in this scope
+                                if (command.isBlank()) { Toast.makeText(this, "Perintah tidak boleh kosong.", Toast.LENGTH_SHORT).show(); return@inputDialog }
+                                                                                                                                                ^
+tree-staging/MainActivity.kt:15456:64: warning: unnecessary non-null assertion (!!) on a non-null receiver of type String
+                            val tools = McpHttp.listTools(d.url!!, d.headerKind, McpServers.tokenFor(ctx, d.id))
+                                                               ^
+tree-staging/MainActivity.kt:15848:66: warning: 'getDefault(): SmsManager!' is deprecated. Deprecated in Java
+                                    android.telephony.SmsManager.getDefault().sendTextMessage(num, null,
+                                                                 ^
+tree-staging/MainActivity.kt:15972:23: warning: parameter 'label' is never used
+        fun addHeader(label: String) { }
+                      ^
+tree-staging/MainActivity.kt:16452:17: warning: variable 'act' is never used
+            val act = this
+                ^
+tree-staging/MainActivity.kt:16527:13: warning: the expression is unused
+            dlg
+            ^
+tree-staging/MainActivity.kt:16920:46: warning: this declaration overrides deprecated member but not marked as deprecated itself. Please add @Deprecated annotation or suppress. See https://youtrack.jetbrains.com/issue/KT-47902 for details
+                                override fun onError(id: String?) {}
+                                             ^
+tree-staging/MainActivity.kt:17103:172: warning: 'constructor Builder(Context!)' is deprecated. Deprecated in Java
+                            val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, "harness_auto_heal") else android.app.Notification.Builder(this)
+                                                                                                                                                                           ^
+tree-staging/MainActivity.kt:18021:29: warning: name shadowed: tasks
+                        val tasks = Automation.sessionTasks(curSess)
+                            ^
+tree-staging/MainActivity.kt:18125:20: warning: unnecessary safe call on a non-null receiver of type Button?
+        chipDiskusi?.let { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; sectionRow.addView(it) }
+                   ^
+tree-staging/MainActivity.kt:18126:18: warning: unnecessary safe call on a non-null receiver of type Button?
+        chipTugas?.let { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; sectionRow.addView(it) }
+                 ^
+tree-staging/MainActivity.kt:18127:20: warning: unnecessary safe call on a non-null receiver of type Button?
+        chipLaporan?.let { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; sectionRow.addView(it) }
+                   ^
+tree-staging/MainActivity.kt:18128:18: warning: unnecessary safe call on a non-null receiver of type Button?
+        chipPanel?.let { it.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; sectionRow.addView(it) }
+                 ^
+tree-staging/MainActivity.kt:18626:37: warning: variable 'concRoomVc249' is assigned but never accessed
+                                var concRoomVc249 = false
+                                    ^
+tree-staging/MainActivity.kt:18631:84: warning: the value 'true' assigned to 'var concRoomVc249: Boolean defined in com.senzwh.deepharness.MainActivity.showAutomationRoom.handleRoomReply.`<anonymous>`' is never used
+                                    if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
+                                                                                   ^
+tree-staging/MainActivity.kt:18634:88: warning: the value 'true' assigned to 'var concRoomVc249: Boolean defined in com.senzwh.deepharness.MainActivity.showAutomationRoom.handleRoomReply.`<anonymous>`' is never used
+                                        if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
+                                                                                       ^
+tree-staging/MainActivity.kt:18662:172: warning: elvis operator (?:) always returns the left operand of non-nullable type String?
+                        if (holdRoomVc275 && showTextRoomVc275 != null) Automation.appendMessage(ctxRoomVc249, room.optString("id"), roomSub, agentName, showTextRoomVc275 ?: reviewAnswerVc249, effSess)
+                                                                                                                                                                           ^
+tree-staging/MainActivity.kt:18721:80: warning: unnecessary safe call on a non-null receiver of type JSONObject?
+                        val res = try { Tools.execute(this, tool, args, toolObj?.optString("id") ?: "") } catch (e: Exception) { "Gagal: ${e.message}" }
+                                                                               ^
+tree-staging/MainActivity.kt:18726:331: warning: unnecessary safe call on a non-null receiver of type JSONObject?
+                        roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(tool, msRoomVc254, !WorkLog.isFailed(res), RedactSecrets.redact(res).take(120), evidence = res, args = args.toString().take(4000), resultId = Tools.lastResultId() ?: "", totalChars = Tools.lastFullLength(), callId = toolObj?.optString("id") ?: ""))
+                                                                                                                                                                                                                                                                                                                                          ^
+tree-staging/MainActivity.kt:18793:145: warning: 'constructor Builder(Context!)' is deprecated. Deprecated in Java
+                val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, chId) else android.app.Notification.Builder(this)
+                                                                                                                                                ^
+tree-staging/MainActivity.kt:18803:22: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                    .addAction(android.R.drawable.ic_menu_view, "Buka app", pi)
+                     ^
+tree-staging/MainActivity.kt:18804:22: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                    .addAction(android.R.drawable.ic_menu_rotate, "Coba lagi", retryPi)
+                     ^
+tree-staging/MainActivity.kt:19348:47: warning: variable 'ranked' initializer is redundant
+                    var ranked: List<Fact>? = null
+                                              ^
+tree-staging/MainActivity.kt:19490:29: warning: name shadowed: col
+                        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                            ^
+tree-staging/MainActivity.kt:20204:31: warning: parameter 'arr' is never used
+    private fun jobEditDialog(arr: org.json.JSONArray, r: org.json.JSONObject, onSaved: () -> Unit) {
+                              ^
+tree-staging/MainActivity.kt:20400:23: warning: 'onBackPressed(): Unit' is deprecated. Deprecated in Java
+                super.onBackPressed()
+                      ^
+tree-staging/MemoryDb.kt:622:133: warning: elvis operator (?:) always returns the left operand of non-nullable type String
+        for (f in facts) { val nk = normVc289(f.first); if (nk.isNotBlank() && !valsVc289.containsKey(nk)) valsVc289[nk] = f.second ?: "" }
+                                                                                                                                    ^
+tree-staging/MemoryDb.kt:662:142: warning: elvis operator (?:) always returns the left operand of non-nullable type String
+        for (f in active) { val nk = normVc289(f.first); if (nk.isNotBlank() && !valByKeyVc289.containsKey(nk)) valByKeyVc289[nk] = f.second ?: "" }
+                                                                                                                                             ^
+tree-staging/MemoryDb.kt:1567:17: warning: the value '0' assigned to 'var budget: Int defined in com.senzwh.deepharness.MemoryDb.historyTranscriptVc230' is never used
+                budget = 0; break
+                ^
+tree-staging/MemoryDb.kt:2301:27: warning: variable 'idVc301' initializer is redundant
+            var idVc301 = -1L
+                          ^
+tree-staging/OcCoord.kt:402:29: warning: variable 'concVc262' is assigned but never accessed
+                        var concVc262 = false
+                            ^
+tree-staging/OcCoord.kt:407:68: warning: the value 'true' assigned to 'var concVc262: Boolean defined in com.senzwh.deepharness.OcCoord.finishTask' is never used
+                            if (c1OcVc275) { unsVc262 = u1OcVc275; concVc262 = true } else {
+                                                                   ^
+tree-staging/OcCoord.kt:410:72: warning: the value 'true' assigned to 'var concVc262: Boolean defined in com.senzwh.deepharness.OcCoord.finishTask' is never used
+                                if (c2OcVc275) { unsVc262 = u2OcVc275; concVc262 = true } else reviewFailOcVc275 = true
+                                                                       ^
+tree-staging/OcCoord.kt:1083:18: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                .addAction(android.R.drawable.checkbox_on_background, "Setujui", PendingIntent.getBroadcast(ctx, 7713, approveIntent, flags))
+                 ^
+tree-staging/OcCoord.kt:1084:18: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+                .addAction(android.R.drawable.checkbox_off_background, "Tolak", PendingIntent.getBroadcast(ctx, 7714, rejectIntent, flags))
+                 ^
+tree-staging/ParkedApprovalMachineVc305.kt:101:50: warning: parameter 'pinSet' is never used
+    fun onTap(state: ParkedState?, risk: String, pinSet: Boolean, nowMs: Long): TapOutcome {
+                                                 ^
+tree-staging/ProotSession.kt:159:28: warning: parameter 'ctx' is never used
+    fun ensureSessionBinds(ctx: Context, session: String, workerId: String) {
+                           ^
+tree-staging/ScreenWatchService.kt:71:11: warning: 'addAction(Int, CharSequence!, PendingIntent!): Notification.Builder!' is deprecated. Deprecated in Java
+        b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Berhenti", stopPi)
+          ^
+tree-staging/ScreenWatchService.kt:210:19: warning: 'stopForeground(Boolean): Unit' is deprecated. Deprecated in Java
+            try { stopForeground(true) } catch (e: Exception) {}
+                  ^
+tree-staging/Sensors.kt:215:23: warning: variable 'delayMs' initializer is redundant
+        var delayMs = -1L
+                      ^
+tree-staging/SlotBrowser.kt:258:34: warning: this declaration overrides deprecated member but not marked as deprecated itself. Please add @Deprecated annotation or suppress. See https://youtrack.jetbrains.com/issue/KT-47902 for details
+                    override fun shouldOverrideUrlLoading(v: WebView?, url: String?): Boolean {
+                                 ^
+tree-staging/SlotClient.kt:109:29: warning: variable 'lastErr2' is assigned but never accessed
+                        var lastErr2: Exception = e
+                            ^
+tree-staging/SlotClient.kt:120:33: warning: the value 'e2' assigned to 'var lastErr2: kotlin.Exception /* = java.lang.Exception */ defined in com.senzwh.deepharness.SlotClient.chat.`<anonymous>`.`<anonymous>`' is never used
+                                lastErr2 = e2
+                                ^
+tree-staging/SlotClient.kt:292:37: warning: parameter 'f' is never used
+    private fun storedServerSession(f: String, harnessNo: Long, reviewer: Boolean = false): String? {
+                                    ^
+tree-staging/SlotClient.kt:299:36: warning: parameter 'f' is never used
+    private fun storeServerSession(f: String, harnessNo: Long, id: String, reviewer: Boolean = false) {
+                                   ^
+tree-staging/SlotClient.kt:303:36: warning: parameter 'f' is never used
+    private fun clearServerSession(f: String, harnessNo: Long, reviewer: Boolean = false) {
+                                   ^
+tree-staging/TeamRun.kt:338:29: warning: variable 'concTeam' is assigned but never accessed
+                        var concTeam = false
+                            ^
+tree-staging/TeamRun.kt:343:71: warning: the value 'true' assigned to 'var concTeam: Boolean defined in com.senzwh.deepharness.TeamRun.runLane' is never used
+                            if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
+                                                                      ^
+tree-staging/TeamRun.kt:346:75: warning: the value 'true' assigned to 'var concTeam: Boolean defined in com.senzwh.deepharness.TeamRun.runLane' is never used
+                                if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
+                                                                          ^
+tree-staging/Tools.kt:1258:76: warning: unnecessary non-null assertion (!!) on a non-null receiver of type Location
+                            if (l != null && (best == null || l.time > best!!.time)) best = l
+                                                                           ^
+tree-staging/Tools.kt:2476:36: warning: 'getDefault(): SmsManager!' is deprecated. Deprecated in Java
+                        SmsManager.getDefault().sendTextMessage(num, null, txt, null, null)
+                                   ^
+tree-staging/Tools.kt:2829:43: warning: name shadowed: name
+                    val markReadVc262 = { name: String ->
+                                          ^
+tree-staging/Tools.kt:3401:64: warning: unnecessary non-null assertion (!!) on a non-null receiver of type Location
+                if (l != null && (best == null || l.time > best!!.time)) best = l
+                                                               ^
+tree-staging/Tools.kt:3767:50: warning: variable 'fetched' initializer is redundant
+        var fetched: List<RoteVc296.NotifItem> = emptyList()
+                                                 ^
+tree-staging/Tools.kt:3788:53: warning: variable 'items' initializer is redundant
+        var items: List<RoteVc296.ClassifiedItem> = emptyList()
+                                                    ^
+tree-staging/Tools.kt:3820:22: warning: variable 'digest' initializer is redundant
+        var digest = ""
+                     ^
+tree-staging/Tools.kt:3821:23: warning: variable 'outName' initializer is redundant
+        var outName = ""
+                      ^
+tree-staging/Tools.kt:3888:24: warning: variable 'usedMode' initializer is redundant
+        var usedMode = mode
+                       ^
+tree-staging/Tools.kt:3889:57: warning: variable 'bundled' initializer is redundant
+        var bundled: ArtifactStyleVc297.BundleResult? = null
+                                                        ^
+tree-staging/Tools.kt:3923:25: warning: elvis operator (?:) always returns the left operand of non-nullable type ArtifactStyleVc297.BundleResult?
+        val b = bundled ?: return "artifact_bundle: gagal membundel tanpa pesan (mode $mode)."
+                        ^
+tree-staging/Tools.kt:4307:33: warning: parameter 'ctx' is never used
+    private fun transcribeMedia(ctx: Context, path: String): String {
+                                ^
+tree-staging/WorkerJanitor.kt:63:54: warning: parameter 'workerName' is never used
+    fun notifyWorker(ctx: Context, workerId: String, workerName: String, title: String, text: String) {
+                                                     ^
+tree-staging/WorkerRegistry.kt:67:23: warning: parameter 'ctx' is never used
+    fun displayStatus(ctx: Context, w: Worker): String =
+                      ^
+tree-staging/priv/AdbClient.kt:72:17: warning: variable 'remoteId' is assigned but never accessed
+            var remoteId = 0
+                ^
+tree-staging/priv/AdbClient.kt:78:31: warning: the value 'msg.arg0' assigned to 'var remoteId: Int defined in com.senzwh.deepharness.priv.AdbClient.shell' is never used
+                    A_OKAY -> remoteId = msg.arg0
+                              ^
+tree-staging/priv/AdbDiscovery.kt:35:25: warning: 'resolveService(NsdServiceInfo!, NsdManager.ResolveListener!): Unit' is deprecated. Deprecated in Java
+                    nsd.resolveService(service, object : NsdManager.ResolveListener {
+                        ^
+tree-staging/priv/AdbDiscovery.kt:38:48: warning: 'getter for host: InetAddress!' is deprecated. Deprecated in Java
+                            foundHost.set(info.host?.hostAddress ?: "")
+                                               ^
+tree-staging/priv/AdbKeyStore.kt:4:30: warning: 'X509V3CertificateGenerator' is deprecated. Deprecated in Java
+import org.bouncycastle.x509.X509V3CertificateGenerator
+                             ^
+tree-staging/priv/AdbPairing.kt:75:49: warning: the value changed at 'encIv++' is never used
+            val encrypted = gcm(true, peerInfo, encIv++)
+                                                ^
+tree-staging/priv/AdbPairing.kt:81:42: warning: the value changed at 'decIv++' is never used
+                gcm(false, theirInfoEnc, decIv++)
+                                         ^
+tree-staging/priv/PrivPairNotif.kt:45:36: warning: 'constructor Builder(Int, CharSequence!, PendingIntent?)' is deprecated. Deprecated in Java
+        return Notification.Action.Builder(android.R.drawable.ic_input_add, "Ketik kode", pi)
+                                   ^
+tree-staging/priv/PrivStarter.kt:35:52: warning: 'prepareMainLooper(): Unit' is deprecated. Deprecated in Java
+        if (Looper.getMainLooper() == null) Looper.prepareMainLooper()
+                                                   ^
+LULUS  T: tree staging kompilasi 0 error
+== C. Diff work-P1 vs merge/ = tepat 3 berubah + 1 baru ==
+Only in ../merge: AccountPool.kt
+Only in ../merge: ActivityTitle.kt
+Only in ../merge: AgentBrain.kt
+Only in ../merge: AgentEngine.kt
+Only in ../merge: AgentPrompt.kt
+Only in ../merge: Agents.kt
+Only in ../merge: ApiClients.kt
+Only in ../merge: ApiQueue.kt
+Only in ../merge: ApiToolLayer.kt
+Only in ../merge: ApprovalFloat.kt
+Only in ../merge: ApprovalPanel.kt
+Only in ../merge: ArtifactStore.kt
+Only in ../merge: ArtifactStyleVc297.kt
+Only in ../merge: AttentionBudget.kt
+Only in ../merge: Automation.kt
+Only in ../merge: BatchToolVc274.kt
+Only in ../merge: Behaviors.kt
+Only in ../merge: BgApprovalReceiver.kt
+Files ../merge/BgBrain.kt and ./BgBrain.kt differ
+Only in ../merge: BootReceiver.kt
+Only in ../merge: BrainBackup.kt
+Only in ../merge: BriefingVc295.kt
+Only in ../merge: BrowserCdpClient.kt
+Only in ../merge: BrowserDownloadManager.kt
+Only in ../merge: BrowserHost.kt
+Only in ../merge: CameraVision.kt
+Only in ../merge: CaptureConsentActivity.kt
+Only in ../merge: ChatThemeVc306.kt
+Only in ../merge: Checkpoint.kt
+Only in ../merge: Components.kt
+Only in ../merge: ConcatApiClient.kt
+Only in ../merge: ConcatTools.kt
+Only in ../merge: Connectors.kt
+Only in ../merge: CrashGuard.kt
+Only in ../merge: DocGen.kt
+Only in ../merge: DsAgent.kt
+Files ../merge/DsApiClient.kt and ./DsApiClient.kt differ
+Only in .: DsFailure.kt
+Only in ../merge: DsSafetyMigration.kt
+Only in ../merge: DsSafetyStrip.kt
+Only in ../merge: Embedder.kt
+Only in ../merge: EventDb.kt
+Only in ../merge: Flavor.kt
+Only in ../merge: FloatingAgentActivity.kt
+Only in ../merge: Gmail.kt
+Only in ../merge: Governor.kt
+Only in ../merge: GraphDb.kt
+Only in ../merge: GraphJobs.kt
+Only in ../merge: GroupChat.kt
+Only in ../merge: GuardHeaderVc302.kt
+Only in ../merge: HarnessService.kt
+Only in ../merge: Ledger.kt
+Only in ../merge: LessonIngatVc298.kt
+Only in ../merge: LiveReadGateVc302.kt
+Only in ../merge: LocalAgent.kt
+Only in ../merge: MainActivity.kt
+Only in ../merge: McpHelper.kt
+Only in ../merge: McpHttp.kt
+Only in ../merge: McpOAuth.kt
+Only in ../merge: McpServers.kt
+Only in ../merge: MdMini.kt
+Only in ../merge: MemoryDb.kt
+Only in ../merge: MemoryLoopVc294.kt
+Only in ../merge: MitmProxy.kt
+Only in ../merge: NotifIds.kt
+Only in ../merge: OcApprovalReceiver.kt
+Only in ../merge: OcClient.kt
+Only in ../merge: OcCoord.kt
+Only in ../merge: ParkedApprovalMachineVc305.kt
+Only in ../merge: ParkedApprovalStoreVc305.kt
+Only in ../merge: PlanStore.kt
+Only in ../merge: PowSolver.kt
+Only in ../merge: ProotEngine.kt
+Only in ../merge: ProotJobs.kt
+Only in ../merge: ProotSession.kt
+Only in ../merge: ProotTools.kt
+Only in ../merge: RedactMigration.kt
+Only in ../merge: RedactSecrets.kt
+Only in ../merge: ResultStore.kt
+Only in ../merge: ReviewerVc298.kt
+Only in ../merge: RootShell.kt
+Only in ../merge: RoteVc296.kt
+Only in ../merge: ScreenWatch.kt
+Only in ../merge: ScreenWatchService.kt
+Only in ../merge: SecureStore.kt
+Only in ../merge: Sensors.kt
+Only in ../merge: ServeHealth.kt
+Only in ../merge: ServeStandbyService.kt
+Only in ../merge: SessionBackgroundVc304.kt
+Only in ../merge: SkillImport.kt
+Only in ../merge: SkillJudge.kt
+Only in ../merge: SkillSpector.kt
+Only in ../merge: SlotBrowser.kt
+Files ../merge/SlotClient.kt and ./SlotClient.kt differ
+Only in ../merge: SplashActivity.kt
+Only in ../merge: SystemBarSpecVc309.kt
+Only in ../merge: SystemBarsVc309.kt
+Only in ../merge: TailscaleHealth.kt
+Only in ../merge: TeamRun.kt
+Only in ../merge: TermuxBridge.kt
+Only in ../merge: ToolGate.kt
+Only in ../merge: ToolRegistry.kt
+Only in ../merge: Tools.kt
+Only in ../merge: TriageDigest.kt
+Only in ../merge: TurnMetrics.kt
+Only in ../merge: VoiceSvc.kt
+Only in ../merge: WorkLog.kt
+Only in ../merge: WorkNotesVc301.kt
+Only in ../merge: WorkerEndpoint.kt
+Only in ../merge: WorkerEndpointLogic.kt
+Only in ../merge: WorkerJanitor.kt
+Only in ../merge: WorkerJanitorLogic.kt
+Only in ../merge: WorkerLogic.kt
+Only in ../merge: WorkerQueue.kt
+Only in ../merge: WorkerRegistry.kt
+Only in ../merge: WorldState.kt
+Only in ../merge: build.py
+Only in ../merge: priv
+LULUS  C: tepat 3 file .kt berubah + DsFailure.kt baru
+== D. Sapu work-P1/ ==
+LULUS  D1: hsurr: 0
+LULUS  D2: tanpa contains(...) manual di 3 file kerja
+OVERALL FAIL=0

@@ -7,7 +7,7 @@ import org.json.JSONObject
 
 /**
  * vc226 — Panel Approval "Apa yang Butuh Manusia" (BRIEF-PANEL-APPROVAL,
- * disetujui user 2026-11-01). Pola attention budget dari
+ * disetujui Sendy 2026-11-01). Pola attention budget dari
  * deepseek-ai/dsh-superagent-prototype (dipinjam polanya, bukan kodenya):
  * satu inbox untuk semua approval pending lintas room/sesi + Mandat
  * (otorisasi bermandat: sekali setujui satu kelas aksi di satu scope,
@@ -21,7 +21,7 @@ import org.json.JSONObject
  *  - Kelas risiko tinggi TIDAK BISA dimandatkan: hapus_data, ubah_pengaturan,
  *    keluar_uang, kirim_luar. Tombol "setujui selalu" tidak tampil untuk
  *    kelas ini, dan createMandate menolaknya.
- *  - vc227 (Gas user 2026-11-01, kunci mandat shell): kelas shell juga
+ *  - vc227 (Gas Sendy 2026-11-01, kunci mandat shell): kelas shell juga
  *    TIDAK BISA dimandatkan: eksekusi_shell (run_terminal, run_privileged),
  *    delegate_session, chain_tasks, oc_checkpoint. Mandat shell lama tidak
  *    dihormati jalan pintas dan tidak tampil di daftar mandat aktif; tool
@@ -255,7 +255,7 @@ object ApprovalPanelStore {
     fun classForTool(tool: String): String = when (tool) {
         "delete_session", "memory_forget" -> "hapus_data"
         "priv_settings", "priv_app", "coord_rule" -> "ubah_pengaturan"
-        "gmail_send", "send_sms", "sync_memory", "http_request", "ask_operator", "api_write", "mcp_call" -> "kirim_luar"
+        "gmail_send", "send_sms", "sync_memory", "http_request", "ask_jhon", "api_write", "mcp_call" -> "kirim_luar"
         "run_terminal", "run_privileged", "priv_input" -> "eksekusi_shell"
         "reply_notification" -> "kirim_pesan"
         "wait_confirm" -> "konfirmasi_manual"
@@ -267,8 +267,8 @@ object ApprovalPanelStore {
     // lama selalu melabeli RENDAH (termasuk otak_write SOUL/AGENTS).
     // Ini PELABELAN INFORMASIONAL saja di panel legacy/stale — bukan gate,
     // tidak menahan eksekusi apa pun.
-    private val STATIC_HIGH = setOf("delete_session", "memory_forget", "run_terminal", "run_privileged", "priv_input", "priv_app", "priv_settings", "coord_rule", "sync_memory", "gmail_send", "send_sms", "http_request", "api_write", "mcp_call", "ask_operator", "delegate_session", "chain_tasks", "oc_checkpoint", "write_file", "edit_file", "generate_document", "generate_presentation", "schedule_task", "create_subroom", "run_team", "open_app", "tap", "swipe", "type_text", "tap_ref", "set_text_ref", "go_home", "go_back", "reply_notification", "otak_write", "forget_fact", "delete_skill", "delete_rule_trigger", "delete_geofence", "cancel_schedule", "cancel_reminder")
-    private val STATIC_REVIEW = setOf("create_skill", "remember_fact", "learn_rule", "memory_add", "make_plan", "update_plan", "make_goal", "update_goal", "analyze_photo", "browser_tap", "browser_type", "browser_open", "delegate_task", "mcp_list_tools", "use_skill", "wait_confirm", "wait_change", "wait_for_app")
+    private val STATIC_HIGH = setOf("delete_session", "memory_forget", "run_terminal", "run_privileged", "priv_input", "priv_app", "priv_settings", "coord_rule", "sync_memory", "gmail_send", "send_sms", "http_request", "api_write", "mcp_call", "ask_jhon", "delegate_session", "chain_tasks", "oc_checkpoint", "write_file", "edit_file", "generate_document", "generate_presentation", "schedule_task", "create_subroom", "run_team", "open_app", "tap", "swipe", "type_text", "tap_ref", "set_text_ref", "go_home", "go_back", "reply_notification", "otak_write", "forget_fact", "delete_skill", "delete_rule_trigger", "delete_geofence", "cancel_schedule", "cancel_reminder")
+    private val STATIC_REVIEW = setOf("create_skill", "remember_fact", "learn_rule", "memory_add", "make_plan", "update_plan", "make_goal", "update_goal", "analyze_photo", "delegate_task", "mcp_list_tools", "use_skill", "wait_confirm", "wait_change", "wait_for_app")
 
     fun riskForTool(tool: String): PanelRisk = when (tool) {
         in STATIC_HIGH -> PanelRisk.TINGGI

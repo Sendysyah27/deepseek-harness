@@ -16,7 +16,7 @@ import java.io.File
  *  janitor hapus hasil tertua + beri tahu lewat notifikasi); K3 localhost-only
  *  (tailnet = Fase 4); K4 TANPA batasan baterai untuk worker, maks 5 worker
  *  JALAN bersamaan; K5 nama UI "Worker"; Q2/Q3 lihat bawah.
- *  K6 (endpoint :4200 + token) = Fase 2 (vc258) — DIBANGUN di
+ *  K6 (endpoint :4198 + token) = Fase 2 (vc258) — DIBANGUN di
  *  WorkerEndpoint.kt; registry ini hanya dipakai endpoint (list/spawn/
  *  stop/log/antrean) + tool preview.
  *  Batasan: TIDAK ada auto-restart (kebijakan MANUAL saja di Fase 1 —
@@ -67,7 +67,7 @@ object WorkerRegistry {
     fun displayStatus(ctx: Context, w: Worker): String =
         WorkerLogic.displayStatus(w.status, ProotSession.isSessionAlive(w.session))
 
-    /** Folder kanonis agen (app-private) + cermin (terlihat user + terlihat
+    /** Folder kanonis agen (app-private) + cermin (terlihat Sendy + terlihat
      *  proot lewat bind /sdcard yang sudah ada). work_dir worker = cermin. */
     fun canonicalDir(ctx: Context, id: String): File = File(File(ctx.filesDir, "workers"), id)
     fun mirrorDir(id: String): File = File("/sdcard/Harness-Workers", id)
@@ -492,29 +492,29 @@ object WorkerRegistry {
         try { WorkerJanitor.sweepAll(ctx) } catch (e: Exception) {}
     }
 
-    // ---------- Antrean Operator (generik, vc258 Fase 2) ----------
-    // ask_operator/check_operator dulu khusus Termux ~/operator-inbox/outbox; kini
+    // ---------- Antrean Jhon (generik, vc258 Fase 2) ----------
+    // ask_jhon/check_jhon dulu khusus Termux ~/jhon-inbox/outbox; kini
     // antrean generik (WorkerQueue) jadi jalur utama, dengan folder
-    // kanonis filesDir/workers/operator/ + cermin /sdcard/Harness-Workers/operator/.
-    // Tulis legacy ~/operator-inbox/ tetap dilakukan Tools.ask_operator supaya
-    // cron Operator yang memantau ~/operator-inbox/ tetap melihat tugas baru
+    // kanonis filesDir/workers/jhon/ + cermin /sdcard/Harness-Workers/jhon/.
+    // Tulis legacy ~/jhon-inbox/ tetap dilakukan Tools.ask_jhon supaya
+    // cron Jhon yang memantau ~/jhon-inbox/ tetap melihat tugas baru
     // (kompatibel mundur — hapus tulis legacy bila cron sudah pindah).
-    fun operatorCanonicalDir(ctx: Context): File = File(File(ctx.filesDir, "workers"), "operator")
-    fun operatorMirrorDir(): File = File("/sdcard/Harness-Workers", "operator")
+    fun jhonCanonicalDir(ctx: Context): File = File(File(ctx.filesDir, "workers"), "jhon")
+    fun jhonMirrorDir(): File = File("/sdcard/Harness-Workers", "jhon")
 
-    fun enqueueOperatorTask(ctx: Context, text: String): String {
-        // vc284 N4-M3: antrean Operator ikut kuota + janitor (dulu tanpa
-        // gate — folder operator tumbuh tanpa batas). Pola sama dengan
+    fun enqueueJhonTask(ctx: Context, text: String): String {
+        // vc284 N4-M3: antrean Jhon ikut kuota + janitor (dulu tanpa
+        // gate — folder jhon tumbuh tanpa batas). Pola sama dengan
         // enqueueTask worker biasa: janitor bersihkan dulu, bila MASIH
         // over-kuota tugas ditolak ("") + dicatat ke EventDb supaya
-        // alasan penolakan tidak hilang diam-diam (ask_operator hanya
+        // alasan penolakan tidak hilang diam-diam (ask_jhon hanya
         // melihat "" sebagai gagal generik).
         if (text.length > WorkerLogic.TASK_MAX_CHARS) return ""
-        try { WorkerJanitor.sweepOperator(ctx) } catch (e: Exception) {}
+        try { WorkerJanitor.sweepJhon(ctx) } catch (e: Exception) {}
         val quota = WorkerJanitorLogic.quotaBytes(0)
-        val size = WorkerJanitor.folderSizeBytes(ctx, "operator")
+        val size = WorkerJanitor.folderSizeBytes(ctx, "jhon")
         if (size >= quota) {
-            try { EventDb.get(ctx).add("worker-janitor", ctx.packageName, "Antrean Operator menolak tugas: folder operator sudah ${WorkerJanitorLogic.formatBytes(size)} dari kuota ${WorkerJanitorLogic.formatBytes(quota)} sesudah janitor membersihkan. Hapus file manual dari /sdcard/Harness-Workers/operator/ lalu coba lagi.") } catch (ignored: Exception) {}
+            try { EventDb.get(ctx).add("worker-janitor", ctx.packageName, "Antrean Jhon menolak tugas: folder jhon sudah ${WorkerJanitorLogic.formatBytes(size)} dari kuota ${WorkerJanitorLogic.formatBytes(quota)} sesudah janitor membersihkan. Hapus file manual dari /sdcard/Harness-Workers/jhon/ lalu coba lagi.") } catch (ignored: Exception) {}
             return ""
         }
         return try {
@@ -523,24 +523,24 @@ object WorkerRegistry {
             // Kunci gagal dibaca -> tugas tetap ditulis tanpa tanda tangan
             // (diterima sebagai DATA TIDAK TEPERCAYA, bukan gagal total).
             val key = try { WorkerEndpoint.queueKey(ctx) } catch (e: Exception) { null }
-            WorkerQueue.enqueue(operatorCanonicalDir(ctx), operatorMirrorDir(), text, signKey = key)
+            WorkerQueue.enqueue(jhonCanonicalDir(ctx), jhonMirrorDir(), text, signKey = key)
         } catch (e: Exception) { "" }
     }
 
-    fun listOperatorPending(ctx: Context): List<String> =
-        try { WorkerQueue.listPending(operatorCanonicalDir(ctx)) } catch (e: Exception) { emptyList() }
+    fun listJhonPending(ctx: Context): List<String> =
+        try { WorkerQueue.listPending(jhonCanonicalDir(ctx)) } catch (e: Exception) { emptyList() }
 
-    fun listOperatorResults(ctx: Context): List<String> =
-        try { WorkerQueue.listResults(operatorCanonicalDir(ctx)) } catch (e: Exception) { emptyList() }
+    fun listJhonResults(ctx: Context): List<String> =
+        try { WorkerQueue.listResults(jhonCanonicalDir(ctx)) } catch (e: Exception) { emptyList() }
 
-    fun readOperatorResult(ctx: Context, name: String): String =
-        try { WorkerQueue.readResult(operatorCanonicalDir(ctx), name) } catch (e: Exception) { "" }
+    fun readJhonResult(ctx: Context, name: String): String =
+        try { WorkerQueue.readResult(jhonCanonicalDir(ctx), name) } catch (e: Exception) { "" }
 
-    fun readOperatorTask(ctx: Context, name: String): String =
-        try { WorkerQueue.readTask(operatorCanonicalDir(ctx), name) } catch (e: Exception) { "" }
+    fun readJhonTask(ctx: Context, name: String): String =
+        try { WorkerQueue.readTask(jhonCanonicalDir(ctx), name) } catch (e: Exception) { "" }
 
-    fun writeOperatorResult(ctx: Context, taskName: String, text: String): String =
-        try { WorkerQueue.writeResult(operatorCanonicalDir(ctx), operatorMirrorDir(), taskName, text) } catch (e: Exception) { "" }
+    fun writeJhonResult(ctx: Context, taskName: String, text: String): String =
+        try { WorkerQueue.writeResult(jhonCanonicalDir(ctx), jhonMirrorDir(), taskName, text) } catch (e: Exception) { "" }
 
     /** Cari worker by id persis, lalu by nama (case-insensitive). */
     fun resolveWorker(ctx: Context, idOrName: String): Worker? {
@@ -589,7 +589,7 @@ object WorkerRegistry {
         val quota = WorkerJanitorLogic.quotaBytes(w.quotaMb)
         val size = WorkerJanitor.folderSizeBytes(ctx, w.id)
         if (size >= quota) return "Folder worker '${w.name}' sudah melewati kuota (${WorkerJanitorLogic.formatBytes(size)} dari ${WorkerJanitorLogic.formatBytes(quota)}) — tugas ditolak. Janitor sudah menghapus hasil + file kerja lama (>7 hari) yang bisa dihapus; yang tersisa hanya tugas pending + script.py + file kerja baru yang tidak pernah dihapus janitor — hapus file manual dari folder cermin /sdcard/Harness-Workers/${w.id}/ atau naikkan kuota, lalu coba lagi."
-        // vc281 Fase 3 (D7): tugas ditandatangani HMAC (lihat enqueueOperatorTask).
+        // vc281 Fase 3 (D7): tugas ditandatangani HMAC (lihat enqueueJhonTask).
         val key = try { WorkerEndpoint.queueKey(ctx) } catch (e: Exception) { null }
         val name = WorkerQueue.enqueue(canonicalDir(ctx, id), mirrorDir(id), text, signKey = key)
         return if (name.isBlank()) "Gagal menulis tugas — folder worker tidak bisa ditulis."

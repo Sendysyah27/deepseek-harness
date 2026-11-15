@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Harness</string>
+    <string name="app_name">DeepSeek Harness</string>
     <string name="a11y_desc">Harness membaca isi layar dan app aktif agar asisten DeepSeek punya konteks HP kamu, dan bisa melakukan tap/swipe atas perintahmu dengan konfirmasi.</string>
 </resources>

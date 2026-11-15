@@ -4,7 +4,7 @@ import android.content.Context
 
 /** F5 (v4.40.0): triage notifikasi -> laporan pagi.
  *  Mematangkan digest v4.12.0 yang sudah ada (bukan sistem baru):
- *  - Allowlist D1 (keputusan user): WA, Instagram, Telegram, Gmail,
+ *  - Allowlist D1 (keputusan Sendy): WA, Instagram, Telegram, Gmail,
  *    Threads, SSR SPACE. Paket lain tidak masuk laporan (dihitung transparan).
  *  - Scrub di titik kumpul: baris berisi kata OTP/kode verifikasi DIBUANG
  *    utuh; run digit >= 10 disensor (nomor rekening/kartu tidak boleh bocor

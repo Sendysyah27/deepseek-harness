@@ -13,7 +13,7 @@ import org.json.JSONObject
 
 /** Grup Chat Bareng Agent (v4.47.0, G1).
  *
- *  Satu ruang berisi user + 4 agen (Asisten, Mandor, Mentor, Agen 4) dengan
+ *  Satu ruang berisi user + 4 agen (Senz, Mandor, Mentor, Agen 4) dengan
  *  transkrip bersama. Berbeda dari run_team (lane paralel independen):
  *  di sini giliran berjalan SEQUENSIAL dan tiap agen menerima transkrip
  *  grup sejauh itu sebagai konteks, sehingga bisa menanggapi agen lain.
@@ -34,7 +34,7 @@ object GroupChat {
     data class Member(val id: String, val name: String, val accent: String, val persona: String)
 
     val MEMBERS = listOf(
-        Member("asisten", "Asisten", "#4d8cff", "peneliti & penulis utama: rapi, jelas, terstruktur"),
+        Member("senz", "Senz", "#4d8cff", "peneliti & penulis utama: rapi, jelas, terstruktur"),
         Member("mandor", "Mandor", "#e8a33d", "eksekutor lapangan: konkret langkah demi langkah, laporkan hasil apa adanya"),
         Member("mentor", "Mentor", "#2fbf9a", "pemeriksa kritis: teliti, tandai risiko dan ketidakpastian secara eksplisit"),
         Member("agen4", "Agen 4", "#9a6bff", "generalis serbaguna: riset singkat + eksekusi langsung, laporan ringkas")
@@ -125,7 +125,7 @@ object GroupChat {
         try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putBoolean("groupMemberActive_$id", on).apply() } catch (e: Exception) {}
     }
 
-    /** F4 (Koreksi user): ikatan persona→slot, pref slotPersona_<N>.
+    /** F4 (Koreksi Sendy): ikatan persona→slot, pref slotPersona_<N>.
      *  "" = tanpa ikatan. Berlaku HANYA untuk ronde grup (chat 1-1 dan
      *  run_team tidak diubah). Edit TEKS persona tetap di Kelola Agen;
      *  ini penugasan agen→slot, bukan editor teks per slot. */
@@ -156,7 +156,7 @@ object GroupChat {
     fun accentFor(name: String): String =
         MEMBERS.firstOrNull { it.name.equals(name, ignoreCase = true) }?.accent ?: "#4d8cff"
 
-    /** Parse @mention (case-insensitive, urutan kemunculan): @asisten, @mandor,
+    /** Parse @mention (case-insensitive, urutan kemunculan): @senz, @mandor,
      *  @mentor, @agen4 / @agen 4. Anggota yang sama hanya disebut sekali. */
     fun parseMentions(text: String): List<Member> {
         val norm = " " + text.lowercase().replace(Regex("\\s+"), " ") + " "
@@ -213,7 +213,7 @@ object GroupChat {
                 val mentioned = parseMentions(userText)
                 val allOn = isGroupAllOn(app)
                 val activeMembers = MEMBERS.filter { isMemberActive(app, it.id) }
-                val chairId = activeMembers.firstOrNull()?.id ?: "asisten"
+                val chairId = activeMembers.firstOrNull()?.id ?: "senz"
                 val queue = ArrayList<Member>()
                 if (activeMembers.isEmpty()) {
                     // Nol aktif: satu catatan, tanpa LLM dan tanpa slot.
@@ -601,10 +601,10 @@ object GroupChat {
      *  cuplikan retrieval berlabel di bawah. toolsEnabled=true menyertakan
      *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog. */
     private fun buildPrompt(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
-        val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
+        val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "senz" } catch (e: Exception) { "senz" }
         val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
         val base = StringBuilder()
-        base.append("Kamu adalah ${me.name} di grup chat (anggota: Asisten, Mandor, Mentor, Agen 4 + user).\n")
+        base.append("Kamu adalah ${me.name} di grup chat (anggota: Senz, Mandor, Mentor, Agen 4 + user).\n")
         if (persona.isNotEmpty()) base.append("PERSONA & INSTRUKSI DARI USER:\n").append(persona).append("\n\n")
         base.append(Behaviors.block(pack))
         base.append(AgentBrain.promptBlocksFor(app, me.id))

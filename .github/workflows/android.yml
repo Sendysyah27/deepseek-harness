@@ -1,0 +1,91 @@
+name: Android vc317
+
+# CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
+# Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
+# (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
+# Job: cargo test -> suite JVM 398/399 (R2-4.1 = assert usang warisan vc315,
+# ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
+# via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
+# -> upload APK sebagai artifact.
+
+on:
+  push:
+    branches: [vc317-rust]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages (platform 34, build-tools 34, NDK 30)
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;30.0.16248370"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+
+      - name: Install Rust 1.93.1 + aarch64-linux-android
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (v1), 2026-10-09
+        with:
+          toolchain: 1.93.1
+          targets: aarch64-linux-android
+
+      - name: Install Kotlin 1.9.20 (sama dengan yang dipakai vc316 lokal)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/kotlin-dist"
+          cd "$HOME/kotlin-dist"
+          curl -sSL -o kotlin-compiler.zip https://github.com/JetBrains/kotlin/releases/download/v1.9.20/kotlin-compiler-1.9.20.zip
+          unzip -q -o kotlin-compiler.zip
+          echo "$HOME/kotlin-dist/kotlinc/bin" >> "$GITHUB_PATH"
+          "$HOME/kotlin-dist/kotlinc/bin/kotlinc" -version
+
+      - name: cargo test (harness-core)
+        working-directory: harness-core
+        run: cargo test --locked
+
+      - name: JVM suite (398/399; R2-4.1 usang ditoleransi)
+        run: bash tests/run-suite-ci.sh
+
+      - name: Build APK Main (senz)
+        run: python3 build.py --flavor senz
+
+      - name: Build APK Pure
+        run: python3 build.py --flavor pure
+
+      - name: Verify APKs
+        run: |
+          set -euo pipefail
+          ls -l ./*.apk
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          for apk in ./*.apk; do
+            echo "== $apk =="
+            "$BT/aapt2" dump badging "$apk" | head -3
+            "$BT/apksigner" verify --print-certs "$apk"
+            SO_BYTES=$(unzip -p "$apk" lib/arm64-v8a/libharness_core.so | wc -c)
+            echo "libharness_core.so bytes in APK: $SO_BYTES"
+            test "$SO_BYTES" -gt 100000 || { echo "::error::libharness_core.so hilang/kecil di $apk"; exit 1; }
+          done
+          md5sum ./*.apk
+          sha256sum ./*.apk
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-vc317-apks
+          path: ./*.apk
+          if-no-files-found: error

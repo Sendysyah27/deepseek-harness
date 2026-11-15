@@ -34,7 +34,7 @@ import org.json.JSONObject
  *  — residu N-M4 di atas tidak berubah. Hasil yang ditulis worker
  *  langsung ke cermin (tanpa lewat endpoint) kini TIDAK bertanda tangan
  *  dan tetap dilabeli DATA TIDAK TEPERCAYA saat collect.
- *  vc258 Fase 2 — control endpoint HTTP worker, localhost-only :4200.
+ *  vc258 Fase 2 — control endpoint HTTP worker, localhost-only :4198.
  *  Satu pintu HTTP milik harness: daftar/spawn/stop/health/log worker +
  *  ambil/tulis tugas antrean (Jalur C brief §3.4). Auth token Bearer dari
  *  SecureStore (pola mcpToken_); token salah/tidak ada -> 401. Bind
@@ -294,7 +294,7 @@ object WorkerEndpoint {
     // Otorisasi ber-scope: token master berlaku untuk semua rute; token
     // per-worker HANYA untuk rute ber-workerId itu sendiri dan HANYA aksi
     // di WORKER_SCOPED_ACTIONS. Token per-worker TIDAK bisa list/spawn/
-    // antrean Operator/setQuota. RESIDU (N-M4): worker root masih bisa membaca
+    // antrean Jhon/setQuota. RESIDU (N-M4): worker root masih bisa membaca
     // file token worker lain di proot yang sama — batas ini di endpoint,
     // bukan di filesystem (isolasi penuh = Fase 3).
     fun authorizeFor(ctx: Context, tok: String?, route: WorkerEndpointLogic.Route): Boolean {
@@ -313,7 +313,7 @@ object WorkerEndpoint {
     }
 
     fun status(ctx: Context): String {
-        val run = if (isRunning()) "HIDUP :4200 (127.0.0.1)" else "MATI"
+        val run = if (isRunning()) "HIDUP :4198 (127.0.0.1)" else "MATI"
         val hasTok = try { SecureStore.has(ctx, TOKEN_KEY) } catch (e: Exception) { false }
         // vc260 N-m12: has() hanya cek keberadaan key di prefs — verifikasi
         // keterbacaan (decrypt) supaya panel tidak mengklaim "tersimpan"
@@ -324,27 +324,27 @@ object WorkerEndpoint {
             readableVc260 -> "tersimpan di SecureStore (tidak ditampilkan)"
             else -> "ADA di SecureStore tapi TIDAK BISA DIBACA (blob rusak?) — tekan Putar Token untuk membuat token baru"
         }
-        return "Endpoint worker :4200: $run • Token: $tokText • File token proot: $TOKEN_FILE_PROOT"
+        return "Endpoint worker :4198: $run • Token: $tokText • File token proot: $TOKEN_FILE_PROOT"
     }
 
     fun start(ctx: Context): String {
         synchronized(this) {
-            if (isRunning()) return "Endpoint :4200 sudah jalan."
+            if (isRunning()) return "Endpoint :4198 sudah jalan."
             val srv = try { ServerSocket(PORT, 0, InetAddress.getByName("127.0.0.1")) }
-                catch (e: Exception) { return "Endpoint :4200 gagal start: ${e.message} (port dipakai?)" }
+                catch (e: Exception) { return "Endpoint :4198 gagal start: ${e.message} (port dipakai?)" }
             server = srv
-            val t = Thread({ acceptLoop(ctx) }, "worker-endpoint-4200")
+            val t = Thread({ acceptLoop(ctx) }, "worker-endpoint-4198")
             t.isDaemon = true
             t.start()
             acceptThread = t
         }
         warmUp(ctx)
         val sync = try { syncTokenFile(ctx) } catch (e: Exception) { "File token proot BELUM tertulis: ${e.message}" }
-        return "Endpoint worker :4200 HIDUP (127.0.0.1 saja, auth token). $sync"
+        return "Endpoint worker :4198 HIDUP (127.0.0.1 saja, auth token). $sync"
     }
 
     fun ensureStarted(ctx: Context): String {
-        if (isRunning()) return "Endpoint :4200 sudah jalan."
+        if (isRunning()) return "Endpoint :4198 sudah jalan."
         return start(ctx)
     }
 
@@ -354,7 +354,7 @@ object WorkerEndpoint {
             server = null
             acceptThread = null
         }
-        return "Endpoint :4200 di-stop."
+        return "Endpoint :4198 di-stop."
     }
 
     private fun acceptLoop(ctx: Context) {
@@ -574,10 +574,10 @@ object WorkerEndpoint {
         return out.toString(Charsets.UTF_8)
     }
 
-    /** Folder (kanonis, cermin) untuk worker id — "operator" = antrean Operator
+    /** Folder (kanonis, cermin) untuk worker id — "jhon" = antrean Jhon
      *  (bukan worker registry). Null bila worker tidak ada. */
     private fun dirsFor(ctx: Context, workerId: String): Pair<File, File>? {
-        if (workerId == "operator") return Pair(WorkerRegistry.operatorCanonicalDir(ctx), WorkerRegistry.operatorMirrorDir())
+        if (workerId == "jhon") return Pair(WorkerRegistry.jhonCanonicalDir(ctx), WorkerRegistry.jhonMirrorDir())
         val w = WorkerRegistry.get(ctx, workerId) ?: return null
         return Pair(WorkerRegistry.canonicalDir(ctx, w.id), WorkerRegistry.mirrorDir(w.id))
     }
@@ -618,9 +618,9 @@ object WorkerEndpoint {
                 val text = bodyText(body)
                 if (text.isBlank()) null else "enqueue:${route.workerId}|" + sha256Hex16(text)
             }
-            "operatorEnqueue" -> {
+            "jhonEnqueue" -> {
                 val text = bodyText(body)
-                if (text.isBlank()) null else "enqueue:operator|" + sha256Hex16(text)
+                if (text.isBlank()) null else "enqueue:jhon|" + sha256Hex16(text)
             }
             else -> null
         }
@@ -868,44 +868,44 @@ object WorkerEndpoint {
                     val (slice, cut) = WorkerEndpointLogic.slicePreview(text, max)
                     Pair(200, JSONObject().put("ok", true).put("result", route.name).put("total_chars", text.length).put("shown_chars", slice.length).put("truncated", cut).put("preview", slice))
                 }
-                "operatorListTasks" -> {
-                    val dirs = dirsFor(ctx, "operator")!!
+                "jhonListTasks" -> {
+                    val dirs = dirsFor(ctx, "jhon")!!
                     Pair(200, JSONObject().put("ok", true).put("pending", JSONArray(WorkerQueue.listPending(dirs.first))))
                 }
-                "operatorEnqueue" -> {
-                    val dirs = dirsFor(ctx, "operator")!!
+                "jhonEnqueue" -> {
+                    val dirs = dirsFor(ctx, "jhon")!!
                     val text = bodyText(body)
                     if (text.isBlank()) return Pair(400, errJson("text kosong"))
                     if (text.length > WorkerLogic.TASK_MAX_CHARS) return Pair(413, errJson("teks tugas terlalu besar (maks 256 KB)"))
-                    // vc284 N4-M3: antrean Operator ikut kuota + janitor
+                    // vc284 N4-M3: antrean Jhon ikut kuota + janitor
                     // (pola yang sama dengan enqueueTask worker biasa).
-                    try { WorkerJanitor.sweepOperator(ctx) } catch (e: Exception) {}
-                    val operatorQuota = WorkerJanitorLogic.quotaBytes(0)
-                    val operatorSize = WorkerJanitor.folderSizeBytes(ctx, "operator")
-                    if (operatorSize >= operatorQuota) return Pair(409, errJson("folder antrean Operator sudah melewati kuota (${WorkerJanitorLogic.formatBytes(operatorSize)} dari ${WorkerJanitorLogic.formatBytes(operatorQuota)}) — tugas ditolak; janitor sudah menghapus hasil + file kerja lama (>7 hari) yang bisa dihapus. Pulih: hapus file manual dari /sdcard/Harness-Workers/operator/ lalu coba lagi."))
+                    try { WorkerJanitor.sweepJhon(ctx) } catch (e: Exception) {}
+                    val jhonQuota = WorkerJanitorLogic.quotaBytes(0)
+                    val jhonSize = WorkerJanitor.folderSizeBytes(ctx, "jhon")
+                    if (jhonSize >= jhonQuota) return Pair(409, errJson("folder antrean Jhon sudah melewati kuota (${WorkerJanitorLogic.formatBytes(jhonSize)} dari ${WorkerJanitorLogic.formatBytes(jhonQuota)}) — tugas ditolak; janitor sudah menghapus hasil + file kerja lama (>7 hari) yang bisa dihapus. Pulih: hapus file manual dari /sdcard/Harness-Workers/jhon/ lalu coba lagi."))
                     // vc281 Fase 3 (D7): tugas ditandatangani HMAC.
                     val key = try { queueKey(ctx) } catch (e: Exception) { null }
                     val name = WorkerQueue.enqueue(dirs.first, dirs.second, text, signKey = key)
                     if (name.isBlank()) Pair(500, errJson("gagal menulis tugas")) else Pair(200, JSONObject().put("ok", true).put("task", name))
                 }
-                "operatorReadTask" -> {
+                "jhonReadTask" -> {
                     if (!WorkerEndpointLogic.isSafeName(route.name)) return Pair(400, errJson("nama file tidak aman"))
-                    val dirs = dirsFor(ctx, "operator")!!
+                    val dirs = dirsFor(ctx, "jhon")!!
                     val text = WorkerQueue.readTask(dirs.first, route.name)
                     if (text.isBlank()) return Pair(404, errJson("tugas tidak ditemukan"))
                     val (slice, cut) = WorkerEndpointLogic.slicePreview(text, WorkerLogic.READ_MAX_CHARS)
                     Pair(200, JSONObject().put("ok", true).put("task", route.name).put("total_chars", text.length).put("truncated", cut).put("content", slice))
                 }
-                "operatorWriteResult" -> {
+                "jhonWriteResult" -> {
                     if (!WorkerEndpointLogic.isSafeName(route.name)) return Pair(400, errJson("nama file tidak aman"))
-                    val dirs = dirsFor(ctx, "operator")!!
+                    val dirs = dirsFor(ctx, "jhon")!!
                     val text = bodyText(body)
                     if (text.isBlank()) return Pair(400, errJson("text kosong"))
                     val name = WorkerQueue.writeResult(dirs.first, dirs.second, route.name, text, queueKey(ctx))
                     if (name.isBlank()) Pair(500, errJson("gagal menulis hasil")) else Pair(200, JSONObject().put("ok", true).put("result", name))
                 }
-                "operatorListResults" -> {
-                    val dirs = dirsFor(ctx, "operator")!!
+                "jhonListResults" -> {
+                    val dirs = dirsFor(ctx, "jhon")!!
                     Pair(200, JSONObject().put("ok", true).put("results", JSONArray(WorkerQueue.listResults(dirs.first))))
                 }
                 else -> Pair(404, errJson("rute tidak dikenal"))

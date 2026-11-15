@@ -114,6 +114,12 @@ class MainActivity : Activity() {
     // T3 (migrasi native): Setup native — kotak menu/kategori + view aktif
     private var setupNativeBox: LinearLayout? = null
     private var setupView: String = "menu"
+    // vc310 Worker A (B13): state layar detail skill — hidup di dalam
+    // setupView="skill" (bukan Activity/Fragment baru). -1 = daftar.
+    private var skillDetailIdVc310: Long = -1
+    private var skillDetailTabVc310: String = "ringkasan" // "ringkasan" | "isi"
+    private var skillDetailVersionVc310: Int = -1 // -1 = versi terbaru
+    private var skillDetailCodeVc310: Boolean = false // false = preview, true = kode mentah
     // T4a: Terminal Pro — scroll output + indeks riwayat perintah
     private var termScroll: ScrollView? = null
     private var termHistIdx: Int = -1
@@ -121,8 +127,40 @@ class MainActivity : Activity() {
     private var browserBox: LinearLayout? = null
     private var bFrame: FrameLayout? = null
     private var bUrlTv: TextView? = null
-    private val bTabs = mutableListOf<WebView>()
+    // vc313 Worker B: bTabs boleh berisi null = tab DORMAN (WebView sudah
+    // di-destroy karena idle >30 mnt, atau metadata hasil restore sesudah
+    // restart — WebView dibuat malas saat tab di-switch/dibaca). Indeks
+    // bTabs SELALU sejajar dengan bTabMeta / bTabIds.
+    private val bTabs = mutableListOf<WebView?>()
     private var bActive: Int = -1
+    // vc313: metadata per tab (URL, judul, scrollY, terakhir aktif) —
+    // sumber persistensi 'browserTabsVc313' + daftar tab saat dorman.
+    private data class BrowserTabMetaVc313(var url: String = "", var title: String = "", var scrollY: Int = 0, var lastActiveMs: Long = 0L)
+    private val bTabMeta = mutableListOf<BrowserTabMetaVc313>()
+    private val bTabIds = mutableListOf<Long>()
+    private var browserNextTabId: Long = 1L
+    // vc313: nonce sesi (content boundaries §4.3) + baseline diff snapshot.
+    private val browserNonce: String by lazy {
+        try { AgentBrowser.newNonce() } catch (e: Exception) { java.util.UUID.randomUUID().toString().replace("-", "").take(16) }
+    }
+    private val browserLastSnapshot = mutableMapOf<Int, String>()
+    private val browserLastFullUrl = mutableMapOf<Int, String>()
+    // vc313: log konsol + jaringan per tab (kunci = indeks tab).
+    private data class BrowserNetworkEntryVc313(val method: String, val status: String, val url: String, val sizeBytes: Long)
+    private val browserConsoleLog = mutableMapOf<Int, MutableList<String>>()
+    private val browserNetworkLog = mutableMapOf<Int, MutableList<BrowserNetworkEntryVc313>>()
+    // vc313: UA per tab (default mobile = UA asli WebView saat dibuat).
+    private val bTabUaMode = mutableMapOf<Int, String>()
+    private val bTabDefaultUa = mutableMapOf<Int, String>()
+    private val browserPendingScrollY = mutableMapOf<Int, Int>()
+    // vc313: pemilih file tab agen (onShowFileChooser -> onActivityResult 4101).
+    private var browserFileChooserCallback: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+    // vc313: kursor agen (§3.10) — overlay di atas WebView aktif.
+    private var browserCursorView: View? = null
+    private var browserCursorX: Int = 0
+    private var browserCursorY: Int = 0
+    private var browserCursorVisible: Boolean = false
+    private var browserUserTakeover: Boolean = false
     private var webBtnsRef: View? = null
     // T5: Perintah Cepat native + ref tombol Kirim klasik
     private var quickChipsRow: LinearLayout? = null
@@ -240,6 +278,8 @@ class MainActivity : Activity() {
     private val followQueue = mutableListOf<FollowUp>()
     private var followSeq = 0
     companion object {
+        // vc313 Worker B: batas tab browser agen (Spek §3.4 / K-01 default 5).
+        const val MAX_BROWSER_TABS_VC313 = 5
         // vc198 Fase 3: cermin turn user untuk job latar (HarnessService
         // berjalan di proses yang sama — tanpa atribut process di manifest
         // — jadi baca langsung ini valid; bukan flag prefs).
@@ -293,7 +333,7 @@ class MainActivity : Activity() {
     private var rejectRetryCount = 0
     @Volatile private var requestStartMs: Long = 0
 
-    // T6b: UI React sudah dihapus total (v4.27.0) — Harness 100% native.
+    // T6b: UI React sudah dihapus total (v4.27.0) — S&Harness 100% native.
     private val setupBtnViews = ArrayList<Button>()
     private var personaFieldRef: EditText? = null
     private var termRunBtnRef: Button? = null
@@ -364,9 +404,9 @@ class MainActivity : Activity() {
         o.put("ocBusy", prefs.getLong("ocCurrentTask", 0) > 0)
         o.put("ckptTask", prefs.getLong("ckptPending", 0))
         o.put("ckptDiff", prefs.getString("ckptDiff", "") ?: "")
-        var agName = "Asisten"
+        var agName = "Senz"
         var agAccent = "#4d8cff"
-        var agInfo = "Asisten"
+        var agInfo = "Senz"
         val agArr = org.json.JSONArray()
         try {
             val agActive = Agents.active(this)
@@ -796,7 +836,7 @@ class MainActivity : Activity() {
                 val body = mdb.historyTranscript(2000, 400000, currentSessionId)
                 val safe = title.replace(Regex("[^A-Za-z0-9 ]"), "").trim().replace(" ", "-").ifBlank { "sesi" }
                 val f = java.io.File("/sdcard/Download/harness-chat-$safe.md")
-                f.writeText("# Transkrip Harness — $title\n\n$body\n")
+                f.writeText("# Transkrip S&Harness — $title\n\n$body\n")
                 runOnUiThread { addMsg("📤 Transkrip sesi diekspor ke Download/" + f.name + " (" + (f.length() / 1024) + " KB).", "meta") }
             } catch (e: Exception) {
                 runOnUiThread { addMsg("📤 Ekspor gagal: " + e.message, "meta") }
@@ -1032,7 +1072,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 val ok = try { startActivity(Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS)); true } catch (e: Exception) { false }
                 if (!ok) { try { startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) } catch (e: Exception) {} }
-                Toast.makeText(this, "Pilih Harness sebagai Asisten digital, lalu aktifkan gestur tahan tombol power di setelan HP bila ada.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Pilih S&Harness sebagai Asisten digital, lalu aktifkan gestur tahan tombol power di setelan HP bila ada.", Toast.LENGTH_LONG).show()
             }
             return
         }
@@ -1343,7 +1383,7 @@ class MainActivity : Activity() {
     // vc180: tema Setup (Gelap/Terang/Sistem) — dibaca segar tiap render Setup.
     // vc306 (C1): tambah slot `faint` (tersier #9A9EA9 dark / #646974
     // light) untuk timestamp/footnote/placeholder/status.
-    private data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val faint: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int)
+    private data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val faint: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int, val codeText: Int, val codeBg: Int)
     private fun currentTheme(): ThemeColors {
         val mode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
         val dark = when (mode) {
@@ -1358,8 +1398,8 @@ class MainActivity : Activity() {
         // teks #1E232E, dim #4F5562, faint #646974, tileBg dipertahankan
         // #E3ECFD (C1 tidak menetapkan tileBg light), tileTint #2E6BE6
         // (approve blue, sudah lulus AA 4.81:1 — TETAP).
-        return if (dark) ThemeColors(ChatThemeVc306.darkSurface, ChatThemeVc306.darkSurface, ChatThemeVc306.darkStroke, ChatThemeVc306.darkText, ChatThemeVc306.darkDim, ChatThemeVc306.darkFaint, ChatThemeVc306.darkTileBg, ChatThemeVc306.darkAccentText, ChatThemeVc306.darkContainerLow, Color.rgb(66, 30, 30), Color.rgb(255, 170, 160))
-        else ThemeColors(ChatThemeVc306.lightSurface, ChatThemeVc306.lightCard, Color.rgb(220, 224, 232), ChatThemeVc306.lightText, ChatThemeVc306.lightDim, ChatThemeVc306.lightFaint, Color.rgb(227, 236, 253), ChatThemeVc306.approveBlue, Color.rgb(226, 232, 240), Color.rgb(253, 232, 232), Color.rgb(185, 28, 28))
+        return if (dark) ThemeColors(ChatThemeVc306.darkSurface, ChatThemeVc306.darkSurface, ChatThemeVc306.darkStroke, ChatThemeVc306.darkText, ChatThemeVc306.darkDim, ChatThemeVc306.darkFaint, ChatThemeVc306.darkTileBg, ChatThemeVc306.darkAccentText, ChatThemeVc306.darkContainerLow, Color.rgb(66, 30, 30), Color.rgb(255, 170, 160), ChatThemeVc306.darkCodeText, ChatThemeVc306.darkCodeBg)
+        else ThemeColors(ChatThemeVc306.lightSurface, ChatThemeVc306.lightCard, Color.rgb(220, 224, 232), ChatThemeVc306.lightText, ChatThemeVc306.lightDim, ChatThemeVc306.lightFaint, Color.rgb(227, 236, 253), ChatThemeVc306.approveBlue, Color.rgb(226, 232, 240), Color.rgb(253, 232, 232), Color.rgb(185, 28, 28), ChatThemeVc306.lightCodeText, ChatThemeVc306.lightCodeBg)
     }
     // vc306 (C1): gradasi vertikal halaman chat Mist — dark #1D222C →
     // #1B1C23, light #EBF1FE → #F6F7FC. Dipakai di chatBox + refreshChatChrome;
@@ -1663,6 +1703,18 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // vc316 Worker BR (d): WebView L+ hanya menggambar porsi terlihat
+        // (optimasi "intelligently choosing the portion") — wv.draw(canvas)
+        // di browser_shot(_full) jadi hitam di bawah viewport pertama
+        // (T-BR-23, pos-ssr.site). Matikan optimasi itu SEBELUM WebView
+        // pertama dibuat (buildUi di bawah membuat WebView login).
+        // Harga: draw() lebih lambat — hanya dipakai saat tangkapan layar;
+        // tampilan live tidak berubah.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                android.webkit.WebView.enableSlowWholeDocumentDraw()
+            }
+        } catch (e: Exception) {}
         CrashGuard.install(this)
         // vc196: migrasi id sesi telanjang -> namespaced, SEBELUM buildUi
         // dan SEBELUM service scheduler jalan (onCreate ini juga men-start
@@ -1706,7 +1758,7 @@ class MainActivity : Activity() {
         // binder (best-effort; server pra-vc301 mengabaikan permintaan ini).
         // Tidak blokir UI; S7 di HarnessService tetap penjaga auto-start.
         Thread { try { PrivServer.rebindIfNeeded(this) } catch (e: Exception) {} }.start()
-        EventDb.get(this).add("app", packageName, "Harness dibuka")
+        EventDb.get(this).add("app", packageName, "S&Harness dibuka")
         Thread { try { RedactMigration.runOnce(this) } catch (e: Exception) {} }.start()
         Thread { try { DsSafetyMigration.runOnce(this) } catch (e: Exception) {} }.start()
         Embedder.maybeBackfill(this)
@@ -1765,7 +1817,7 @@ class MainActivity : Activity() {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun buildUi() {
-        // T6: UI React pensiun — Harness selalu UI klasik native.
+        // T6: UI React pensiun — S&Harness selalu UI klasik native.
         buildClassicUi()
     }
 
@@ -1788,12 +1840,27 @@ class MainActivity : Activity() {
         // T4b1: kontainer Jelajah Agen (WebView terpisah dari login)
         val bBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         val bBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        bBar.addView(Button(this).apply { text = "◀"; setOnClickListener { bActiveWv()?.goBack() } })
-        bBar.addView(Button(this).apply { text = "▶"; setOnClickListener { bActiveWv()?.goForward() } })
-        bBar.addView(Button(this).apply { text = "⟳"; setOnClickListener { bActiveWv()?.reload() } })
-        bBar.addView(Button(this).apply { text = "＋ Tab"; setOnClickListener { ensureBrowserTab(true) } })
+        // vc316 Worker BR (b): minWidth=0 di semua tombol bar tab — lebar
+        // default Button (88dp) × 4 bisa mendorong ＋ Tab keluar layar di
+        // HP sempit. Hit area tetap aman (minHeight default Button 48dp).
+        bBar.addView(Button(this).apply { text = "◀"; minWidth = 0; setOnClickListener { bActiveWv()?.goBack() } })
+        bBar.addView(Button(this).apply { text = "▶"; minWidth = 0; setOnClickListener { bActiveWv()?.goForward() } })
+        bBar.addView(Button(this).apply { text = "⟳"; minWidth = 0; setOnClickListener { bActiveWv()?.reload() } })
+        // vc313: tombol ＋ Tab menghormati batas 5 tab (Spek §3.4).
+        bBar.addView(Button(this).apply { text = "＋ Tab"; minWidth = 0; setOnClickListener { val wv = ensureBrowserTab(true); if (wv == null && bTabs.size >= MAX_BROWSER_TABS_VC313) Toast.makeText(this@MainActivity, "Batas 5 tab aktif", Toast.LENGTH_SHORT).show() } })
         bBox.addView(bBar)
-        val uTv = TextView(this).apply { text = "Browser agen — belum ada tab. Agen membukanya lewat tool browser_open; atau ketuk ＋ Tab."; textSize = 11.5f; setTextColor(DIM) }
+        // vc316 Worker BR (b): URL panjang SATU baris + ellipsize — tanpa
+        // ini TextView membungkus puluhan baris dan mendorong WebView
+        // (weight 1) keluar layar. Label teks sendiri juga dipotong di
+        // updateBrowserVisibility (AgentBrowser.tabLabelVc316).
+        val uTv = TextView(this).apply {
+            text = "Browser agen — belum ada tab. Agen membukanya lewat tool browser_open; atau ketuk ＋ Tab."
+            textSize = 11.5f; setTextColor(DIM)
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxLines = 1
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
         bUrlTv = uTv
         bBox.addView(uTv)
         val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f) }
@@ -1809,7 +1876,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG) }
 
         val header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(6)) }
-        header.addView(TextView(this).apply { text = "Harness"; textSize = 19f; setTextColor(TEXT) })
+        header.addView(TextView(this).apply { text = "S&Harness"; textSize = 19f; setTextColor(TEXT) })
         statusTv = TextView(this).apply { text = "Sesi DeepSeek: memeriksa…"; textSize = 12f; setTextColor(DIM) }
         header.addView(statusTv)
         // T7: header lama disembunyikan — sapaan + status pindah ke Beranda
@@ -1912,15 +1979,18 @@ class MainActivity : Activity() {
         }
         sessionBar.addView(sessionTitleTv)
         sessionBar.addView(Button(this).apply {
-            background = rounded(Color.rgb(34, 34, 34), 16)
+            // vc315 N8-M1: latar ikut tema (dulu rgb(34,34,34) hardcoded —
+            // di tema terang teks #1E232E di atas #222222 kontras 1,01:1,
+            // tak terbaca; kini tileBg tema: terang 13,24:1, gelap 12,30:1).
+            background = rounded(currentTheme().tileBg, 16)
             minWidth = 0; minHeight = 0
             setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_tune, TEXT), null, null, null)
             setOnClickListener { toggleChatDrawer() }
         }, 0)
-        sessionBar.addView(Button(this).apply { text = "Sesi"; background = rounded(Color.rgb(34, 34, 34), 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_history, TEXT), null, null, null); compoundDrawablePadding = dp(4); setOnClickListener { showSessionDialog() } })
-        sessionBar.addView(Button(this).apply { text = "👥 Grup"; background = rounded(Color.rgb(34, 34, 34), 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setOnClickListener { showTab("Grup") } })
-        sessionBar.addView(Button(this).apply { text = ""; background = rounded(Color.rgb(34, 34, 34), 16); minWidth = 0; minHeight = 0; setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_search, TEXT), null, null, null); setOnClickListener { showChatSearch() } })
-        sessionBar.addView(Button(this).apply { text = "📄"; background = rounded(Color.rgb(34, 34, 34), 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setOnClickListener { showArtifactListDialog() } })
+        sessionBar.addView(Button(this).apply { text = "Sesi"; background = rounded(currentTheme().tileBg, 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_history, TEXT), null, null, null); compoundDrawablePadding = dp(4); setOnClickListener { showSessionDialog() } })
+        sessionBar.addView(Button(this).apply { text = "👥 Grup"; background = rounded(currentTheme().tileBg, 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setOnClickListener { showTab("Grup") } })
+        sessionBar.addView(Button(this).apply { text = ""; background = rounded(currentTheme().tileBg, 16); minWidth = 0; minHeight = 0; setCompoundDrawablesWithIntrinsicBounds(iconDrawable(R.drawable.ic_search, TEXT), null, null, null); setOnClickListener { showChatSearch() } })
+        sessionBar.addView(Button(this).apply { text = "📄"; background = rounded(currentTheme().tileBg, 16); setTextColor(TEXT); minWidth = 0; minHeight = 0; setOnClickListener { showArtifactListDialog() } })
         chatBox.addView(sessionBar, 0)
         artifactDividerRef = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
@@ -2175,7 +2245,7 @@ class MainActivity : Activity() {
             composerDiagWritten = true
             try {
                 val dm = resources.displayMetrics
-                val dir = java.io.File("/sdcard/Harness")
+                val dir = java.io.File("/sdcard/S&Harness")
                 if (!dir.exists()) dir.mkdirs()
                 val lines = listOf(
                     "timestamp=" + System.currentTimeMillis(),
@@ -2489,7 +2559,7 @@ class MainActivity : Activity() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
-                if (url.contains("chat.deepseek.com")) { try { if (::apiClient.isInitialized && operatorMode()) apiClient.injectDeepSeekCaptureShim() } catch (e: Exception) {} }
+                if (url.contains("chat.deepseek.com")) { try { if (::apiClient.isInitialized && jhonMode()) apiClient.injectDeepSeekCaptureShim() } catch (e: Exception) {} }
                 main.postDelayed({ refreshSessionStatus() }, 1500)
             }
         }
@@ -2547,14 +2617,250 @@ class MainActivity : Activity() {
 
     /** Tambah pesan chat bergaya bubble. kind: user | assistant | tool | error.
      *  Return TextView isi bubble (untuk update streaming / kartu tool). */
-    /** T11: gelembung asisten bertabel — satu gelembung berisi TextView
-     *  per segmen teks + baris LinearLayout berbobot per tabel. Lipatan >1500 karakter
-     *  tetap jalan (tampilan lipat = TextView render lama). */
+    // ===== G11 vc310 — blok siap-salin (S9=B: kode + tabel + tiap blok teks) =====
+    // SATU gaya tombol salin untuk SEMUA blok (thSmallBtn, bukan actionBtn
+    // 48×48 — tombol kecil konsisten, hemat view di dalam cap 150):
+    // ikon Path "copy" (pathIconVc306, JANGAN glyph ⧉ mentah — rawan tofu)
+    // + teks "Salin", latar th.tileBg, radius 12, teks 12sp.
+    // Tap -> salin ISI BLOK SAJA -> toast "📋 Blok disalin" + centang
+    // 1400 ms (pola tombol copy balasan terakhir); tap kedua dalam
+    // 1400 ms tetap menyalin tapi tidak mengulang toast; clipboard gagal
+    // -> toast "Gagal menyalin". TIDAK memakai uiCopy() — toast-nya
+    // hardcode "📋 Pesan disalin" dan menelan error sehingga "Gagal
+    // menyalin" tidak bisa ditampilkan; jalur ClipboardManager/ClipData
+    // yang dipakai di sini sama persis (label "harness").
+
+    /** G11: salin teks ke clipboard. True bila berhasil. */
+    private fun copyBlockTextVc310(text: String): Boolean {
+        return try {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("harness", text))
+            true
+        } catch (e: Exception) { false }
+    }
+
+    /** G11: tombol "Salin" kecil di dalam header/footer blok. desc =
+     *  contentDescription TalkBack ("Salin blok kode" / "Salin tabel" /
+     *  "Salin teks"). getText dipanggil saat tap (isi blok saja). */
+    private fun blockCopyBtnVc310(desc: String, getText: () -> String): Button {
+        val th = currentTheme()
+        var lastToastMs = 0L
+        var restoreCb: Runnable? = null
+        val handler = Handler(Looper.getMainLooper())
+        val btn = Button(this).apply {
+            text = "Salin"
+            contentDescription = desc
+            textSize = 12f
+            isAllCaps = false
+            background = rounded(th.tileBg, 12)
+            setTextColor(th.text)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            minWidth = 0; minHeight = 0
+            setCompoundDrawables(pathIconVc306("copy", th.text, 14), null, null, null)
+            compoundDrawablePadding = dp(4)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        btn.setOnClickListener {
+            val ok = copyBlockTextVc310(getText())
+            if (!ok) {
+                android.widget.Toast.makeText(this, "Gagal menyalin", android.widget.Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastToastMs >= 1400) {
+                android.widget.Toast.makeText(this, "📋 Blok disalin", android.widget.Toast.LENGTH_SHORT).show()
+                lastToastMs = now
+            }
+            btn.setCompoundDrawables(pathIconVc306("check", th.text, 14), null, null, null)
+            btn.text = "Disalin"
+            restoreCb?.let { handler.removeCallbacks(it) }
+            restoreCb = Runnable { try { btn.setCompoundDrawables(pathIconVc306("copy", th.text, 14), null, null, null); btn.text = "Salin" } catch (e: Exception) {} }
+            handler.postDelayed(restoreCb!!, 1400)
+        }
+        return btn
+    }
+
+    /** G11: satu blok kode fence -> code well (pola buildActivityRow:
+     *  wadah roundedS(th.codeBg, 14, th.stroke), header eyebrow +
+     *  tombol Salin, isi monospace 12sp, maxHeight 280dp + scroll
+     *  internal). Warna dari currentTheme() — tanpa hardcode. */
+    private fun buildCodeWellVc310(code: MdMini.Block.Code, bf: Float): View {
+        val th = currentTheme()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedS(th.codeBg, 14, th.stroke)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(6), 0, dp(6)) }
+        }
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        head.addView(TextView(this).apply {
+            text = code.lang.ifBlank { "kode" }
+            textSize = 12f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(th.text)
+        })
+        head.addView(TextView(this).apply {
+            text = " · blok kode"
+            textSize = 11.5f
+            setTextColor(th.dim)
+        })
+        head.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+        head.addView(blockCopyBtnVc310("Salin blok kode") { code.raw })
+        box.addView(head)
+        box.addView(View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        })
+        box.addView(TextView(this).apply {
+            text = code.raw
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextColor(th.codeText)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            maxHeight = dp(ChatCardsVc306.CODE_WELL_MAX_HEIGHT_DP)
+            isVerticalScrollBarEnabled = true
+            movementMethod = android.text.method.ScrollingMovementMethod()
+        })
+        return box
+    }
+
+    /** G11: satu blok tabel -> seksi tabel: baris header (ikon tabel +
+     *  "Tabel · N baris" + tombol Salin tabel) + buildTableView().
+     *  Ikon via pathIconVc306("table") — cabang Worker A; bila belum
+     *  ada, drawable-nya kosong (tidak crash) dan teks tetap tampil. */
+    private fun buildTableSectionVc310(table: MdMini.Block.Table, bf: Float): View {
+        val th = currentTheme()
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedS(th.card, 14, th.stroke)
+            clipToOutline = true
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(6), 0, dp(6)) }
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        bar.addView(android.widget.ImageView(this).apply {
+            setImageDrawable(pathIconVc306("table", th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconXs)))
+            layoutParams = LinearLayout.LayoutParams(dp(chatIconSizeVc307(ChatThemeVc306.iconXs)), dp(chatIconSizeVc307(ChatThemeVc306.iconXs)))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        })
+        bar.addView(TextView(this).apply {
+            text = "Tabel · ${table.rows.size} baris"
+            textSize = 12.5f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(th.text)
+            setPadding(dp(8), 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        bar.addView(blockCopyBtnVc310("Salin tabel") { MdMini.tableMarkdown(table) })
+        section.addView(bar)
+        section.addView(View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        })
+        section.addView(buildTableView(table, bf))
+        return section
+    }
+
+    /** G11: pesan asisten -> daftar view per blok (teks / kode / tabel).
+     *  Dipakai bubble final 1-1 (buildTableBubble) dan grup
+     *  (addGroupBubble). Streaming TIDAK memakai ini. Tombol salin
+     *  per-blok teks (S9=B) ada di baris footer rata kanan tiap blok
+     *  teks — kecil dan konsisten; salin per-pesan tetap ada (tombol
+     *  copy balasan terakhir + long-press). Isi yang disalin: blok
+     *  teks = teks polos hasil render (tanpa sintaks markdown), blok
+     *  kode = isi tanpa pagar fence, tabel = markdown pipa asli. */
+    private fun buildBlocksContentVc310(text: String, bf: Float): LinearLayout {
+        val th = currentTheme()
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (block in MdMini.splitBlocks(text)) {
+            when (block) {
+                is MdMini.Block.Text -> {
+                    val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    wrap.addView(TextView(this).apply {
+                        this.text = MdMini.render(block.raw, th.codeText, th.codeBg)
+                        textSize = bf
+                        setTextColor(th.text)
+                        setLineSpacing(0f, 1.65f)
+                    })
+                    val foot = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.END
+                        setPadding(0, dp(2), 0, dp(4))
+                    }
+                    foot.addView(blockCopyBtnVc310("Salin teks") { MdMini.render(block.raw, th.codeText, th.codeBg).toString() })
+                    wrap.addView(foot)
+                    col.addView(wrap)
+                }
+                is MdMini.Block.Code -> col.addView(buildCodeWellVc310(block, bf))
+                is MdMini.Block.Table -> col.addView(buildTableSectionVc310(block, bf))
+            }
+        }
+        return col
+    }
+
+    /** G11: bungkus lipat untuk pesan bertabel panjang. Pesan bertabel
+     *  TIDAK PERNAH tampil sebagai teks mentah berpipa (T1): bila
+     *  >1500 char, tampilan lipat HANYA label tombol "▦ Lihat tabel
+     *  (N baris)" (mockup frame C); tap -> expand ke view blok penuh;
+     *  tap lagi -> lipat. Pesan bertabel <=1500 char langsung expanded.
+     *  Pesan berkode tanpa tabel selalu expanded (code well sudah
+     *  dibatasi maxHeight 280dp + scroll internal). Long-press pada
+     *  tombol lipat diteruskan ke gelembung (menu salin per-pesan). */
+    private fun buildFoldableBlocksVc310(text: String, bf: Float, onToggleLongPress: (() -> Boolean)? = null): View {
+        val th = currentTheme()
+        val blocks = MdMini.splitBlocks(text)
+        val tableRows = blocks.filterIsInstance<MdMini.Block.Table>().sumOf { it.rows.size }
+        val needsFold = tableRows > 0 && text.length > 1500
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (!needsFold) {
+            col.addView(buildBlocksContentVc310(text, bf))
+            return col
+        }
+        var expanded = false
+        val holder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val toggle = Button(this).apply {
+            isAllCaps = false
+            textSize = 13f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            background = rounded(th.tileBg, 12)
+            setTextColor(th.text)
+            setPadding(dp(12), dp(11), dp(12), dp(11))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            this.text = "▦ Lihat tabel ($tableRows baris)"
+            contentDescription = "Lihat tabel, $tableRows baris"
+        }
+        toggle.setOnClickListener {
+            expanded = !expanded
+            if (expanded) {
+                holder.addView(buildBlocksContentVc310(text, bf))
+                toggle.text = "▦ Tutup tabel ($tableRows baris)"
+                toggle.contentDescription = "Tutup tabel, $tableRows baris"
+            } else {
+                holder.removeAllViews()
+                toggle.text = "▦ Lihat tabel ($tableRows baris)"
+                toggle.contentDescription = "Lihat tabel, $tableRows baris"
+            }
+        }
+        if (onToggleLongPress != null) toggle.setOnLongClickListener { onToggleLongPress() }
+        col.addView(toggle)
+        col.addView(holder)
+        return col
+    }
+
+    /** T11: gelembung asisten bertabel — satu gelembung berisi view per
+     *  blok (teks / tabel / kode, G11 vc310). Lipatan >1500 karakter
+     *  untuk pesan bertabel TIDAK LAGI menampilkan teks mentah berpipa
+     *  (buildFoldableBlocksVc310: hanya label "▦ Lihat tabel"). */
     private fun buildTableBubble(text: String, bf: Float): View {
         // vc306 (C4): tanpa bubble, sel tabel harus ikut tema saat ini —
         // sebelumnya teks memakai konstanta TEXT (terang) di atas wadah
         // gelap; sekarang wadah transparan jadi pakai th.text/th.tileTint.
-        val thTbl = currentTheme()
         val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             // vc306 (C4): tabel jawaban asisten juga TANPA bubble — wadah
@@ -2565,63 +2871,65 @@ class MainActivity : Activity() {
                 (resources.displayMetrics.widthPixels * 0.92).toInt(),
                 LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        outer.addView(content)
-        var expanded = text.length <= 1500
-        fun renderInto(full: Boolean) {
-            content.removeAllViews()
-            if (!full) {
-                val tv = TextView(this).apply {
-                    this.text = MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]")
-                    textSize = bf
-                    setTextColor(thTbl.text)
-                }
-                content.addView(tv)
-                return
-            }
-            for (block in MdMini.splitBlocks(text)) {
-                when (block) {
-                    is MdMini.Block.Text -> {
-                        val tv = TextView(this).apply {
-                            this.text = MdMini.render(block.raw)
-                            textSize = bf
-                            setTextColor(thTbl.text)
-                        }
-                        content.addView(tv)
-                    }
-                    is MdMini.Block.Table -> content.addView(buildTableView(block, bf))
-                }
-            }
-        }
-        renderInto(expanded)
-        if (text.length > 1500) {
-            outer.setOnClickListener { expanded = !expanded; renderInto(expanded) }
-        }
+        outer.addView(buildFoldableBlocksVc310(text, bf) { outer.performLongClick() })
         return outer
     }
 
     /** T11: satu tabel markdown -> baris LinearLayout berbobot (vc231:
      *  ganti layout tabel lama — kolomnya gagal menyusut di dalam bubble
      *  chat sehingga tabel meluber ke tepi dan baris melar. Bobot: 2 kolom
-     *  jadi 3:1 (deskripsi | nilai pendek); 3+ kolom jadi semua 1. */
+     *  jadi 3:1 (deskripsi | nilai pendek); 3+ kolom jadi semua 1.
+     *  G11 vc310: (1) dibungkus HorizontalScrollView — lebar minimum
+     *  tiap kolom = kata terpanjang + padding (diukur Paint), jadi kata
+     *  tidak terpotong di tengah dan kolom tidak terjepit di tepi; bila
+     *  total minimum melebihi layar, tabel selebar itu dan bisa
+     *  di-scroll horizontal. (2) hairline th.stroke di bawah tiap baris
+     *  (header + tiap baris data) supaya grid terbaca. (3) cap 50 baris
+     *  (vc283 tetap) + tombol "Muat N baris lagi" yang menambahkan 50
+     *  baris berikutnya sebagai view — baris 51+ TIDAK LAGI jadi
+     *  TextView monospace mentah. TIDAK ADA scroll vertikal internal
+     *  (E4-A). */
     private fun buildTableView(table: MdMini.Block.Table, bf: Float): View {
         // vc306 (C4): warna tabel ikut tema (lihat buildTableBubble).
         val thTbl = currentTheme()
         val colCount = table.header.size
         val weights: List<Float> = if (colCount == 2) listOf(3f, 1f) else List(colCount) { 1f }
+        // G11: lebar minimum per kolom = kata terpanjang (header + semua
+        // baris) + padding sel 6dp kiri/kanan — diukur Paint supaya tidak
+        // menebak lebar karakter.
+        val paint = android.graphics.Paint().apply {
+            textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, bf - 1f, resources.displayMetrics)
+        }
+        var minTotalPx = 0
+        for (ci in 0 until colCount) {
+            var longest = 0f
+            fun scan(s: String) {
+                for (w in s.split("\\s+".toRegex())) {
+                    val m = paint.measureText(w)
+                    if (m > longest) longest = m
+                }
+            }
+            scan(table.header[ci])
+            for (row in table.rows) if (ci < row.size) scan(row[ci])
+            minTotalPx += (longest + dp(12)).toInt()
+        }
+        val availPx = (resources.displayMetrics.widthPixels * 0.92).toInt()
+        val innerWidthPx = maxOf(availPx, minTotalPx)
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT)
+            layoutParams = LinearLayout.LayoutParams(innerWidthPx, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         fun cellView(txt: String, header: Boolean, weight: Float): TextView = TextView(this).apply {
-            this.text = MdMini.inline(txt)
+            this.text = MdMini.inline(txt, thTbl.codeText, thTbl.codeBg)
             textSize = bf - 1f
             setTextColor(if (header) thTbl.tileTint else thTbl.text)
             if (header) typeface = android.graphics.Typeface.DEFAULT_BOLD
             setPadding(dp(6), dp(4), dp(6), dp(4))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight)
+        }
+        fun hairline(): View = View(this).apply {
+            setBackgroundColor(thTbl.stroke)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
         }
         val headRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2632,33 +2940,67 @@ class MainActivity : Activity() {
             for ((ci, h) in table.header.withIndex()) addView(cellView(h, true, weights[ci]))
         }
         container.addView(headRow)
+        container.addView(hairline())
+        // G11: wadah baris data — tombol "Muat lagi" menambahkan ke sini.
+        val rowsBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        container.addView(rowsBox)
         // vc283: tabel raksasa = satu TextView per sel — 100 baris berarti
-        // 200+ view dalam satu bubble. Di atas 50 baris, sisa baris dirender
-        // sebagai teks monospace mentah (satu view) — isi tetap lengkap.
+        // 200+ view dalam satu bubble. Cap 50 baris tetap; baris 51+
+        // kini dimuat sebagai view lewat tombol (bukan teks mentah).
         val maxRowsVc283 = 50
-        for ((ri, row) in table.rows.withIndex()) {
-            if (ri >= maxRowsVc283) break
-            val tr = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                if (ri % 2 == 1) setBackgroundColor(thTbl.card)
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT)
-                for ((ci, c) in row.withIndex()) addView(cellView(c, false, weights[ci]))
+        var shownRows = 0
+        fun addDataRows(from: Int, to: Int) {
+            for (ri in from until minOf(to, table.rows.size)) {
+                val row = table.rows[ri]
+                val tr = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    if (ri % 2 == 1) setBackgroundColor(thTbl.card)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT)
+                    for ((ci, c) in row.withIndex()) addView(cellView(c, false, weights[ci]))
+                }
+                rowsBox.addView(tr)
+                rowsBox.addView(hairline())
             }
-            container.addView(tr)
+            shownRows = minOf(to, table.rows.size)
         }
+        addDataRows(0, maxRowsVc283)
         if (table.rows.size > maxRowsVc283) {
-            val rest = table.rows.drop(maxRowsVc283).joinToString("\n") { "| " + it.joinToString(" | ") + " |" }
-            container.addView(TextView(this).apply {
-                text = "… +${table.rows.size - maxRowsVc283} baris lagi:\n$rest"
-                typeface = android.graphics.Typeface.MONOSPACE
-                textSize = bf - 1f
-                setTextColor(thTbl.text)
-                setPadding(dp(6), dp(4), dp(6), dp(4))
-            })
+            val loadBtn = Button(this).apply {
+                isAllCaps = false
+                textSize = 12.5f
+                background = rounded(thTbl.tileBg, 12)
+                setTextColor(thTbl.tileTint)
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+                text = "Muat ${table.rows.size - shownRows} baris lagi"
+                contentDescription = "Muat ${table.rows.size - shownRows} baris lagi"
+            }
+            loadBtn.setOnClickListener {
+                addDataRows(shownRows, shownRows + maxRowsVc283)
+                val rest = table.rows.size - shownRows
+                if (rest <= 0) container.removeView(loadBtn)
+                else {
+                    loadBtn.text = "Muat $rest baris lagi"
+                    loadBtn.contentDescription = "Muat $rest baris lagi"
+                }
+            }
+            container.addView(loadBtn)
         }
-        return container
+        // G11: HorizontalScrollView — hanya bisa scroll bila innerWidthPx
+        // melebihi viewport (tabel lebar); tabel sempit tetap selebar bubble.
+        val hsv = android.widget.HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            isHorizontalScrollBarEnabled = true
+        }
+        hsv.addView(container)
+        return hsv
     }
 
     private fun findFirstTextView(v: View): TextView? {
@@ -2684,16 +3026,27 @@ class MainActivity : Activity() {
     // thread pemanggil, bukan UI thread; (3) throttle streaming + scroll
     // hanya bila di dekat bawah; (4) throttle kartu live.
 
-    /** vc283: hasil parse markdown satu pesan asisten (dihitung di thread pemanggil). */
-    private data class AssistantRender(val short: CharSequence?, val full: CharSequence?, val hasTable: Boolean)
+    /** vc283: hasil parse markdown satu pesan asisten (dihitung di thread pemanggil).
+     *  G11 vc310: hasCode ikut dihitung — pesan berkode (tanpa tabel) juga
+     *  dirender lewat buildTableBubble (code well + tombol salin). */
+    private data class AssistantRender(val short: CharSequence?, val full: CharSequence?, val hasTable: Boolean, val hasCode: Boolean = false)
 
     private fun precomputeAssistantRender(text: String): AssistantRender {
-        val hasTable = MdMini.hasTable(text)
-        if (hasTable) return AssistantRender(null, null, true)
+        // vc311 Worker D: tema dibaca di sini (aman di thread latar —
+        // currentTheme() hanya baca SharedPreferences + configuration)
+        // supaya kode inline dirender dengan warna tema, bukan default
+        // gelap (regresi blok hitam mode cerah, G11 vc310).
+        val th = currentTheme()
+        // G11: satu kali splitBlocks untuk hasTable + hasCode (dulu
+        // hasTable() mem-parse ulang sendiri).
+        val blocks = MdMini.splitBlocks(text)
+        val hasTable = blocks.any { it is MdMini.Block.Table }
+        val hasCode = blocks.any { it is MdMini.Block.Code }
+        if (hasTable || hasCode) return AssistantRender(null, null, hasTable, hasCode)
         return if (text.length > 1500) AssistantRender(
-            MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]"),
-            MdMini.render(text), false)
-        else AssistantRender(MdMini.render(text), null, false)
+            MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]", th.codeText, th.codeBg),
+            MdMini.render(text, th.codeText, th.codeBg), false)
+        else AssistantRender(MdMini.render(text, th.codeText, th.codeBg), null, false)
     }
 
     // vc283: batas view hidup di daftar chat (di luar tombol "Muat …").
@@ -2768,7 +3121,7 @@ class MainActivity : Activity() {
         // thread hanya membangun view. Untuk pesan histori, parse sudah
         // dihitung di thread latar dan diteruskan lewat `pre`.
         val ar: AssistantRender? = if (kind == "assistant") (pre ?: precomputeAssistantRender(text)) else null
-        val useBlocks = ar?.hasTable == true
+        val useBlocks = ar?.hasTable == true || ar?.hasCode == true
         var tvRef: TextView? = null
         val latch = java.util.concurrent.CountDownLatch(1)
         val runnable = Runnable {
@@ -2902,8 +3255,8 @@ class MainActivity : Activity() {
                 tv.tag = "short"
                 // vc283: pakai hasil parse yang sudah dihitung di thread
                 // pemanggil (tanpa parse ulang di UI thread saat ketuk).
-                val fullRendered: CharSequence = ar?.full ?: MdMini.render(text)
-                val shortRendered: CharSequence = ar?.short ?: MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]")
+                val fullRendered: CharSequence = ar?.full ?: MdMini.render(text, th.codeText, th.codeBg)
+                val shortRendered: CharSequence = ar?.short ?: MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]", th.codeText, th.codeBg)
                 tv.setOnClickListener {
                     if (tv.tag == "short") { tv.text = fullRendered; tv.tag = "full" }
                     else { tv.text = shortRendered; tv.tag = "short" }
@@ -3172,7 +3525,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(maxOf(1, (resources.displayMetrics.density * 0.5f).toInt()), LinearLayout.LayoutParams.MATCH_PARENT).apply { setMargins(dp(12), dp(4), 0, dp(4)) }
         })
         val bodyTv = TextView(this).apply {
-            this.text = MdMini.render(text)
+            this.text = MdMini.render(text, th.codeText, th.codeBg)
             setTextColor(th.dim); textSize = 13f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(8), dp(4), 0, dp(4)) }
         }
@@ -3801,7 +4154,7 @@ class MainActivity : Activity() {
                 artifactWebView?.visibility = View.GONE
                 artifactTextScroll?.visibility = View.VISIBLE
                 artifactTextView?.typeface = android.graphics.Typeface.DEFAULT
-                artifactTextView?.text = MdMini.render(ver.content)
+                artifactTextView?.text = MdMini.render(ver.content, th.codeText, th.codeBg)
             }
         }
     }
@@ -4055,7 +4408,7 @@ class MainActivity : Activity() {
     private fun buildGroupBox(): LinearLayout {
         val th = currentTheme()
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg) }
-        // Header grup v4.48.1: 2 baris (mockup disetujui user 16:07).
+        // Header grup v4.48.1: 2 baris (mockup disetujui Sendy 16:07).
         // Baris 1: judul (weight 1 + ellipsize, tidak pernah mendorong tombol
         // keluar layar) + Chat 1-1 + gear. Baris 2: chip kontrol dalam
         // HorizontalScrollView — muat di 360dp default, menggeser (bukan
@@ -4205,7 +4558,7 @@ class MainActivity : Activity() {
         val inputRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = glassDrawableVc306(ChatThemeVc306.rXl, isDarkTheme()); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(12), dp(6), dp(12), dp(12)) }; setPadding(dp(8), dp(6), dp(8), dp(6)) }
         groupInputRowRef = inputRow
         groupInput = EditText(this).apply {
-            hint = "Pesan grup… (@Asisten @Mandor @Mentor @Agen 4)"
+            hint = "Pesan grup… (@Senz @Mandor @Mentor @Agen 4)"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             setTextColor(th.text); setHintTextColor(if (isDarkTheme()) ChatThemeVc306.darkFaint else ChatThemeVc306.lightFaint)
             background = null
@@ -4311,8 +4664,36 @@ class MainActivity : Activity() {
             }
         }
         val isAgentAnswer = !isUser && !isSystem && !isTool
+        // G11 vc310 (S8=A): jalur tabel/kode grup — dibangun dari nol,
+        // SAMA dengan 1-1 (T1–T5): tabel jadi view tabel, lipat +
+        // "Lihat tabel (N baris)", HorizontalScrollView, cap 50 + muat
+        // lagi, tombol salin per blok (kode/tabel/tiap blok teks).
+        // Pesan user grup tetap teks polos (tidak diubah). Pesan agen
+        // grup tanpa tabel/kode tetap lewat jalur tv lama di bawah.
+        if (isAgentAnswer) {
+            val gBlocks = MdMini.splitBlocks(text)
+            val gHasBlocks = gBlocks.any { it is MdMini.Block.Table || it is MdMini.Block.Code }
+            if (gHasBlocks) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = rounded(th.card, 24)
+                    setPadding(dp(12), dp(9), dp(12), dp(9))
+                    layoutParams = LinearLayout.LayoutParams(
+                        (resources.displayMetrics.widthPixels * 0.92).toInt(),
+                        LinearLayout.LayoutParams.WRAP_CONTENT)
+                }
+                card.addView(buildFoldableBlocksVc310(text, 15f) { card.performLongClick() })
+                val groupMenu = { showBubbleMenu(text) { groupReplyTargetName = name; groupReplyTargetText = text; refreshGroupReplyChip() }; true }
+                card.setOnLongClickListener { groupMenu() }
+                wrap.setOnLongClickListener { groupMenu() }
+                wrap.addView(card)
+                groupList.addView(wrap)
+                groupScroll.post { groupScroll.fullScroll(View.FOCUS_DOWN) }
+                return
+            }
+        }
         val tv = TextView(this).apply {
-            this.text = if (isAgentAnswer) (if (text.length > 1500) MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]") else MdMini.render(text)) else text
+            this.text = if (isAgentAnswer) (if (text.length > 1500) MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]", th.codeText, th.codeBg) else MdMini.render(text, th.codeText, th.codeBg)) else text
             textSize = 15f
             setTextColor(if (isSystem) th.errText else th.text)
             // vc309 Worker B (c): kartu sistem TIDAK LAGI blok pink penuh
@@ -4335,8 +4716,8 @@ class MainActivity : Activity() {
         if (isAgentAnswer && text.length > 1500) {
             tv.tag = "short"
             tv.setOnClickListener {
-                if (tv.tag == "short") { tv.text = MdMini.render(text); tv.tag = "full" }
-                else { tv.text = MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]"); tv.tag = "short" }
+                if (tv.tag == "short") { tv.text = MdMini.render(text, th.codeText, th.codeBg); tv.tag = "full" }
+                else { tv.text = MdMini.render(text.substring(0, 1500) + "\n… [ketuk untuk baca selengkapnya]", th.codeText, th.codeBg); tv.tag = "short" }
             }
         }
         if (!isSystem) {
@@ -4557,7 +4938,7 @@ class MainActivity : Activity() {
     }
 
 
-    /** Bubble jawaban final ala native web (v3.1.4, permintaan user "tampilan chat
+    /** Bubble jawaban final ala native web (v3.1.4, permintaan Sendy "tampilan chat
      *  kayak web asli biar output API bisa dibedakan"): di UI React pesan membawa
      *  label sumber jalur (src) + teks berpikir (think) yang dirender terlipat;
      *  di UI klasik berpikir tampil sebagai bubble kecil redup di atas jawaban. */
@@ -4565,7 +4946,11 @@ class MainActivity : Activity() {
         val src = turnSource
         val think = turnThinking
         turnThinking = ""
-        if (think.isNotBlank()) addMsg("💭 Berpikir:\n$think", "think", turn = true)
+        // vc316 Worker BR (a): fragmen berpikir kadang memuat panggilan tool
+        // DSML mentah (v4.13.1) — bersihkan markup tool sebelum tampil di
+        // pill "Berpikir" (preview + expand). Isi berpikir tidak dikirim ke
+        // mana pun dari sini, jadi tidak ada dampak ke tool/server.
+        if (think.isNotBlank()) addMsg("💭 Berpikir:\n" + AgentPrompt.stripRawToolMarkupForDisplay(think), "think", turn = true)
         // vc232 S3(a) + vc306 C12: jawaban kena claimWarning TIDAK LAGI
         // ditempel sebagai prefix di bubble asisten — peringatannya tampil
         // sebagai kartu tone attention sendiri (teks SAMA), jawaban bersih.
@@ -5061,7 +5446,7 @@ class MainActivity : Activity() {
         addBubble("📎 Mengirim " + attaches.size + " lampiran dengan konteks: " + contextText.take(200), true)
         Thread {
             try {
-                val apiOn = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode() } catch (e: Exception) { false }
+                val apiOn = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode() } catch (e: Exception) { false }
                 if (apiOn) {
                     val files = ArrayList<Triple<ByteArray, String, String>>()
                     val failedRead = ArrayList<String>()
@@ -5921,32 +6306,547 @@ class MainActivity : Activity() {
 
     private fun bActiveWv(): WebView? = if (bActive in bTabs.indices) bTabs[bActive] else null
 
+    // vc313 Worker B — UA desktop (Spek §3.7; K-07 default mobile per tab).
+    private val BROWSER_DESKTOP_UA_VC313: String =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+    private fun browserHostPath(url: String): String {
+        return try {
+            val u = android.net.Uri.parse(url)
+            (u.host ?: "") + (u.path ?: "")
+        } catch (e: Exception) {
+            url
+        }
+    }
+
+    private fun formatBrowserBytesVc313(sizeBytes: Long): String {
+        if (sizeBytes < 0) return "—"
+        if (sizeBytes < 1024) return "$sizeBytes B"
+        if (sizeBytes < 1024 * 1024) return "%.1f KB".format(sizeBytes / 1024.0)
+        return "%.1f MB".format(sizeBytes / (1024.0 * 1024.0))
+    }
+
     private fun updateBrowserVisibility() {
-        for ((i, wv) in bTabs.withIndex()) wv.visibility = if (i == bActive) View.VISIBLE else View.GONE
+        for ((i, wv) in bTabs.withIndex()) wv?.visibility = if (i == bActive) View.VISIBLE else View.GONE
         val wv = bActiveWv()
-        if (wv != null) bUrlTv?.text = "Tab " + (bActive + 1) + "/" + bTabs.size + " — " + (wv.title ?: "") + " — " + (wv.url ?: "")
+        val meta = if (bActive in bTabMeta.indices) bTabMeta[bActive] else null
+        // vc316 Worker BR (b): label dipotong di AgentBrowser.tabLabelVc316
+        // (judul ≤60, URL ≤120 char) — pertahanan kedua sesudah ellipsize
+        // di bUrlTv.
+        if (wv != null) bUrlTv?.text = AgentBrowser.tabLabelVc316(bActive, bTabs.size, wv.title ?: "", wv.url ?: "", false)
+        else if (meta != null) bUrlTv?.text = AgentBrowser.tabLabelVc316(bActive, bTabs.size, meta.title, meta.url, true)
+        if (browserCursorVisible && wv != null) browserCursorView?.bringToFront()
+    }
+
+    /** vc313: simpan metadata tab ke SharedPreferences 'browserTabsVc313'
+     *  (JSON array: url, judul, scrollY, lastActiveMs). Dipanggil tiap
+     *  perubahan tab, saat tab ditutup, dan di onPause. Bila dipanggil dari
+     *  UI thread, meta live (url/judul WebView) disegarkan dulu. */
+    private fun saveBrowserTabsVc313() {
+        try {
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) refreshBrowserTabMetaFromLive()
+            val arr = org.json.JSONArray()
+            val copy: List<BrowserTabMetaVc313> = synchronized(bTabMeta) { bTabMeta.toList() }
+            for (m in copy) {
+                val o = org.json.JSONObject()
+                o.put("url", m.url)
+                o.put("title", m.title)
+                o.put("scrollY", m.scrollY)
+                o.put("lastActiveMs", m.lastActiveMs)
+                arr.put(o)
+            }
+            getSharedPreferences("browserTabsVc313", MODE_PRIVATE).edit().putString("tabs", arr.toString()).apply()
+        } catch (e: Exception) {}
+    }
+
+    /** Hanya dari UI thread: salin url/judul WebView hidup ke bTabMeta. */
+    private fun refreshBrowserTabMetaFromLive() {
+        synchronized(bTabMeta) {
+            for (i in bTabs.indices) {
+                val wv = bTabs[i] ?: continue
+                val m = bTabMeta.getOrNull(i) ?: continue
+                try { m.url = wv.url ?: m.url } catch (e: Exception) {}
+                try { m.title = wv.title ?: m.title } catch (e: Exception) {}
+            }
+        }
+    }
+
+    /** vc313: pulihkan DAFTAR tab dari metadata tersimpan (T-BR-14).
+     *  WebView TIDAK dibuat di sini — tab pulih sebagai dorman (null) dan
+     *  dibuat malas saat di-switch/dibaca. Hanya dari UI thread. */
+    private fun restoreBrowserTabsVc313(): Boolean {
+        if (bTabs.isNotEmpty() || bTabMeta.isNotEmpty()) return false
+        val raw = try {
+            getSharedPreferences("browserTabsVc313", MODE_PRIVATE).getString("tabs", "") ?: ""
+        } catch (e: Exception) {
+            ""
+        }
+        if (raw.isBlank()) return false
+        return try {
+            val arr = org.json.JSONArray(raw)
+            var n = 0
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val url = o.optString("url", "")
+                if (url.isBlank()) continue
+                synchronized(bTabMeta) {
+                    bTabMeta.add(
+                        BrowserTabMetaVc313(
+                            url = url,
+                            title = o.optString("title", ""),
+                            scrollY = o.optInt("scrollY", 0),
+                            lastActiveMs = o.optLong("lastActiveMs", 0L)
+                        )
+                    )
+                }
+                bTabs.add(null)
+                bTabIds.add(browserNextTabId++)
+                n++
+            }
+            if (n > 0) {
+                bActive = 0
+                updateBrowserVisibility()
+                true
+            } else false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** vc313: tandai tab dipakai (lastActiveMs = sekarang) + simpan. */
+    private fun touchBrowserTab(idx: Int) {
+        try {
+            synchronized(bTabMeta) {
+                val m = bTabMeta.getOrNull(idx) ?: return
+                m.lastActiveMs = System.currentTimeMillis()
+            }
+            saveBrowserTabsVc313()
+        } catch (e: Exception) {}
+    }
+
+    /** vc313: geser kunci map per-tab sesudah satu tab dihapus (indeks > yang
+     *  dihapus turun 1; kunci yang dihapus dibuang). */
+    private fun <V> shiftBrowserTabMapKeys(m: MutableMap<Int, V>, removed: Int) {
+        val entries = m.entries.toList()
+        m.clear()
+        for ((k, v) in entries) {
+            if (k == removed) continue
+            m[if (k > removed) k - 1 else k] = v
+        }
+    }
+
+    private fun shiftBrowserTabMaps(removed: Int) {
+        shiftBrowserTabMapKeys(browserLastSnapshot, removed)
+        shiftBrowserTabMapKeys(browserLastFullUrl, removed)
+        shiftBrowserTabMapKeys(browserConsoleLog, removed)
+        shiftBrowserTabMapKeys(browserNetworkLog, removed)
+        shiftBrowserTabMapKeys(bTabUaMode, removed)
+        shiftBrowserTabMapKeys(bTabDefaultUa, removed)
+        shiftBrowserTabMapKeys(browserPendingScrollY, removed)
+    }
+
+    // ---------- vc313: kursor agen (§3.10) ----------
+    // Tampilan: lingkaran cincin luar PUTIH (kontras di tema gelap) +
+    // cincin aksen app + titik tengah putih — kecil (44dp), tidak menutupi
+    // elemen target (titik tengah menandai posisi klik persis).
+
+    private fun ensureBrowserCursor() {
+        val frame = bFrame ?: return
+        if (browserCursorView != null) return
+        val size = dp(44)
+        val v = object : View(this) {
+            private val paintWhite = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                color = android.graphics.Color.WHITE
+            }
+            private val paintAccent = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                color = ACCENT
+            }
+            private val paintDot = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.FILL
+                color = android.graphics.Color.WHITE
+            }
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                val c = canvas
+                val cx = width / 2f
+                val cy = height / 2f
+                c.drawCircle(cx, cy, width / 2f - 3f, paintWhite)
+                c.drawCircle(cx, cy, width / 2f - 9f, paintAccent)
+                c.drawCircle(cx, cy, 4f, paintDot)
+            }
+        }
+        v.visibility = View.GONE
+        v.isClickable = false
+        v.isFocusable = false
+        frame.addView(v, FrameLayout.LayoutParams(size, size))
+        browserCursorView = v
+    }
+
+    /** Hanya dari UI thread. */
+    private fun moveBrowserCursorTo(x: Int, y: Int) {
+        browserCursorX = x
+        browserCursorY = y
+        browserUserTakeover = false
+        browserCursorVisible = true
+        val v = browserCursorView ?: return
+        val size = dp(44)
+        try {
+            val lp = (v.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(size, size)
+            lp.width = size
+            lp.height = size
+            lp.leftMargin = (x - size / 2).coerceAtLeast(0)
+            lp.topMargin = (y - size / 2).coerceAtLeast(0)
+            lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            v.layoutParams = lp
+            v.visibility = View.VISIBLE
+            v.bringToFront()
+        } catch (e: Exception) {}
+    }
+
+    /** Hanya dari UI thread: kursor ke tengah viewport. */
+    private fun moveBrowserCursorToViewportCenter(wv: WebView) {
+        val x = if (wv.width > 0) wv.width / 2 else 540
+        val y = if (wv.height > 0) wv.height / 2 else 800
+        moveBrowserCursorTo(x, y)
+    }
+
+    /** Kursor ke tengah elemen target (koordinat ref) atau tengah viewport
+     *  bila ref tidak dikenal; lalu jeda ±150 ms sebelum aksi. Dipanggil
+     *  dari thread worker: pindah via onUiSync, jeda di thread worker. */
+    private fun showBrowserCursorForRefThenWait(ref: Int, wv: WebView) {
+        val entry = try { AgentBrowser.lastRefs[ref] } catch (e: Exception) { null }
+        onUiSync {
+            if (entry != null) moveBrowserCursorTo(entry.cx, entry.cy)
+            else moveBrowserCursorToViewportCenter(wv)
+            Unit
+        }
+        try { Thread.sleep(150) } catch (e: Exception) {}
+    }
+
+    private fun moveBrowserCursorToViewportCenterSync(wv: WebView) {
+        onUiSync { moveBrowserCursorToViewportCenter(wv); Unit }
+    }
+
+    private fun hideBrowserCursor() {
+        browserCursorVisible = false
+        try {
+            runOnUiThread { try { browserCursorView?.visibility = View.GONE } catch (e: Exception) {} }
+        } catch (e: Exception) {}
+    }
+
+    /** Gambar kursor ke bitmap screenshot pada posisi terakhirnya (bila
+     *  sedang tampil). offsetY = scrollY halaman saat tangkapan (0 untuk
+     *  tangkapan area terlihat; scroll awal untuk shot_full). */
+    private fun drawBrowserCursorOnCanvas(canvas: android.graphics.Canvas, offsetY: Int) {
+        if (!browserCursorVisible) return
+        try {
+            val cx = browserCursorX.toFloat()
+            val cy = browserCursorY.toFloat() + offsetY
+            val white = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                color = android.graphics.Color.WHITE
+            }
+            val accent = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                color = ACCENT
+            }
+            val dot = android.graphics.Paint().apply {
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.FILL
+                color = android.graphics.Color.WHITE
+            }
+            canvas.drawCircle(cx, cy, dp(22).toFloat(), white)
+            canvas.drawCircle(cx, cy, dp(16).toFloat(), accent)
+            canvas.drawCircle(cx, cy, dp(4).toFloat(), dot)
+        } catch (e: Exception) {}
+    }
+
+    // ---------- vc313: pembuatan / pemulihan tab ----------
+
+    /** Bangun SATU WebView tab agen (dipakai tab baru + revive tab dorman).
+     *  Hanya dari UI thread. idx = indeks tab (untuk log konsol/jaringan
+     *  dan UA per tab). */
+    private fun createBrowserWebView(idx: Int): WebView {
+        val wv = WebView(this)
+        val self = wv
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.settings.loadWithOverviewMode = true
+        wv.settings.useWideViewPort = true
+        try {
+            bTabDefaultUa[idx] = wv.settings.userAgentString ?: ""
+        } catch (e: Exception) {}
+        // UA per tab yang tersimpan (mis. desktop sebelum tab idle) ikut pulih.
+        if (bTabUaMode[idx] == "desktop") {
+            try { wv.settings.userAgentString = BROWSER_DESKTOP_UA_VC313 } catch (e: Exception) {}
+        }
+        wv.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (view == bActiveWv()) updateBrowserVisibility()
+                val i = if (view != null) bTabs.indexOf(view) else -1
+                if (i >= 0) {
+                    synchronized(bTabMeta) {
+                        val m = bTabMeta.getOrNull(i)
+                        if (m != null) {
+                            try { m.url = view?.url ?: m.url } catch (e: Exception) {}
+                            try { m.title = view?.title ?: m.title } catch (e: Exception) {}
+                            if (i == bActive) m.lastActiveMs = System.currentTimeMillis()
+                        }
+                    }
+                    val pending = browserPendingScrollY.remove(i)
+                    if (pending != null && pending > 0) {
+                        try { view?.evaluateJavascript("window.scrollTo(0, $pending)", null) } catch (e: Exception) {}
+                    }
+                }
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                // vc313 §3.7: catat URL + metode + ukuran header bila bisa.
+                // Isi body TIDAK dicatat. Status HTTP tidak dibawa
+                // shouldInterceptRequest — dicatat '—'. Kembalikan null
+                // supaya WebView memuat normal.
+                try {
+                    val req = request ?: return null
+                    val i = bTabs.indexOf(self)
+                    if (i >= 0) {
+                        synchronized(browserNetworkLog) {
+                            val list = browserNetworkLog.getOrPut(i) { mutableListOf() }
+                            list.add(
+                                BrowserNetworkEntryVc313(
+                                    method = try { req.method ?: "GET" } catch (e: Exception) { "GET" },
+                                    status = "—",
+                                    url = try { req.url.toString() } catch (e: Exception) { "" },
+                                    sizeBytes = -1L
+                                )
+                            )
+                            while (list.size > 500) list.removeAt(0)
+                        }
+                    }
+                } catch (e: Exception) {}
+                return null
+            }
+        }
+        wv.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
+                val m = message ?: return true
+                try {
+                    val i = bTabs.indexOf(self)
+                    if (i >= 0) {
+                        synchronized(browserConsoleLog) {
+                            val list = browserConsoleLog.getOrPut(i) { mutableListOf() }
+                            list.add("[${m.messageLevel()}] ${m.message()} (sumber:${m.sourceId()}:${m.lineNumber()})")
+                            while (list.size > 200) list.removeAt(0)
+                        }
+                    }
+                } catch (e: Exception) {}
+                return true
+            }
+
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>,
+                fileChooserParams: android.webkit.WebChromeClient.FileChooserParams?
+            ): Boolean {
+                try { browserFileChooserCallback?.onReceiveValue(null) } catch (e: Exception) {}
+                browserFileChooserCallback = filePathCallback
+                try {
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                    startActivityForResult(Intent.createChooser(intent, "Pilih file untuk browser agen"), 4101)
+                } catch (e: Exception) {
+                    try { filePathCallback.onReceiveValue(null) } catch (e2: Exception) {}
+                    browserFileChooserCallback = null
+                }
+                return true
+            }
+
+            override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                // vc313 §1.4 / K-06: kamera/mikrofon DILARANG di tab agen.
+                // VIDEO_CAPTURE dan AUDIO_CAPTURE ditolak eksplisit di
+                // bawah; resource lain juga ditolak — TIDAK ADA jalur grant
+                // di tab agen.
+                val wantsMedia = (request.resources ?: emptyArray()).any {
+                    it == android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE ||
+                        it == android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                }
+                if (wantsMedia) {
+                    try { request.deny() } catch (e: Exception) {}
+                    return
+                }
+                try { request.deny() } catch (e: Exception) {}
+            }
+        }
+        wv.setDownloadListener { url, _, contentDisposition, mimetype, contentLength ->
+            try {
+                BrowserDownloadManager.enqueue(url, contentDisposition, mimetype, contentLength)
+            } catch (e: Exception) {}
+        }
+        // Sentuhan user = user mengambil alih tab: kursor agen hilang
+        // sampai aksi agen berikutnya (Spek §3.10).
+        wv.setOnTouchListener { _, event ->
+            if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                browserUserTakeover = true
+                hideBrowserCursor()
+            }
+            false
+        }
+        return wv
+    }
+
+    /** Buat WebView baru untuk tab dorman + muat ulang URL tersimpan
+     *  (cookie ikut — sesi tidak hilang). Hanya dari UI thread. */
+    private fun reviveBrowserTab(idx: Int): WebView? {
+        val frame = bFrame ?: return null
+        if (idx !in bTabs.indices) return null
+        bTabs[idx]?.let { return it }
+        val wv = createBrowserWebView(idx)
+        bTabs[idx] = wv
+        frame.addView(wv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        browserCursorView?.bringToFront()
+        val meta = synchronized(bTabMeta) { bTabMeta.getOrNull(idx) }
+        if (meta != null && meta.url.isNotBlank()) {
+            if (meta.scrollY > 0) browserPendingScrollY[idx] = meta.scrollY
+            try { wv.loadUrl(meta.url) } catch (e: Exception) {}
+        }
+        touchBrowserTab(idx)
+        updateBrowserVisibility()
+        return wv
     }
 
     private fun ensureBrowserTab(forceNew: Boolean): WebView? {
         val frame = bFrame ?: return null
-        if (!forceNew && bActiveWv() != null) return bActiveWv()
-        val wv = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.loadWithOverviewMode = true
-            settings.useWideViewPort = true
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    if (view == bActiveWv()) updateBrowserVisibility()
-                }
+        try { BrowserDownloadManager.init(this) } catch (e: Exception) {}
+        // vc313: pulihkan daftar tab tersimpan bila daftar kosong (supaya
+        // ketuk ＋ Tab manual sesudah restart tidak menimpa metadata lama
+        // sebelum browserTool pertama sempat memulihkan — T-BR-14).
+        if (bTabs.isEmpty()) restoreBrowserTabsVc313()
+        if (!forceNew) {
+            val cur = bActiveWv()
+            if (cur != null) {
+                touchBrowserTab(bActive)
+                return cur
+            }
+            if (bActive in bTabs.indices) return reviveBrowserTab(bActive)
+            if (bTabs.isNotEmpty()) {
+                bActive = 0
+                return reviveBrowserTab(0)
             }
         }
+        // vc313 §3.4: batas 5 tab aktif — tab ke-6 ditolak, tidak ada tab
+        // yang ditutup otomatis.
+        if (bTabs.size >= MAX_BROWSER_TABS_VC313) return null
+        val idx = bTabs.size
+        val wv = createBrowserWebView(idx)
         bTabs.add(wv)
-        bActive = bTabs.size - 1
+        synchronized(bTabMeta) {
+            bTabMeta.add(BrowserTabMetaVc313(lastActiveMs = System.currentTimeMillis()))
+        }
+        bTabIds.add(browserNextTabId++)
+        bActive = idx
         frame.addView(wv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        ensureBrowserCursor()
+        browserCursorView?.bringToFront()
+        // vc316 N9-A1: debugging WebView DIMATIKAN — pemanggilan untuk
+        // MENYALAKAN flag debugging DIHAPUS dari sini. Alasan:
+        // klien CDP (BrowserCdpClient) tidak pernah dipakai di vc313-vc315
+        // (NOL pemanggil: connect/evaluate/captureScreenshotFull), jadi
+        // debugging rilis hanya membuka permukaan inspeksi USB/ADB
+        // (termasuk sesi login yang berbagi CookieManager) tanpa manfaat
+        // fungsional apa pun. Nyalakan lagi HANYA saat CDP benar-benar
+        // dipakai — dan pasangkan on/off seperti dulu (nyala di tab
+        // pertama, mati di tab terakhir, lihat closeBrowserTab).
         updateBrowserVisibility()
+        saveBrowserTabsVc313()
         return wv
+    }
+
+    /** vc313 §3.4: tab idle >30 menit -> simpan state lalu destroy WebView.
+     *  Hanya dipanggil dari thread worker browserTool (evalSync tidak boleh
+     *  dari UI thread); mutasi daftar + destroy lewat onUiSync. */
+    private fun sweepIdleBrowserTabs() {
+        if (bTabs.isEmpty()) return
+        val now = System.currentTimeMillis()
+        for (i in bTabs.indices) {
+            try {
+            if (i == bActive) continue
+            val wv = bTabs[i] ?: continue
+            val meta = synchronized(bTabMeta) { bTabMeta.getOrNull(i) } ?: continue
+            if (now - meta.lastActiveMs < 30 * 60 * 1000L) continue
+            var scrollY = meta.scrollY
+            try {
+                evalSync(wv, "window.scrollY")?.toIntOrNull()?.let { scrollY = it }
+            } catch (e: Exception) {}
+            val sy = scrollY
+            onUiSync {
+                try {
+                    synchronized(bTabMeta) {
+                        val m = bTabMeta.getOrNull(i)
+                        if (m != null) {
+                            try { m.url = wv.url ?: m.url } catch (e: Exception) {}
+                            try { m.title = wv.title ?: m.title } catch (e: Exception) {}
+                            m.scrollY = sy
+                        }
+                    }
+                    (wv.parent as? ViewGroup)?.removeView(wv)
+                    wv.destroy()
+                    if (i in bTabs.indices) bTabs[i] = null
+                } catch (e: Exception) {}
+                Unit
+            }
+            saveBrowserTabsVc313()
+            } catch (e: Exception) {}
+        }
+    }
+
+    /** Tutup satu tab: lepas + destroy WebView, geser state per-tab, flush
+     *  cookie, matikan debugging bila ini tab terakhir. Hanya UI thread. */
+    private fun closeBrowserTab(idx: Int): Boolean {
+        if (idx !in bTabs.indices) return false
+        val wv = bTabs.removeAt(idx)
+        synchronized(bTabMeta) { if (idx in bTabMeta.indices) bTabMeta.removeAt(idx) }
+        if (idx in bTabIds.indices) bTabIds.removeAt(idx)
+        try {
+            wv?.let {
+                (it.parent as? ViewGroup)?.removeView(it)
+                it.destroy()
+            }
+        } catch (e: Exception) {}
+        shiftBrowserTabMaps(idx)
+        bActive = when {
+            bTabs.isEmpty() -> -1
+            idx < bActive -> bActive - 1
+            bActive >= bTabs.size -> bTabs.size - 1
+            else -> bActive
+        }
+        try { CookieManager.getInstance().flush() } catch (e: Exception) {}
+        if (bTabs.isEmpty()) {
+            // vc316 N9-A1: debugging TIDAK PERNAH dinyalakan lagi (lihat
+            // pembukaan tab di atas) — panggilan false ini JARING PENGAMAN
+            // agar flag berakhir MATI apa pun yang terjadi sebelumnya.
+            try { WebView.setWebContentsDebuggingEnabled(false) } catch (e: Exception) {}
+            hideBrowserCursor()
+        }
+        updateBrowserVisibility()
+        saveBrowserTabsVc313()
+        return true
     }
 
     private fun <T> onUiSync(block: () -> T): T? {
@@ -5982,109 +6882,458 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun browserBlocklist(): List<String> {
-        val base = listOf("bca.co.id", "klikbca.com", "bri.co.id", "brimo", "livin", "bankmandiri.co.id", "bni.co.id", "dana.id", "ovo.id", "gopay.co.id", "linkaja.id")
-        val extra = (getSharedPreferences("harness", MODE_PRIVATE).getString("browserBlocklist", "") ?: "")
-            .split(",").map { it.trim() }.filter { it.isNotBlank() }
-        return base + extra
-    }
-
     private fun browserSnapshot(wv: WebView): String {
         val json = evalSync(wv, AgentBrowser.SNAPSHOT_JS) ?: return "Snapshot gagal — halaman belum siap atau JS mati."
         return AgentBrowser.formatSnapshot(json)
     }
 
-    /** Implementasi tool browser_* — dipanggil dari thread worker Tools. */
+    /** vc313 §3.2/§5: snapshot penuh hanya di giliran pertama per tab,
+     *  sesudah URL (host+path) berubah, atau bila dipaksa; selebihnya diff
+     *  vs baseline + baseline diperbarui ke snapshot penuh terbaru. */
+    private fun browserSnapshotForTab(wv: WebView, forceFull: Boolean, prefix: String): String {
+        val full = browserSnapshot(wv)
+        val idx = bActive
+        val url = try { wv.url ?: "" } catch (e: Exception) { "" }
+        val hostPath = browserHostPath(url)
+        val baseline = browserLastSnapshot[idx]
+        val prevUrl = browserLastFullUrl[idx]
+        if (forceFull || baseline == null || prevUrl == null || prevUrl != hostPath) {
+            browserLastSnapshot[idx] = full
+            browserLastFullUrl[idx] = hostPath
+            return prefix + full
+        }
+        val diff = try { AgentBrowser.diffSnapshots(baseline, full) } catch (e: Exception) { full }
+        browserLastSnapshot[idx] = full
+        if (diff.isBlank()) return prefix + "(Tidak ada perubahan sejak snapshot terakhir.)"
+        return prefix + diff
+    }
+
+    private fun browserWrapNonce(content: String): String {
+        return try { AgentBrowser.wrapNonce(browserNonce, content) } catch (e: Exception) { content }
+    }
+
+    private fun staleRefMessageVc313(ref: Int): String =
+        "ref @e$ref sudah basi — snapshot ulang (browser_read)."
+
+    /** Stale-ref retry (§3.2): REF_NOT_FOUND -> cari ulang SATU elemen via
+     *  role+nama dari lastRefs; bila unik, coba SEKALI dengan ref baru.
+     *  Mengembalikan hasil mentah tapJs/typeJs ("OK...", "REF_NOT_FOUND",
+     *  "PASSWORD_FIELD"), "EXEC_FAIL" bila eval gagal, atau pesan basi. */
+    private fun browserTapOrTypeWithStaleRetry(wv: WebView, ref: Int, isType: Boolean, text: String): String {
+        val first = evalSync(wv, if (isType) AgentBrowser.typeJs(ref, text) else AgentBrowser.tapJs(ref))
+            ?: return "EXEC_FAIL"
+        if (first != "REF_NOT_FOUND") return first
+        val entry = try { AgentBrowser.lastRefs[ref] } catch (e: Exception) { null }
+            ?: return staleRefMessageVc313(ref)
+        val findJs = try { AgentBrowser.findByRoleJs(entry.role, entry.label) } catch (e: Exception) { null }
+            ?: return staleRefMessageVc313(ref)
+        val found = evalSync(wv, findJs) ?: return staleRefMessageVc313(ref)
+        val newRef = try { AgentBrowser.findResultToRef(found) } catch (e: Exception) { null }
+            ?: return staleRefMessageVc313(ref)
+        val second = evalSync(wv, if (isType) AgentBrowser.typeJs(newRef, text) else AgentBrowser.tapJs(newRef))
+            ?: return staleRefMessageVc313(ref)
+        if (second == "REF_NOT_FOUND" || second.contains("AMBIGUOUS")) return staleRefMessageVc313(ref)
+        return second
+    }
+
+    /** WebView tab aktif untuk tool (worker thread): pulihkan daftar tab
+     *  sesudah restart bila perlu, sapu tab idle, revive tab dorman. */
+    private fun browserActiveWvForTool(): WebView? {
+        if (bTabs.isEmpty()) {
+            onUiSync { restoreBrowserTabsVc313(); Unit }
+        }
+        sweepIdleBrowserTabs()
+        val cur = onUiSync { bActiveWv() }
+        if (cur != null) {
+            touchBrowserTab(bActive)
+            return cur
+        }
+        if (bActive in bTabs.indices) {
+            val revived = onUiSync { reviveBrowserTab(bActive) }
+            if (revived != null) {
+                waitBrowserReady(revived, 8000)
+                return revived
+            }
+        }
+        return null
+    }
+
+    /** Simpan JPEG bitmap ke /sdcard/Pictures/Harness; "" bila gagal. */
+    private fun saveBrowserShotJpeg(bmp: android.graphics.Bitmap, prefix: String): String {
+        return try {
+            val dir = java.io.File("/sdcard/Pictures/Harness")
+            dir.mkdirs()
+            val f = java.io.File(dir, prefix + System.currentTimeMillis() + ".jpg")
+            val fos = java.io.FileOutputStream(f)
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, fos)
+            fos.close()
+            f.absolutePath
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /** Gambar area terlihat WebView ke JPEG; "" bila gagal. Hanya dari
+     *  UI thread (dipanggil lewat onUiSync). */
+    private fun drawVisibleShotToFile(wv: WebView): String {
+        return try {
+            // vc316 Worker BR (c): ukur bila lebar ATAU tinggi 0 (dulu
+            // hanya lebar) — tinggi 0 menghasilkan bitmap 1px.
+            if (wv.width == 0 || wv.height == 0) {
+                wv.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1600, View.MeasureSpec.EXACTLY))
+                wv.layout(0, 0, 1080, 1600)
+            }
+            val bmp = android.graphics.Bitmap.createBitmap(wv.width.coerceAtLeast(1), wv.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            wv.draw(canvas)
+            drawBrowserCursorOnCanvas(canvas, 0)
+            val p = saveBrowserShotJpeg(bmp, "browser-")
+            try { bmp.recycle() } catch (e: Exception) {}
+            p
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /** Tangkapan area terlihat (dipakai browser_shot + fallback shot_full). */
+    private fun browserShotVisible(wv: WebView): String {
+        // vc316 Worker BR (c): coba sekali lagi bila pengambilan pertama
+        // gagal — fallback shot_full bergantung pada file ini.
+        val path = onUiSync { drawVisibleShotToFile(wv) } ?: ""
+        if (path.isNotBlank()) return "📸 Halaman tersimpan: $path — bisa dilanjut analyze_photo bila perlu membaca visualnya."
+        val retry = onUiSync { drawVisibleShotToFile(wv) } ?: ""
+        return if (retry.isBlank()) "Tangkapan browser gagal." else "📸 Halaman tersimpan: $retry — bisa dilanjut analyze_photo bila perlu membaca visualnya."
+    }
+
+    /** vc313 §3.7: screenshot satu halaman penuh (scroll-stitch). Batas
+     *  total 12000px; bila halaman lebih tinggi, hanya 12000px pertama +
+     *  catatan jujur. Bila stitch gagal total -> area terlihat + alasan.
+     *  vc316 Worker BR (c): viewport degenerat (WebView belum ter-layout,
+     *  tinggi 0 -> coerceAtLeast(1) = 1 -> 12000 iterasi × 250ms) DULU
+     *  menggantung sampai timeout luar 120 dtk memotong TANPA file —
+     *  padahal pesan fallback sudah ada tapi tidak pernah tercapai karena
+     *  gantungnya di LOOP, bukan di exception. Kini: viewport diperiksa
+     *  dulu (AgentBrowser.shotFullPlanVc316) + anggaran internal 100 dtk
+     *  (di bawah timeout luar 120 dtk) — habis anggaran -> area terlihat
+     *  + alasan jujur, SELALU ada file. Timeout luar TIDAK diubah.
+     *  vc316 Worker BR (d): tiap segmen menunggu scroll benar-benar
+     *  mereda (poll scrollY, waitBrowserScrollSettledVc316) sebelum draw —
+     *  tanpa ini segmen di bawah viewport pertama hitam (draw hanya
+     *  menggambar porsi yang sudah di-raster; lihat
+     *  enableSlowWholeDocumentDraw di onCreate). */
+    private fun browserShotFull(wv: WebView): String {
+        val startMs = System.currentTimeMillis()
+        val deadlineMs = startMs + AgentBrowser.SHOT_FULL_BUDGET_MS_VC316
+        val startScrollY = (evalSync(wv, "window.scrollY")?.toIntOrNull()) ?: 0
+        var viewportH = onUiSync { wv.height.coerceAtLeast(1) } ?: 800
+        var viewportW = onUiSync { wv.width.coerceAtLeast(1) } ?: 1080
+        val pageH = (evalSync(wv, "document.body.scrollHeight")?.toIntOrNull())
+            ?: (evalSync(wv, "document.documentElement.scrollHeight")?.toIntOrNull())
+            ?: viewportH
+        // (c) viewport degenerat -> coba SEKALI ukur/layout paksa seperti
+        // browserShotVisible; masih degenerat -> fallback area terlihat.
+        var plan = AgentBrowser.shotFullPlanVc316(pageH, viewportW, viewportH)
+        if (!plan.viewportOk) {
+            onUiSync {
+                try {
+                    if (wv.width == 0 || wv.height == 0) {
+                        wv.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1600, View.MeasureSpec.EXACTLY))
+                        wv.layout(0, 0, 1080, 1600)
+                    }
+                    viewportW = wv.width.coerceAtLeast(1)
+                    viewportH = wv.height.coerceAtLeast(1)
+                } catch (e: Exception) {}
+                Unit
+            }
+            plan = AgentBrowser.shotFullPlanVc316(pageH, viewportW, viewportH)
+        }
+        if (!plan.viewportOk) {
+            return browserShotVisible(wv) + " (browser_shot_full gagal: viewport WebView belum ter-layout (" + viewportW + "×" + viewportH + ") — dikembalikan tangkapan area terlihat.)"
+        }
+        val totalH = plan.totalH
+        val capped = pageH > 12000
+        try {
+            val full = android.graphics.Bitmap.createBitmap(viewportW, totalH, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(full)
+            var y = 0
+            var timedOut = false
+            while (y < totalH) {
+                // (c) anggaran internal: habis -> berhenti, fallback.
+                if (System.currentTimeMillis() > deadlineMs) { timedOut = true; break }
+                val segY = y
+                onUiSync { wv.scrollTo(0, segY); Unit }
+                // (d) tunggu scroll mereda sebelum draw — draw sebelum
+                // raster = segmen hitam.
+                waitBrowserScrollSettledVc316(wv, segY)
+                val segH = minOf(viewportH, totalH - y)
+                val seg = onUiSync {
+                    try {
+                        val b = android.graphics.Bitmap.createBitmap(viewportW, viewportH, android.graphics.Bitmap.Config.ARGB_8888)
+                        val c = android.graphics.Canvas(b)
+                        wv.draw(c)
+                        b
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+                if (seg != null) {
+                    val src = android.graphics.Rect(0, 0, viewportW, segH)
+                    val dst = android.graphics.Rect(0, y, viewportW, y + segH)
+                    canvas.drawBitmap(seg, src, dst, null)
+                    try { seg.recycle() } catch (e: Exception) {}
+                }
+                y += viewportH
+            }
+            if (timedOut) {
+                try { full.recycle() } catch (e: Exception) {}
+                try { onUiSync { wv.scrollTo(0, startScrollY); Unit } } catch (e2: Exception) {}
+                return browserShotVisible(wv) + " (browser_shot_full gagal: batas waktu stitch 100 dtk habis di segmen ke-" + (y / viewportH) + " dari " + plan.segments + " — dikembalikan tangkapan area terlihat.)"
+            }
+            // Kursor digambar di koordinat halaman (viewport + scroll awal).
+            drawBrowserCursorOnCanvas(canvas, startScrollY)
+            val path = saveBrowserShotJpeg(full, "browser-full-")
+            try { full.recycle() } catch (e: Exception) {}
+            if (path.isBlank()) throw IllegalStateException("gagal menyimpan JPEG")
+            val note = if (capped) " (halaman lebih tinggi dari batas 12000px — hanya 12000 px pertama)" else ""
+            return "📸 Halaman penuh tersimpan: $path$note — bisa dilanjut analyze_photo bila perlu membaca visualnya."
+        } catch (e: Exception) {
+            try { onUiSync { wv.scrollTo(0, startScrollY); Unit } } catch (e2: Exception) {}
+            return browserShotVisible(wv) + " (browser_shot_full gagal: " + (e.message ?: "alasan tidak diketahui") + " — dikembalikan tangkapan area terlihat.)"
+        } finally {
+            try { onUiSync { wv.scrollTo(0, startScrollY); Unit } } catch (e: Exception) {}
+        }
+    }
+
+    /** vc316 Worker BR (d): tunggu scrollY WebView mencapai target (atau
+     *  mentok di ujung halaman) sebelum draw segmen. Minimal 250ms (waktu
+     *  raster), maks 2 dtk per segmen. */
+    private fun waitBrowserScrollSettledVc316(wv: WebView, targetY: Int) {
+        val deadline = System.currentTimeMillis() + AgentBrowser.SHOT_FULL_SEGMENT_SETTLE_MS_VC316
+        try { Thread.sleep(250) } catch (e: Exception) {}
+        while (System.currentTimeMillis() < deadline) {
+            val cur = onUiSync { wv.scrollY } ?: targetY
+            if (cur >= targetY) return
+            // Sudah mentok (tidak bisa scroll ke bawah lagi) -> lanjut.
+            // (computeVerticalScrollRange() itu protected di WebView —
+            // tidak bisa dipanggil dari MainActivity; canScrollVertically
+            // itu API publik View dan cukup untuk "sudah mentok".)
+            val atBottom = onUiSync { !wv.canScrollVertically(1) } ?: false
+            if (atBottom) return
+            try { Thread.sleep(100) } catch (e: Exception) {}
+        }
+    }
+
+    /** Implementasi tool browser_* — dipanggil dari thread worker Tools.
+     *  SEMUA return dibungkus nonce sesi (content boundaries §4.3). */
     private fun browserTool(name: String, args: JSONObject): String {
+        return browserWrapNonce(browserToolInner(name, args))
+    }
+
+    private fun browserToolInner(name: String, args: JSONObject): String {
         return when (name) {
             "browser_open" -> {
-                var url = args.optString("url").trim()
-                if (url.isBlank()) return "URL kosong."
-                if (!url.startsWith("http")) url = "https://" + url
-                val host = try { android.net.Uri.parse(url).host ?: "" } catch (e: Exception) { "" }
-                if (browserBlocklist().any { host.contains(it) }) return "⛔ DIBLOKIR (domain sensitif): $host masuk daftar blokir browser agen."
+                // vc313 §1.3: blocklist DIHAPUS — tidak ada penolakan domain.
+                // §4.6: skema non-http(s) ditangani eksplisit.
+                val raw = args.optString("url").trim()
+                if (raw.isBlank()) return "URL kosong."
+                val lower = raw.lowercase()
+                if (lower.startsWith("intent://")) return "⛔ Skema intent:// ditolak — browser agen tidak membuka aplikasi lain (§4.6)."
+                if (lower.startsWith("mailto:")) return "Skema mailto: butuh perintah user — tidak dibuka otomatis oleh agen."
+                if (lower.startsWith("tel:")) return "Skema tel: butuh perintah user — tidak dibuka otomatis oleh agen."
+                var url = raw
+                if (!lower.startsWith("http") && !lower.startsWith("view-source:") && !lower.startsWith("about:")) url = "https://" + raw
                 val wv = onUiSync { ensureBrowserTab(false) } ?: return "Browser agen belum siap."
                 onUiSync { wv.loadUrl(url); Unit }
                 waitBrowserReady(wv, 15000)
-                browserSnapshot(wv)
+                moveBrowserCursorToViewportCenterSync(wv)
+                browserSnapshotForTab(wv, true, "")
             }
             "browser_read" -> {
-                val wv = onUiSync { bActiveWv() } ?: return "Belum ada tab browser agen — buka URL dulu dengan browser_open."
-                browserSnapshot(wv)
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen — buka URL dulu dengan browser_open."
+                browserSnapshotForTab(wv, false, "")
             }
             "browser_tap" -> {
                 val ref = args.optInt("ref", -1)
                 if (ref <= 0) return "Argumen ref tidak valid."
-                val wv = onUiSync { bActiveWv() } ?: return "Belum ada tab browser agen."
-                val r = evalSync(wv, AgentBrowser.tapJs(ref)) ?: return "browser_tap gagal dieksekusi."
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                showBrowserCursorForRefThenWait(ref, wv)
+                val r = browserTapOrTypeWithStaleRetry(wv, ref, false, "")
+                if (r == "EXEC_FAIL") return "browser_tap gagal dieksekusi."
                 if (r == "REF_NOT_FOUND") return "Elemen #$ref tidak ditemukan — panggil browser_read untuk snapshot baru."
+                if (r.startsWith("ref @e")) return r
                 waitBrowserReady(wv, 6000)
-                "Diklik: " + r.removePrefix("OK:") + "\n" + browserSnapshot(wv)
+                moveBrowserCursorToViewportCenterSync(wv)
+                browserSnapshotForTab(wv, false, "Diklik: " + r.removePrefix("OK:") + "\n")
             }
             "browser_type" -> {
                 val ref = args.optInt("ref", -1)
                 val text = args.optString("text")
                 if (ref <= 0) return "Argumen ref tidak valid."
-                val wv = onUiSync { bActiveWv() } ?: return "Belum ada tab browser agen."
-                val r = evalSync(wv, AgentBrowser.typeJs(ref, text)) ?: return "browser_type gagal dieksekusi."
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                showBrowserCursorForRefThenWait(ref, wv)
+                val r = browserTapOrTypeWithStaleRetry(wv, ref, true, text)
+                if (r == "EXEC_FAIL") return "browser_type gagal dieksekusi."
                 when (r) {
                     "REF_NOT_FOUND" -> "Elemen #$ref tidak ditemukan — panggil browser_read untuk snapshot baru."
                     "PASSWORD_FIELD" -> "⛔ Kolom kata sandi — browser agen tidak mengisi kata sandi. Minta user mengisinya sendiri."
-                    else -> "Diketik ke elemen #$ref.\n" + browserSnapshot(wv)
+                    else -> {
+                        if (r.startsWith("ref @e")) r
+                        else {
+                            waitBrowserReady(wv, 6000)
+                            moveBrowserCursorToViewportCenterSync(wv)
+                            browserSnapshotForTab(wv, false, "Diketik ke elemen #$ref.\n")
+                        }
+                    }
                 }
+            }
+            "browser_back" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val canBack = onUiSync { wv.canGoBack() } ?: false
+                if (!canBack) return "Tidak ada histori mundur."
+                onUiSync { wv.goBack(); Unit }
+                waitBrowserReady(wv, 6000)
+                moveBrowserCursorToViewportCenterSync(wv)
+                browserSnapshotForTab(wv, false, "")
+            }
+            "browser_forward" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val canFwd = onUiSync { wv.canGoForward() } ?: false
+                if (!canFwd) return "Tidak ada histori maju."
+                onUiSync { wv.goForward(); Unit }
+                waitBrowserReady(wv, 6000)
+                moveBrowserCursorToViewportCenterSync(wv)
+                browserSnapshotForTab(wv, false, "")
+            }
+            "browser_reload" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                onUiSync { wv.reload(); Unit }
+                waitBrowserReady(wv, 15000)
+                moveBrowserCursorToViewportCenterSync(wv)
+                browserSnapshotForTab(wv, false, "")
+            }
+            "browser_find" -> {
+                val query = args.optString("query")
+                if (query.isBlank()) return "Argumen query kosong."
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var found = -1
+                onUiSync {
+                    try {
+                        wv.setFindListener(object : WebView.FindListener {
+                            override fun onFindResultReceived(activeMatchOrdinal: Int, numberOfMatches: Int, isDoneCounting: Boolean) {
+                                if (isDoneCounting) {
+                                    found = numberOfMatches
+                                    latch.countDown()
+                                }
+                            }
+                        })
+                        wv.findAllAsync(query)
+                    } catch (e: Exception) {
+                        latch.countDown()
+                    }
+                    Unit
+                }
+                val done = latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                if (!done || found < 0) "Pencarian \"$query\" belum selesai dalam 5 detik — coba lagi."
+                else if (found == 0) "Tidak ada kecocokan untuk \"$query\"."
+                else "Ditemukan $found kecocokan untuk \"$query\"."
+            }
+            "browser_ua" -> {
+                val mode = args.optString("mode").trim().lowercase()
+                if (mode != "mobile" && mode != "desktop") return "Mode UA tidak valid: \"$mode\". Nilai yang sah: \"mobile\" atau \"desktop\"."
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val ua = if (mode == "desktop") BROWSER_DESKTOP_UA_VC313 else (bTabDefaultUa[bActive] ?: "")
+                if (ua.isBlank()) return "UA default tab ini tidak tercatat — tidak bisa kembali ke mobile."
+                onUiSync {
+                    try { wv.settings.userAgentString = ua } catch (e: Exception) {}
+                    bTabUaMode[bActive] = mode
+                    Unit
+                }
+                onUiSync { wv.reload(); Unit }
+                waitBrowserReady(wv, 15000)
+                "UA tab ini: $mode ($ua)"
+            }
+            "browser_downloads" -> {
+                val items = try { BrowserDownloadManager.list() } catch (e: Exception) { emptyList() }
+                if (items.isEmpty()) "Belum ada unduhan sesi ini."
+                else items.joinToString("\n") { it.name + " — " + formatBrowserBytesVc313(it.sizeBytes) + " — " + it.status + " — " + it.path }
+            }
+            "browser_console" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val rows = synchronized(browserConsoleLog) { browserConsoleLog[bActive]?.toList() ?: emptyList() }
+                if (rows.isEmpty()) "Konsol kosong." else rows.takeLast(200).joinToString("\n")
+            }
+            "browser_network" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                val rows = synchronized(browserNetworkLog) { browserNetworkLog[bActive]?.toList() ?: emptyList() }
+                if (rows.isEmpty()) "Belum ada request tercatat."
+                else rows.joinToString("\n") { e -> e.method + " " + e.status + " " + e.url + " (" + formatBrowserBytesVc313(e.sizeBytes) + ")" }
+            }
+            "browser_shot_full" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                browserShotFull(wv)
+            }
+            "browser_snapshot_full" -> {
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                browserSnapshotForTab(wv, true, "")
             }
             "browser_tabs" -> {
                 val action = args.optString("action", "list")
+                if (bTabs.isEmpty()) {
+                    onUiSync { restoreBrowserTabsVc313(); Unit }
+                }
                 when (action) {
-                    "new" -> { onUiSync { ensureBrowserTab(true) }; "Tab browser baru dibuka (total " + bTabs.size + ")." }
+                    "new" -> {
+                        val created = onUiSync { ensureBrowserTab(true) }
+                        if (created == null) "Batas 5 tab aktif — tutup satu tab dulu (browser_tabs close), tidak ada tab yang ditutup otomatis."
+                        else "Tab browser baru dibuka (total " + bTabs.size + ")."
+                    }
                     "switch" -> {
                         val idx = args.optInt("index", -1)
-                        val ok = onUiSync { if (idx in bTabs.indices) { bActive = idx; updateBrowserVisibility(); true } else false } ?: false
-                        if (ok) { val wv = bActiveWv()!!; waitBrowserReady(wv, 4000); browserSnapshot(wv) } else "Indeks tab tidak valid."
+                        if (idx !in bTabs.indices) "Indeks tab tidak valid."
+                        else {
+                            val wv = onUiSync {
+                                bActive = idx
+                                touchBrowserTab(idx)
+                                val live = bTabs[idx] ?: reviveBrowserTab(idx)
+                                updateBrowserVisibility()
+                                live
+                            }
+                            if (wv == null) "Tab tidak bisa dibuka kembali."
+                            else {
+                                moveBrowserCursorToViewportCenterSync(wv)
+                                waitBrowserReady(wv, 4000)
+                                browserSnapshotForTab(wv, false, "")
+                            }
+                        }
                     }
                     "close" -> {
                         val idx = args.optInt("index", bActive)
-                        val ok = onUiSync {
-                            if (idx in bTabs.indices) {
-                                val wv = bTabs.removeAt(idx)
-                                try { (wv.parent as? android.view.ViewGroup)?.removeView(wv); wv.destroy() } catch (e: Exception) {}
-                                bActive = when { bTabs.isEmpty() -> -1; bActive >= bTabs.size -> bTabs.size - 1; else -> bActive }
-                                updateBrowserVisibility(); true
-                            } else false
-                        } ?: false
+                        val ok = onUiSync { closeBrowserTab(idx) } ?: false
                         if (ok) "Tab ditutup. Sisa " + bTabs.size + " tab." else "Indeks tab tidak valid."
                     }
                     else -> {
-                        val rows = onUiSync { bTabs.mapIndexed { i, wv -> (if (i == bActive) "● " else "○ ") + "Tab " + (i + 1) + ": " + (wv.title ?: "") + " — " + (wv.url ?: "") } } ?: emptyList()
+                        val rows = onUiSync {
+                            bTabs.indices.map { i ->
+                                val live = bTabs[i]
+                                val meta = synchronized(bTabMeta) { bTabMeta.getOrNull(i) }
+                                val title = live?.title ?: meta?.title ?: ""
+                                val url = live?.url ?: meta?.url ?: ""
+                                (if (i == bActive) "● " else "○ ") + "Tab " + (i + 1) + ": " + title + " — " + url + (if (live == null) " (belum dimuat)" else "")
+                            }
+                        } ?: emptyList()
                         if (rows.isEmpty()) "Belum ada tab browser agen." else rows.joinToString("\n")
                     }
                 }
             }
             "browser_shot" -> {
-                val wv = onUiSync { bActiveWv() } ?: return "Belum ada tab browser agen."
-                val path = onUiSync {
-                    try {
-                        if (wv.width == 0) {
-                            wv.measure(View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1600, View.MeasureSpec.EXACTLY))
-                            wv.layout(0, 0, 1080, 1600)
-                        }
-                        val bmp = android.graphics.Bitmap.createBitmap(wv.width.coerceAtLeast(1), wv.height.coerceAtLeast(1), android.graphics.Bitmap.Config.ARGB_8888)
-                        val canvas = android.graphics.Canvas(bmp)
-                        wv.draw(canvas)
-                        val dir = java.io.File("/sdcard/Pictures/Harness")
-                        dir.mkdirs()
-                        val f = java.io.File(dir, "browser-" + System.currentTimeMillis() + ".jpg")
-                        val fos = java.io.FileOutputStream(f)
-                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, fos)
-                        fos.close()
-                        f.absolutePath
-                    } catch (e: Exception) { "" }
-                } ?: ""
-                if (path.isBlank()) "Tangkapan browser gagal." else "📸 Halaman tersimpan: $path — bisa dilanjut analyze_photo bila perlu membaca visualnya."
+                val wv = browserActiveWvForTool() ?: return "Belum ada tab browser agen."
+                browserShotVisible(wv)
             }
             else -> "Tool browser tidak dikenal: $name"
         }
     }
+
 
     // ===== T4a (migrasi UI native): Terminal Pro + panel sesi + Command Center =====
 
@@ -6315,7 +7564,7 @@ class MainActivity : Activity() {
         Triple("otomasi", "🧠 Memori & Otomasi", "Gubernur latar, rutinitas agen, memori, backup otak"),
         Triple("skill", "🧩 Skill Agen", "Impor & kelola skill agen"),
         Triple("tampilan", "🎚️ Langkah & Tampilan", "Batas langkah, ukuran font chat, bubble, asisten digital"),
-        Triple("debug", "🛠️ Debug & Diagnostik", "Dump prompt, tes pola redaksi, uji mandiri, ANR, rekaman Mode Operator")
+        Triple("debug", "🛠️ Debug & Diagnostik", "Dump prompt, tes pola redaksi, uji mandiri, ANR, rekaman Mode Jhon")
     )
 
     // v4.48.8.3: kategori memakai LABEL tombol, BUKAN posisi. Posisi
@@ -6326,7 +7575,7 @@ class MainActivity : Activity() {
         "monitor" -> listOf("18.", "19.", "20.", "21.", "22.", "23.", "24.", "25.", "55.")
         "koneksi" -> listOf("1.", "2.", "3.", "4.", "5.", "6.", "9.", "10.", "33.", "34.", "35.", "36.", "37.", "38.", "52.", "63.", "64.", "67.")
         "mesin" -> listOf("39.")
-        "konektor" -> listOf("7.", "8.", "61.", "62.")
+        "konektor" -> listOf("7.", "8.", "61.", "62.", "71.")
         "persona" -> listOf("11.", "12.", "40.", "41.", "42.")
         "otomasi" -> listOf("13.", "14.", "15.", "16.", "17.", "28.", "29.", "30.", "31.", "32.", "49.", "50.", "53.", "54.", "56.", "65.", "65a.", "65b.", "66.", "68.", "69.", "70.")
         "skill" -> listOf("51.")
@@ -6341,7 +7590,7 @@ class MainActivity : Activity() {
         "19." -> AksiMeta("🔑", "PIN Aksi Sensitif", "Tool berisiko wajib PIN", 0)
         "20." -> AksiMeta("💾", "Backup Memori", "Ekspor memori ke JSON di Download", 0)
         "22." -> AksiMeta("🆘", "Kontak Darurat", "Untuk tombol SOS & penjaga inaktivitas", 0)
-        "23." -> AksiMeta("👂", "Mode Siaga Wake Word", "Hai Asisten — dengar terus, boros baterai", 0)
+        "23." -> AksiMeta("👂", "Mode Siaga Wake Word", "Hai Senz — dengar terus, boros baterai", 0)
         "24." -> AksiMeta("💬", "Komentar Layar Proaktif", "Tawaran bantuan dari isi layar", 0)
         "25." -> AksiMeta("🔄", "Akun Google & Sinkron", "Gmail + frasa sandi memori", 0)
         "55." -> AksiMeta("📰", "Tes Laporan Pagi", "Tes sekali jalan — hasil via notifikasi", 0)
@@ -6354,7 +7603,7 @@ class MainActivity : Activity() {
         "9." -> AksiMeta("📁", "Akses Semua File", "Izin kelola semua file", 0)
         "10." -> AksiMeta("ℹ️", "Info Aplikasi", "Buka setelan app — Allow restricted settings", 0)
         "33." -> AksiMeta("🛰️", "Cek Jalur Serve", "Periksa jalur serve koordinator", 0)
-        "34." -> AksiMeta("🚀", "Pasang Serve Mandiri + Boot", "Port 4100 + pasang boot script", 0)
+        "34." -> AksiMeta("🚀", "Pasang Serve Mandiri + Boot", "Port 4099 + pasang boot script", 0)
         "35." -> AksiMeta("🐧", "Nyalakan Server", "Mode ADB via Termux + ADB", 0)
         "36." -> AksiMeta("📶", "Tes Server", "Ping server Mode ADB", 0)
         "37." -> AksiMeta("🔗", "Pairing Mandiri", "Pairing Mode ADB S3, tanpa Termux", 0)
@@ -6365,6 +7614,8 @@ class MainActivity : Activity() {
         "8." -> AksiMeta("📦", "Shizuku: File dex", "Jalur lama — pakai hanya bila perlu", 0)
         "61." -> AksiMeta("🔗", "Konektor MCP", "Server MCP resmi + kustom", 0)
         "62." -> AksiMeta("🔌", "Token API-Buatan", "Token klien API-Buatan, status ADA/BELUM", 0)
+        // vc314 Worker B — Concat (kategori konektor, tombol backing 71.).
+        "71." -> AksiMeta("🎬", "Concat", "Buka proyek Concat, token tersimpan aman", 0)
         "63." -> AksiMeta("🧑‍🏭", "Jobs Proot (Supervisor)", "Job latar proot: status, ekor log, kill, restart", 0)
         "64." -> AksiMeta("🔍", "Mitmproxy Terkelola", "Resident mitmproxy: mulai, stop, sehat, route, proxy env", 0)
         "67." -> AksiMeta("👷", "Worker (Device Server)", "Daftar & kendali worker proot/Python", 0)
@@ -6376,7 +7627,7 @@ class MainActivity : Activity() {
         "13." -> AksiMeta("🫧", "Bubble Melayang", "Panggil asisten dari app mana pun", 0)
         "14." -> AksiMeta("⚡", "Mode Proaktif", "Pengingat + briefing pagi + rekap malam", 0)
         "15." -> AksiMeta("🌅", "Jam Briefing Pagi", "Ketuk untuk ganti jam", 0)
-        "16." -> AksiMeta("🤖", "Asisten Default Android", "Jadikan Harness asisten default", 0)
+        "16." -> AksiMeta("🤖", "Asisten Default Android", "Jadikan S&Harness asisten default", 0)
         "17." -> AksiMeta("🗑️", "Hapus Semua Memori & Riwayat", "Destruktif — hapus permanen, konfirmasi dulu", 1)
         "65." -> AksiMeta("🧠", "Fakta Menunggu Persetujuan", "Setujui/hapus fakta belum dikonfirmasi + usulan ekstraksi", 0)
         "65a." -> AksiMeta("📜", "Riwayat Fakta — Superseded/Withdrawn", "Fakta diganti/ditarik — ketuk untuk memulihkan ke aktif", 0)
@@ -6407,8 +7658,8 @@ class MainActivity : Activity() {
         "58." -> AksiMeta("🕵️", "Tes Pola Redaksi", "Uji penyamaran data sensitif di log", 0)
         "59." -> AksiMeta("✅", "Uji Mandiri", "Tes kesehatan app tanpa model & jaringan", 0)
         "60." -> AksiMeta("🐢", "Jejak ANR Terakhir", "Laporan macet (ANR) terakhir", 0)
-        "12b." -> AksiMeta("🎛️", "Mode Operator", "Paksa API Internal + rekam diagnostik", 0)
-        "12c." -> AksiMeta("🎞️", "Lihat Rekaman Diagnostik", "Buka hasil rekaman Mode Operator", 0)
+        "12b." -> AksiMeta("🎛️", "Mode Jhon", "Paksa API Internal + rekam diagnostik", 0)
+        "12c." -> AksiMeta("🎞️", "Lihat Rekaman Diagnostik", "Buka hasil rekaman Mode Jhon", 0)
         "12d." -> AksiMeta("🔍", "Bandingkan Rekaman Browser", "Bandingkan rekaman dengan browser DeepSeek", 0)
         else -> AksiMeta("⚙️", "Aksi " + prefix, "Buka aksi", 0)
     }
@@ -6436,6 +7687,15 @@ class MainActivity : Activity() {
         val box = setupNativeBox ?: return
         runOnUiThread {
             box.removeAllViews()
+            // vc310 Worker A (B13): state detail skill hanya hidup di
+            // setupView="skill" — keluar dari kategori itu, reset supaya
+            // kembali nanti selalu mulai dari daftar.
+            if (setupView != "skill") {
+                skillDetailIdVc310 = -1
+                skillDetailTabVc310 = "ringkasan"
+                skillDetailVersionVc310 = -1
+                skillDetailCodeVc310 = false
+            }
             val th = currentTheme()
             try { (setupNativeBox?.parent?.parent as? android.view.View)?.setBackgroundColor(th.bg) } catch (e: Exception) {}
             try { setupTitleTv?.setTextColor(th.text) } catch (e: Exception) {}
@@ -6452,7 +7712,7 @@ class MainActivity : Activity() {
                     layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
                 })
                 val idCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-                idCol.addView(tv("Harness", 17f, th.text, true))
+                idCol.addView(tv("S&Harness", 17f, th.text, true))
                 idCol.addView(tv("Pengaturan agen & perangkat", 12f, th.dim))
                 idRow.addView(idCol)
                 box.addView(idRow)
@@ -6467,13 +7727,30 @@ class MainActivity : Activity() {
                 return@runOnUiThread
             }
             val cat = SETUP_CATS.firstOrNull { it.first == setupView }
+            // vc310 Worker A (B13): di detail skill, tombol kembali =
+            // "← Skills Anda" (ke daftar), bukan ke menu kategori.
+            val inSkillDetailVc310 = setupView == "skill" && skillDetailIdVc310 >= 0
             box.addView(Button(this).apply {
-                text = "← Semua Kategori"
+                text = if (inSkillDetailVc310) "← Skills Anda" else "← Semua Kategori"
                 gravity = Gravity.START
                 background = roundedS(th.card, 14, th.stroke); setTextColor(th.text)
-                setOnClickListener { setupView = "menu"; refreshSetupNative() }
+                setOnClickListener {
+                    if (inSkillDetailVc310) {
+                        skillDetailIdVc310 = -1
+                        skillDetailTabVc310 = "ringkasan"
+                        skillDetailVersionVc310 = -1
+                        skillDetailCodeVc310 = false
+                        refreshSetupNative()
+                    } else {
+                        setupView = "menu"; refreshSetupNative()
+                    }
+                }
             })
-            box.addView(tv(cat?.second ?: setupView, 15f, th.text, true))
+            // vc310 Worker A (B13): judul detail = nama skill.
+            val skillDetailNameVc310 = if (inSkillDetailVc310) try { MemoryDb.get(this).skills().firstOrNull { it.id == skillDetailIdVc310 }?.name } catch (e: Exception) { null } else null
+            // vc314 Worker B: judul layar detail Concat (setupView di luar
+            // SETUP_CATS — tanpa ini judulnya "concat" huruf kecil).
+            box.addView(tv(if (setupView == "concat") "Concat" else skillDetailNameVc310 ?: cat?.second ?: setupView, 15f, th.text, true))
             box.addView(themeSwitchRow())
             when (setupView) {
                 "monitor" -> box.addView(setupPermsCard())
@@ -6482,7 +7759,9 @@ class MainActivity : Activity() {
                 "konektor" -> box.addView(setupConnectorsCard(st))
                 "persona" -> { box.addView(setupDefModeCard()); val pPers = getSharedPreferences("harness", MODE_PRIVATE); val persEt = EditText(this).apply { hint = "Persona / instruksi asisten"; setText(pPers.getString("persona", "")); setTextColor(th.text); setHintTextColor(th.dim); background = roundedS(th.card, 14, th.stroke); minLines = 2 }; box.addView(persEt); box.addView(Button(this).apply { text = "Simpan Persona"; gravity = Gravity.START; background = roundedS(th.card, 14, th.stroke); setTextColor(th.text); setOnClickListener { pPers.edit().putString("persona", persEt.text.toString()).apply(); setupStatusTv.text = "Persona tersimpan ✓ (berlaku mulai pesan chat berikutnya)" } }) }
                 "otomasi" -> { box.addView(setupGovCard(st)); box.addView(setupRoutinesCard(st)) }
-                "skill" -> box.addView(setupSkillsCard(st))
+                "skill" -> box.addView(if (skillDetailIdVc310 >= 0) buildSkillDetailVc310(skillDetailIdVc310) else setupSkillsCard(st))
+                // vc314 Worker B: layar detail Concat (Setup → Konektor → Concat).
+                "concat" -> box.addView(buildConcatCardVc314())
                 "tampilan" -> box.addView(setupFontCard(st))
             }
             if (setupView == "debug") {
@@ -6688,6 +7967,142 @@ class MainActivity : Activity() {
         return c
     }
 
+    // vc314 Worker B — layar setup Concat (Setup → Konektor → Concat,
+    // tombol backing "71.", setupView="concat" — bukan Activity baru,
+    // pola layar detail skill vc310). Desain Mist (keputusan Sendy
+    // 18:54): palet penuh via currentTheme() (token ChatThemeVc306,
+    // TANPA hex baru), kartu cardBoxT, label seksi pola
+    // skillSectionLabelVc310, baris kunci/nilai pola skillKvRowVc310,
+    // ubin ikon pola skillIconTileVc310 (ikon path "play", bukan emoji),
+    // Switch asli pola skillSwitchVc310 (tint aksen Mist), tombol
+    // thBtn/thRowBtn. Token: EditText masked
+    // (TYPE_TEXT_VARIATION_PASSWORD), simpan HANYA via SecureStore.put
+    // "concat_api_token"; nilai TIDAK PERNAH tampil di toast/snackbar/
+    // teks mana pun, TIDAK PERNAH di-log. "Uji koneksi" jalan di Thread
+    // (panggilan jaringan blokir — pelajaran ANR vc193).
+    private fun concatSwitchVc314(checked: Boolean, desc: String, onChange: (Boolean) -> Unit): android.widget.Switch = android.widget.Switch(this).apply {
+        val th = currentTheme()
+        isChecked = checked
+        contentDescription = desc
+        try {
+            thumbTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(Color.WHITE, th.dim)
+            )
+            trackTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(ACCENT, th.track)
+            )
+        } catch (e: Exception) {}
+        setOnCheckedChangeListener { _, on -> onChange(on) }
+    }
+
+    private fun buildConcatCardVc314(): LinearLayout {
+        val th = currentTheme()
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        // Kartu header ala skillCardVc310: ubin ikon + nama + meta + Switch.
+        val head = cardBoxT()
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        top.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            background = rounded(th.tileBg, 12)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            addView(ImageView(this@MainActivity).apply {
+                setImageDrawable(pathIconVc306("play", th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconLg)))
+                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
+            })
+        })
+        val mid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(10), 0, dp(8), 0) }
+        }
+        mid.addView(tv("Concat", 15f, th.text, true))
+        mid.addView(tv(ConcatTools.cardSubtitle(this), 12.5f, th.dim))
+        top.addView(mid)
+        top.addView(concatSwitchVc314(ConcatTools.isEnabled(this), "Aktifkan tool Concat") { on ->
+            ConcatTools.setEnabled(this@MainActivity, on)
+            setupStatusTv.text = if (on) "Perintah Concat dinyalakan." else "Perintah Concat dimatikan — tidak jalan sampai dinyalakan lagi."
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 400)
+        })
+        head.addView(top)
+        head.addView(tv("Di sini kamu bisa buka proyek Concat dan lihat isinya tanpa membuka layarnya. Penting: tutup dulu proyeknya di layar Concat sebelum dibuka dari sini — layar Concat tidak ikut berubah kalau proyek diubah dari sini.", 13f, th.dim).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+        })
+        wrap.addView(head)
+        // Status server + token (nilai token TIDAK PERNAH tampil).
+        wrap.addView(skillSectionLabelVc310("Status server"))
+        val st = cardBoxT()
+        st.addView(skillKvRowVc310("Server", ConcatTools.lastCheck(this)))
+        st.addView(skillKvRowVc310("Token", if (ConcatTools.hasToken(this)) "ADA (isinya tidak ditampilkan)" else "BELUM"))
+        st.addView(skillKvRowVc310("Perintah", if (ConcatTools.isEnabled(this)) "Aktif" else "Nonaktif"))
+        wrap.addView(st)
+        // Token.
+        wrap.addView(skillSectionLabelVc310("Token Concat"))
+        val tk = cardBoxT()
+        tk.addView(tv("Token itu seperti kunci rahasia Concat (paling sedikit 20 karakter). Ketik sekali saja — kunci tersimpan aman di HP, tidak pernah ditampilkan.", 12.5f, th.dim))
+        val et = EditText(this).apply {
+            hint = "Tempel token Concat"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setTextColor(th.text); setHintTextColor(th.faint)
+            background = roundedS(th.card, ChatThemeVc306.rMd, th.stroke)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, dp(8)) }
+        }
+        tk.addView(et)
+        val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        thRowBtn(rowB, "Simpan", true) {
+            val v = et.text.toString().trim()
+            val err = ConcatTools.validateTokenForSave(v)
+            if (err != null) { setupStatusTv.text = err; return@thRowBtn }
+            SecureStore.put(this@MainActivity, ConcatTools.TOKEN_KEY, v)
+            et.setText("")
+            setupStatusTv.text = "Token tersimpan (isinya tidak ditampilkan). Tekan 'Uji koneksi' untuk memastikan server Concat menjawab."
+            refreshSetupNative()
+        }
+        thRowBtn(rowB, "Uji koneksi") { concatTestConnectionVc314() }
+        thRowBtn(rowB, "Hapus token") { concatDeleteTokenVc314() }
+        tk.addView(rowB)
+        wrap.addView(tk)
+        wrap.addView(tv("Server Concat hanya jalan di HP ini, tidak dibuka ke internet. Kalau server mati atau token salah, aplikasi akan bilang terus terang — tidak akan diam-diam menekan-nekan layar.", 11.5f, th.faint))
+        return wrap
+    }
+
+    private fun concatTestConnectionVc314() {
+        Toast.makeText(this, "Menguji koneksi Concat…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val token = try { SecureStore.get(this@MainActivity, ConcatTools.TOKEN_KEY) } catch (e: Exception) { null }
+            val result = if (token.isNullOrBlank()) {
+                ConcatTools.NO_TOKEN_MESSAGE
+            } else {
+                try {
+                    val v = ConcatApi.version(token)
+                    // vc315: simpan versi LIVE untuk subtitle kartu setup
+                    // (bila belum pernah terhubung, dipakai 0.2.10).
+                    ConcatTools.setLastVersion(this@MainActivity, v)
+                    "ok: " + v
+                } catch (e: ConcatApiException) { "gagal: " + (e.message ?: "kesalahan tidak dikenal") } catch (e: Exception) { "gagal: " + (e.message ?: "kesalahan tidak dikenal") }
+            }
+            ConcatTools.setLastCheck(this@MainActivity, result)
+            val shown = ConcatTools.lastCheck(this@MainActivity)
+            runOnUiThread {
+                setupStatusTv.text = if (shown.startsWith("ok:")) "Uji koneksi Concat berhasil." else shown
+                refreshSetupNative()
+            }
+        }.start()
+    }
+
+    private fun concatDeleteTokenVc314() {
+        AlertDialog.Builder(this).setTitle("Hapus token Concat?")
+            .setMessage("Perintah Concat tidak bisa jalan sampai kamu masukkan token baru di layar ini.")
+            .setPositiveButton("Hapus") { _, _ ->
+                SecureStore.delete(this@MainActivity, ConcatTools.TOKEN_KEY)
+                ConcatTools.setLastCheck(this@MainActivity, "belum dicek")
+                setupStatusTv.text = "Token Concat dihapus."
+                refreshSetupNative()
+            }
+            .setNegativeButton("Batal", null).show()
+    }
+
     private fun setupDefModeCard(): LinearLayout {
         val c = cardBoxT()
         val th = currentTheme()
@@ -6795,45 +8210,651 @@ class MainActivity : Activity() {
         return c
     }
 
-    private fun setupSkillsCard(st: JSONObject): LinearLayout {
-        val c = cardBoxT()
-        val th = currentTheme()
-        c.addView(tv("MANAJER SKILL", 12f, th.dim, true))
-        val arr = st.optJSONArray("skillsList") ?: org.json.JSONArray()
-        if (arr.length() == 0) c.addView(tv("Belum ada skill. Impor SKILL.md dari folder Download lewat tombol di bawah.", 12.5f, th.dim))
-        for (i in 0 until arr.length()) {
-            val sk = arr.optJSONObject(i) ?: continue
-            val id = sk.optInt("id", -1)
-            val en = sk.optBoolean("enabled", true)
-            val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            nameRow.addView(tv("🧩 " + sk.optString("name"), 13f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
-            nameRow.addView(tv(if (en) "● Aktif" else "○ Nonaktif", 11.5f, if (en) (if (isDarkTheme()) Color.rgb(80, 220, 140) else Color.rgb(21, 128, 61)) else th.dim, true))
-            c.addView(nameRow)
-            val d = sk.optString("descr")
-            if (d.isNotBlank()) c.addView(tv(d, 11.5f, th.dim))
-            val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            rowB.addView(thSmallBtn("✏️ Edit") { setupSkillEditDialog(id) })
-            // vc300 BAGIAN-C: riwayat versi skill (dulu TIDAK ADA — lihat
-            // RENCANA-C-UI-IMPOR.md §1a). Satu handler dengan tombol di
-            // dialog edit di bawah.
-            rowB.addView(thSmallBtn("🕘 Riwayat versi") { showSkillVersionHistory(id) })
-            rowB.addView(Button(this).apply {
-                text = if (en) "Nonaktifkan" else "Aktifkan"
-                setOnClickListener { uiSkillToggle(id, !en); android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 400) }
-            })
-            rowB.addView(Button(this).apply {
-                text = "Hapus"
-                setOnClickListener {
-                    android.app.AlertDialog.Builder(this@MainActivity).setTitle("Hapus skill?")
-                        .setMessage(sk.optString("name"))
-                        .setPositiveButton("Hapus") { _, _ -> uiSkillDelete(id); android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 400) }
-                        .setNegativeButton("Batal", null).show()
-                }
-            })
-            c.addView(rowB)
+    // ===== vc310 Worker A (B13): Layar daftar + detail Skill ala Claude =====
+    // Entry: Setup → "Skill Agen" (S1=A — ganti isi setupSkillsCard).
+    // Data HANYA dari query yang sudah ada (skills / latestSkillVersion /
+    // skillVersions / evalSummary) — tanpa migrasi DB, tanpa kolom baru.
+    // "oleh Anda" = asumsi S7=A (semua skill di HP ini buatan Sendy/agennya);
+    // "Baru" diturunkan dari skill_versions.created_ts ≤ 7 hari.
+    // Ikon baru (table/download/edit/eye/code/skill) = Path di
+    // pathIconVc306, SATU token warna th.tileTint di semua call-site.
+
+    /** Versi terbaru skill (dengan backfill v1 bila belum ada versi —
+     *  latestSkillVersion() sendiri tidak mem-backfill, skillVersions()
+     *  yang melakukannya). */
+    private fun skillLatestVc310(skillId: Long): SkillVersion? {
+        val db = try { MemoryDb.get(this) } catch (e: Exception) { return null }
+        return try {
+            db.latestSkillVersion(skillId) ?: run {
+                try { db.skillVersions(skillId) } catch (e: Exception) {}
+                db.latestSkillVersion(skillId)
+            }
+        } catch (e: Exception) { null }
+    }
+
+    /** Badge "Baru" (S7=A): versi terbaru dibuat ≤ 7 hari lalu. */
+    private fun skillIsNewVc310(latest: SkillVersion?): Boolean {
+        if (latest == null || latest.createdTs <= 0) return false
+        return System.currentTimeMillis() - latest.createdTs <= 7L * 24L * 3600L * 1000L
+    }
+
+    /** Judge (total, grade) — utamakan versi terbaru (snapshot membawa
+     *  judge), fallback ke evalJson live. Null bila belum pernah dinilai. */
+    private fun skillJudgeVc310(sk: Skill, latest: SkillVersion?): Pair<Int, String>? {
+        if (latest != null && latest.judgeTotal >= 0) return Pair(latest.judgeTotal, latest.judgeGrade)
+        if (sk.evalJson.isBlank()) return null
+        return try {
+            val o = JSONObject(sk.evalJson)
+            val total = o.optInt("judge_total", -1)
+            if (total < 0) null else Pair(total, o.optString("grade", "?"))
+        } catch (e: Exception) { null }
+    }
+
+    /** Trigger TEST % dari evalJson (live, fallback versi terbaru).
+     *  -1 = belum dievaluasi trigger. */
+    private fun skillTriggerVc310(sk: Skill, latest: SkillVersion?): Int {
+        for (json in listOf(sk.evalJson, latest?.evalJson ?: "")) {
+            if (json.isBlank()) continue
+            try {
+                val o = JSONObject(json)
+                if (o.has("trigger_test")) return o.optInt("trigger_test", -1)
+            } catch (e: Exception) {}
         }
-        c.addView(Button(this).apply { text = "📥 Impor Skill (.md dari Download)"; setOnClickListener { uiImportSkills(); android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 1500) } })
-        return c
+        return -1
+    }
+
+    /** Meta daftar/detail: "oleh Anda · v<n> · diperbarui <relTime>". */
+    private fun skillMetaVc310(latest: SkillVersion?): String {
+        if (latest == null) return "oleh Anda"
+        val rel = relTime(latest.createdTs)
+        return "oleh Anda · v" + latest.versionNo + if (rel.isNotBlank()) " · diperbarui $rel" else ""
+    }
+
+    /** Warna chip grade — palet mockup (Mist): A/B hijau, C kuning,
+     *  D oranye, F merah. Pair(latar, teks) per tema. */
+    private fun gradeChipColorsVc310(grade: String): Pair<Int, Int> {
+        val dark = isDarkTheme()
+        return when (grade.uppercase()) {
+            "A", "B" -> if (dark) Pair(Color.rgb(29, 61, 45), Color.rgb(139, 204, 166)) else Pair(Color.rgb(217, 240, 225), Color.rgb(51, 114, 80))
+            "C" -> if (dark) Pair(Color.rgb(68, 49, 22), Color.rgb(230, 189, 124)) else Pair(Color.rgb(249, 233, 206), Color.rgb(147, 97, 35))
+            "D" -> if (dark) Pair(Color.rgb(61, 42, 26), Color.rgb(232, 160, 106)) else Pair(Color.rgb(251, 231, 207), Color.rgb(154, 91, 35))
+            else -> if (dark) Pair(Color.rgb(69, 44, 44), Color.rgb(230, 144, 137)) else Pair(Color.rgb(255, 226, 224), Color.rgb(165, 71, 67))
+        }
+    }
+
+    private fun skillJudgeChipVc310(total: Int, grade: String): TextView {
+        val (bg, fg) = gradeChipColorsVc310(grade)
+        return TextView(this).apply {
+            text = "Judge $total/120 ($grade)"
+            textSize = 11.5f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(fg); background = rounded(bg, 100)
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+        }
+    }
+
+    private fun skillTriggerChipVc310(triggerPct: Int): TextView {
+        val th = currentTheme()
+        return TextView(this).apply {
+            text = if (triggerPct >= 0) "Trigger TEST $triggerPct%" else "Belum dievaluasi trigger"
+            textSize = 11.5f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(th.dim); background = rounded(th.tileBg, 100)
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+        }
+    }
+
+    private fun skillNewBadgeVc310(): TextView = TextView(this).apply {
+        text = "Baru"
+        textSize = 11f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+        setTextColor(Color.WHITE); background = rounded(ChatThemeVc306.approveBlue, 100)
+        setPadding(dp(8), dp(2), dp(8), dp(2))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(6), 0, 0, 0) }
+    }
+
+    private fun skillSectionLabelVc310(text: String): TextView {
+        val th = currentTheme()
+        return tv(text.uppercase(), 12f, th.dim, true).apply { setPadding(dp(2), dp(14), dp(2), dp(8)) }
+    }
+
+    /** Ubin ikon skill 44dp (mockup frame A): tileBg radius 12 + Path
+     *  "skill" satu warna th.tileTint — pengganti emoji 🧩. */
+    private fun skillIconTileVc310(sizeDp: Int): LinearLayout = LinearLayout(this).apply {
+        val th = currentTheme()
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+        background = rounded(th.tileBg, 12)
+        layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+        addView(ImageView(this@MainActivity).apply {
+            setImageDrawable(pathIconVc306("skill", th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconLg)))
+            layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
+        })
+    }
+
+    /** Tombol ikon 48dp (target sentuh skill #15) — Path satu warna
+     *  th.tileTint, contentDescription wajib (TalkBack). */
+    private fun iconBtnVc310(kind: String, desc: String, onClick: (android.view.View) -> Unit): ImageView = ImageView(this).apply {
+        val th = currentTheme()
+        setImageDrawable(pathIconVc306(kind, th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconMd)))
+        contentDescription = desc
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.touchTarget), dp(ChatThemeVc306.touchTarget))
+        setOnClickListener { onClick(it) }
+    }
+
+    /** Switch aktif/nonaktif (S3=A — android.widget.Switch asli).
+     *  Track/Thumb di-tint aksen Mist (ACCENT) saat ON. */
+    private fun skillSwitchVc310(skillId: Long, name: String, en: Boolean): android.widget.Switch = android.widget.Switch(this).apply {
+        val th = currentTheme()
+        isChecked = en
+        contentDescription = if (en) "Nonaktifkan $name" else "Aktifkan $name"
+        try {
+            thumbTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(Color.WHITE, th.dim)
+            )
+            trackTintList = ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+                intArrayOf(ACCENT, th.track)
+            )
+        } catch (e: Exception) {}
+        setOnCheckedChangeListener { _, checked -> skillToggleVc310(skillId, name, checked) }
+    }
+
+    /** Toggle (S4=A): berlaku mulai giliran BERIKUTNYA bila ada giliran
+     *  berjalan (dideteksi turnRunningVc308() yang sudah ada — katalog
+     *  prompt giliran berjalan sudah beku); giliran berjalan tidak dicabut. */
+    private fun skillToggleVc310(skillId: Long, name: String, on: Boolean) {
+        val wasRunning = turnRunningVc308()
+        uiSkillToggle(skillId.toInt(), on)
+        val msg = "\"" + name + "\" " + (if (on) "diaktifkan" else "dinonaktifkan") +
+            if (wasRunning) " — berlaku mulai giliran berikutnya" else "."
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 400)
+    }
+
+    /** Menu "…" per skill — handler yang sudah ada, perilaku tidak diubah. */
+    private fun skillMenuVc310(anchor: android.view.View, sk: Skill) {
+        val popup = android.widget.PopupMenu(this, anchor)
+        popup.menu.add(0, 1, 0, "Lihat detail")
+        popup.menu.add(0, 2, 0, "✏️ Edit")
+        popup.menu.add(0, 3, 0, "🕘 Riwayat versi")
+        popup.menu.add(0, 4, 0, "📥 Unduh (.md)")
+        popup.menu.add(0, 5, 0, "Hapus")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> openSkillDetailVc310(sk.id)
+                2 -> setupSkillEditDialog(sk.id.toInt())
+                3 -> showSkillVersionHistory(sk.id.toInt())
+                4 -> skillDownloadVc310(sk.id)
+                5 -> skillDeleteConfirmVc310(sk)
+            }
+            true
+        }
+        popup.show()
+    }
+
+    private fun skillDeleteConfirmVc310(sk: Skill) {
+        AlertDialog.Builder(this).setTitle("Hapus skill?")
+            .setMessage(sk.name)
+            .setPositiveButton("Hapus") { _, _ ->
+                uiSkillDelete(sk.id.toInt())
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 400)
+            }
+            .setNegativeButton("Batal", null).show()
+    }
+
+    private fun openSkillDetailVc310(skillId: Long) {
+        skillDetailIdVc310 = skillId
+        skillDetailTabVc310 = "ringkasan"
+        skillDetailVersionVc310 = -1
+        skillDetailCodeVc310 = false
+        refreshSetupNative()
+    }
+
+    /** Unduh (S5=A): tulis .md versi yang sedang tampil ke Download
+     *  publik (bukan filesDir/skill-export privat seperti tool) + toast
+     *  berisi nama file. Format isi = frontmatter + instruction, sama
+     *  seperti writeSkillExportFileVc301 (Tools.kt). Tanpa izin baru:
+     *  app sudah membaca/menulis Download (impor Setup 51, backup otak). */
+    private fun skillDownloadVc310(skillId: Long, versionNo: Int = -1) {
+        val db = try { MemoryDb.get(this) } catch (e: Exception) { null } ?: return
+        val sk = try { db.skills().firstOrNull { it.id == skillId } } catch (e: Exception) { null }
+        if (sk == null) {
+            Toast.makeText(this, "Skill tidak ditemukan.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val ver = try {
+            if (versionNo >= 0) db.readSkillVersion(skillId, versionNo) else db.latestSkillVersion(skillId)
+        } catch (e: Exception) { null }
+        val instruction = ver?.instruction ?: sk.instruction
+        val descr = ver?.descr ?: sk.descr
+        val label = if (ver != null) "v" + ver.versionNo else "saat ini"
+        Thread {
+            try {
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+                val safeName = sk.name.replace(Regex("[^A-Za-z0-9._-]"), "-")
+                val fileName = "SKILL-" + safeName + "-" + stamp + ".md"
+                val dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                val safeDescr = descr.replace("\n", " ").replace("\r", " ").trim()
+                val text = "---\nname: " + sk.name + "\ndescription: " + safeDescr + "\n---\n\n" + instruction + "\n"
+                val f = File(dir, fileName)
+                f.writeText(text, Charsets.UTF_8)
+                runOnUiThread { try { Toast.makeText(this, "Skill ($label) tersimpan di Download/$fileName", Toast.LENGTH_LONG).show() } catch (e: Exception) {} }
+            } catch (e: Exception) {
+                runOnUiThread { try { Toast.makeText(this, "Unduh gagal: " + (e.message ?: "kesalahan tulis file"), Toast.LENGTH_LONG).show() } catch (e2: Exception) {} }
+            }
+        }.start()
+    }
+
+    /** Satu kartu skill (mockup frame A): ikon Path + nama (tap → detail)
+     *  + badge Baru + meta + deskripsi maks 2 baris + chip Judge/Trigger
+     *  + Switch + menu "…" + footer status/Edit/Riwayat. Kartu nonaktif
+     *  redup (alpha 0.62, seperti mockup). */
+    private fun skillCardVc310(sk: Skill): LinearLayout {
+        val th = currentTheme()
+        val latest = skillLatestVc310(sk.id)
+        val isNew = skillIsNewVc310(latest)
+        val judge = skillJudgeVc310(sk, latest)
+        val trigger = skillTriggerVc310(sk, latest)
+        val card = cardBoxT()
+        if (!sk.enabled) card.alpha = 0.62f
+        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        top.addView(skillIconTileVc310(44))
+        val mid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(10), 0, dp(8), 0) }
+        }
+        val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val nameTv = TextView(this).apply {
+            text = sk.name; textSize = 15f; setTextColor(th.text); typeface = android.graphics.Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { openSkillDetailVc310(sk.id) }
+        }
+        nameRow.addView(nameTv)
+        if (isNew) nameRow.addView(skillNewBadgeVc310())
+        mid.addView(nameRow)
+        mid.addView(tv(skillMetaVc310(latest), 12.5f, th.dim))
+        top.addView(mid)
+        top.addView(skillSwitchVc310(sk.id, sk.name, sk.enabled))
+        top.addView(iconBtnVc310("more", "Menu skill " + sk.name) { anchor -> skillMenuVc310(anchor, sk) })
+        card.addView(top)
+        if (sk.descr.isNotBlank()) {
+            card.addView(TextView(this).apply {
+                text = sk.descr; textSize = 13f; setTextColor(th.dim)
+                maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+            })
+        }
+        val chips = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(9), 0, 0) }
+        }
+        if (judge != null) chips.addView(skillJudgeChipVc310(judge.first, judge.second).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, dp(6), 0) } })
+        chips.addView(skillTriggerChipVc310(trigger))
+        card.addView(chips)
+        card.addView(android.view.View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { setMargins(0, dp(11), 0, dp(11)) }
+        })
+        val foot = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val green = if (isDarkTheme()) Color.rgb(80, 220, 140) else Color.rgb(21, 128, 61)
+        foot.addView(tv(if (sk.enabled) "● Aktif" else "○ Nonaktif", 12f, if (sk.enabled) green else th.dim, true).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        foot.addView(thSmallBtn("✏️ Edit") { setupSkillEditDialog(sk.id.toInt()) })
+        foot.addView(thSmallBtn("🕘 Riwayat versi") { showSkillVersionHistory(sk.id.toInt()) })
+        card.addView(foot)
+        return card
+    }
+
+    private fun setupSkillsCard(st: JSONObject): LinearLayout {
+        val th = currentTheme()
+        // st.skillsList HANYA berisi id/name/descr/enabled — versi, judge
+        // dan eval TIDAK ada di sana, jadi daftar dibaca langsung dari DB
+        // (query yang sudah ada). Parameter st dipertahankan supaya
+        // call-site refreshSetupNative() tidak berubah.
+        val all = try { MemoryDb.get(this).skills() } catch (e: Exception) { emptyList<Skill>() }
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (all.isEmpty()) {
+            val empty = cardBoxT()
+            empty.addView(tv("Belum ada skill", 14f, th.text, true))
+            empty.addView(tv("Belum ada skill — impor file .md atau minta agen membuatkan satu.", 12.5f, th.dim))
+            wrap.addView(empty)
+        } else {
+            val active = all.filter { it.enabled }
+            val inactive = all.filter { !it.enabled }
+            wrap.addView(skillSectionLabelVc310("Aktif · " + active.size))
+            if (active.isEmpty()) {
+                wrap.addView(tv("Tidak ada skill aktif — agen tidak memakai skill apa pun.", 12.5f, th.dim).apply {
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(10)) }
+                })
+            }
+            for (sk in active) wrap.addView(skillCardVc310(sk))
+            if (inactive.isNotEmpty()) {
+                wrap.addView(skillSectionLabelVc310("Nonaktif · " + inactive.size))
+                for (sk in inactive) wrap.addView(skillCardVc310(sk))
+            }
+        }
+        wrap.addView(Button(this).apply {
+            text = "📥 Impor Skill (.md dari Download)"
+            setOnClickListener { uiImportSkills(); android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ refreshSetupNative() }, 1500) }
+        })
+        return wrap
+    }
+
+    /** Baris kunci/nilai tab Ringkasan (mockup frame B). */
+    private fun skillKvRowVc310(k: String, v: String): LinearLayout {
+        val th = currentTheme()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(9), 0, dp(9))
+            addView(tv(k, 13f, th.dim).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+            addView(tv(v, 13f, th.text, true).apply {
+                gravity = Gravity.END
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+        }
+    }
+
+    /** Segmented control Ringkasan/Isi — pola themeSwitchRow (pill
+     *  th.track, tombol terpilih aksen) — bukan TabLayout baru. */
+    private fun skillTabRowVc310(): LinearLayout {
+        val th = currentTheme()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; background = rounded(th.track, 100); setPadding(dp(4), dp(4), dp(4), dp(4))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(4), 0, dp(8)) }
+        }
+        for ((key, label) in listOf("ringkasan" to "Ringkasan", "isi" to "Isi · 1")) {
+            val sel = skillDetailTabVc310 == key
+            row.addView(Button(this).apply {
+                text = label
+                background = if (sel) rounded(ACCENT, 100) else null
+                setTextColor(if (sel) Color.WHITE else th.dim)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { skillDetailTabVc310 = key; refreshSetupNative() }
+            })
+        }
+        return row
+    }
+
+    /** "Bahas dengan Agen" — draf yang sama seperti tombol di dialog edit
+     *  (setupSkillEditDialog): buka Chat + isi composer, tanpa kirim. */
+    private fun skillDiscussVc310(sk: Skill) {
+        val draft = "Bahas skill \"" + sk.name + "\": " + sk.descr + "\n\nTolong usulkan perbaikan untuk skill ini (deskripsi dan instruksinya), dan tunggu persetujuanku sebelum mengubah apa pun."
+        showTab("Chat")
+        if (::chatInput.isInitialized) { chatInput.setText(draft); chatInput.setSelection(chatInput.text.length) }
+    }
+
+    /** Picker versi tab Isi: pilih versi → detail menampilkan isi versi
+     *  itu (label jadi "v<m> · <tanggal>"). Beda dari
+     *  showSkillVersionHistory() (dialog riwayat: Lihat teks + Pulihkan)
+     *  yang dipakai tombol "Riwayat versi" — keduanya tetap ada. */
+    private fun showSkillVersionPickerVc310(skillId: Long) {
+        val th = currentTheme()
+        val db = try { MemoryDb.get(this) } catch (e: Exception) { null } ?: return
+        val sk = try { db.skills().firstOrNull { it.id == skillId } } catch (e: Exception) { null }
+        if (sk == null) {
+            Toast.makeText(this, "Skill tidak ditemukan.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val versions = try { db.skillVersions(skillId) } catch (e: Exception) { null }
+        if (versions == null || versions.isEmpty()) {
+            Toast.makeText(this, "Belum ada riwayat versi untuk skill \"" + sk.name + "\".", Toast.LENGTH_LONG).show()
+            return
+        }
+        val sorted = versions.sortedByDescending { it.versionNo }
+        val latestNo = sorted.first().versionNo
+        val showingNo = if (skillDetailVersionVc310 >= 0) skillDetailVersionVc310 else latestNo
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(tv("Pilih versi untuk ditampilkan di tab Isi. Versi terbaru ditandai “saat ini”.", 12f, th.dim).apply { setPadding(0, 0, 0, dp(10)) })
+        val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale("id", "ID"))
+        var dlgRef: android.app.AlertDialog? = null
+        for (v in sorted) {
+            val stamp = try { sdf.format(java.util.Date(v.createdTs)) } catch (e: Exception) { "-" }
+            val label = "v" + v.versionNo + " · " + stamp + " · sumber: " + v.source + if (v.versionNo == latestNo) " · saat ini" else ""
+            val b = thBtn(label, v.versionNo == showingNo) { dlgRef?.dismiss(); skillDetailVersionVc310 = v.versionNo; skillDetailTabVc310 = "isi"; refreshSetupNative() }
+            b.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(8)) }
+            col.addView(b)
+        }
+        dlgRef = thDialog("Pilih versi — " + sk.name, col, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
+    }
+
+    /** Editor isi (S2=B): EditText multi-baris untuk instruction; simpan =
+     *  versi baru via forgeUpsert (snapshot + hanguskan eval bila berubah,
+     *  seperti updateSkillMeta) lalu kembali ke detail tab Isi dengan
+     *  versi baru tampil. Validasi ringan: tidak kosong, maks 60000 char
+     *  (cap forgeUpsert), tidak berubah = tidak disimpan. */
+    private fun showSkillContentEditorVc310(skillId: Long) {
+        val th = currentTheme()
+        val db = try { MemoryDb.get(this) } catch (e: Exception) { null } ?: return
+        val sk = try { db.skills().firstOrNull { it.id == skillId } } catch (e: Exception) { null }
+        if (sk == null) {
+            Toast.makeText(this, "Skill tidak ditemukan.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(tv("Isi skill (instruksi) — disimpan sebagai versi BARU, evaluasi lama dihanguskan (seperti edit nama/deskripsi).", 12f, th.dim).apply { setPadding(0, 0, 0, dp(10)) })
+        val et = EditText(this).apply {
+            setText(sk.instruction); setTextColor(th.text); setHintTextColor(th.dim)
+            background = roundedS(th.bg, 12, th.stroke); setPadding(dp(12), dp(10), dp(12), dp(10))
+            minLines = 10; typeface = android.graphics.Typeface.MONOSPACE; textSize = 13f
+            gravity = Gravity.TOP
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        col.addView(et)
+        thDialog("Edit isi skill — " + sk.name, col, listOf(
+            Triple("Simpan sebagai versi baru", true) { d: android.app.AlertDialog ->
+                val text = et.text.toString()
+                if (text.isBlank()) {
+                    Toast.makeText(this, "Isi skill tidak boleh kosong.", Toast.LENGTH_SHORT).show()
+                } else if (text.length > 60000) {
+                    Toast.makeText(this, "Isi terlalu panjang (maks 60000 char).", Toast.LENGTH_SHORT).show()
+                } else if (text == sk.instruction) {
+                    Toast.makeText(this, "Isi tidak berubah — tidak ada versi baru.", Toast.LENGTH_SHORT).show()
+                    d.dismiss()
+                } else {
+                    Thread {
+                        val nid = try { db.forgeUpsert(sk.name, text, sk.descr, "edit").first } catch (e: Exception) { -1L }
+                        runOnUiThread {
+                            if (nid > 0) {
+                                Toast.makeText(this, "Isi skill disimpan sebagai versi baru.", Toast.LENGTH_LONG).show()
+                                d.dismiss()
+                                skillDetailIdVc310 = skillId
+                                skillDetailVersionVc310 = -1
+                                skillDetailTabVc310 = "isi"
+                                skillDetailCodeVc310 = false
+                                refreshSetupNative()
+                            } else {
+                                Toast.makeText(this, "Gagal menyimpan isi skill.", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }.start()
+                }
+            },
+            Triple("Batal", false) { d: android.app.AlertDialog -> d.dismiss() }
+        ))
+    }
+
+    /** Detail skill (mockup frame B): header meta + Switch + menu "…",
+     *  tab Ringkasan/Isi pola themeSwitchRow. Tab Isi: dropdown versi →
+     *  picker, Unduh (ikon ↓ ke Download publik), Edit (dialog lama +
+     *  editor isi S2=B), file tree JUJUR hanya SKILL.md + label "Isi · 1"
+     *  (E6 — JANGAN tampilkan assets//references/ kosong), baris
+     *  "/SKILL.md" + tombol mata (preview MdMini.render) dan "</>" (kode
+     *  mentah monospace, paging 8000 char) yang saling menukar tampilan. */
+    private fun buildSkillDetailVc310(skillId: Long): LinearLayout {
+        val th = currentTheme()
+        val db = try { MemoryDb.get(this) } catch (e: Exception) { null }
+        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sk = try { db?.skills()?.firstOrNull { it.id == skillId } } catch (e: Exception) { null }
+        if (sk == null) {
+            wrap.addView(tv("Skill tidak ditemukan.", 13f, th.text))
+            return wrap
+        }
+        val latest = skillLatestVc310(skillId)
+        val isNew = skillIsNewVc310(latest)
+        // Baris header detail: ikon + meta + badge Baru (nama sudah jadi
+        // judul Setup di atas — tidak diulang di sini) + Switch + menu "…"
+        // (C1 — sama seperti kartu).
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(skillIconTileVc310(44))
+        val mid = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(10), 0, dp(8), 0) }
+        }
+        mid.addView(tv(skillMetaVc310(latest), 12.5f, th.dim).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+        if (isNew) mid.addView(skillNewBadgeVc310())
+        head.addView(mid)
+        head.addView(skillSwitchVc310(sk.id, sk.name, sk.enabled))
+        head.addView(iconBtnVc310("more", "Menu skill " + sk.name) { anchor -> skillMenuVc310(anchor, sk) })
+        wrap.addView(head)
+        wrap.addView(skillTabRowVc310())
+        if (skillDetailTabVc310 == "ringkasan") {
+            val descCard = cardBoxT()
+            descCard.addView(tv(if (sk.descr.isNotBlank()) sk.descr else "(tidak ada deskripsi)", 13.5f, th.text))
+            wrap.addView(descCard)
+            val judge = skillJudgeVc310(sk, latest)
+            val evalSum = try { SkillJudge.evalSummary(sk.evalJson) } catch (e: Exception) { "" }
+            val info = cardBoxT()
+            val rows = ArrayList<Pair<String, String>>()
+            // Dimensi terlemah TIDAK ditampilkan: hanya total/grade yang
+            // tersimpan di DB — dimensi per D1–D8 tidak tersimpan, jadi
+            // menampilkannya (mis. contoh mockup "D4") = mengarang.
+            val verdict = if (judge != null && judge.first >= SkillJudge.PASS_TOTAL) "LULUS" else if (judge != null) "BELUM LULUS" else "—"
+            rows.add("Judge" to if (judge != null) judge.first.toString() + "/120 · Grade " + judge.second + " · " + verdict else "—")
+            rows.add("Trigger" to if (evalSum.isNotBlank()) evalSum.trim().removePrefix("·").trim() else "Belum dievaluasi trigger")
+            val sdfDate = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale("id", "ID"))
+            val verDate = if (latest != null) try { sdfDate.format(java.util.Date(latest.createdTs)) } catch (e: Exception) { "-" } else "-"
+            rows.add("Versi saat ini" to if (latest != null) "v" + latest.versionNo + " · sumber: " + latest.source + " · " + verDate else "—")
+            rows.add("Dipakai agen" to if (sk.enabled) "Ya — ada di katalog prompt" else "Tidak — nonaktif")
+            for ((idx, kv) in rows.withIndex()) {
+                info.addView(skillKvRowVc310(kv.first, kv.second))
+                if (idx < rows.size - 1) info.addView(android.view.View(this).apply {
+                    setBackgroundColor(th.stroke)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+                })
+            }
+            wrap.addView(info)
+            val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            thRowBtn(btnRow, "🕘 Riwayat versi") { showSkillVersionHistory(sk.id.toInt()) }
+            thRowBtn(btnRow, "💬 Bahas dengan Agen") { skillDiscussVc310(sk) }
+            wrap.addView(btnRow)
+            return wrap
+        }
+        // ---- Tab Isi ----
+        val viewing = if (skillDetailVersionVc310 >= 0) try { db?.readSkillVersion(skillId, skillDetailVersionVc310) } catch (e: Exception) { null } else null
+        val showing = viewing ?: latest
+        val verRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val sdfShort = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale("id", "ID"))
+        val verLabel = if (showing != null) {
+            if (showing.versionNo == latest?.versionNo) sk.name + " v" + showing.versionNo + " · saat ini"
+            else "v" + showing.versionNo + " · " + try { sdfShort.format(java.util.Date(showing.createdTs)) } catch (e: Exception) { "-" }
+        } else sk.name
+        val verDrop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rounded(th.tileBg, 12); setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dp(8), 0) }
+            setOnClickListener { showSkillVersionPickerVc310(skillId) }
+        }
+        verDrop.addView(tv(verLabel, 13f, th.text).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+        verDrop.addView(ImageView(this).apply {
+            setImageDrawable(pathIconVc306("chev", th.dim, chatIconSizeVc307(ChatThemeVc306.iconXs)))
+            layoutParams = LinearLayout.LayoutParams(dp(16), dp(16))
+        })
+        verRow.addView(verDrop)
+        verRow.addView(iconBtnVc310("download", "Unduh skill sebagai .md ke Download") { skillDownloadVc310(skillId, showing?.versionNo ?: -1) })
+        verRow.addView(thSmallBtn("Edit") { setupSkillEditDialog(sk.id.toInt()) })
+        wrap.addView(verRow)
+        if (showing != null && latest != null && showing.versionNo != latest.versionNo) {
+            val restoreBtn = thBtn("↩️ Pulihkan versi v" + showing.versionNo) { confirmRestoreSkillVersion(sk.id.toInt(), showing.versionNo) }
+            restoreBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+            wrap.addView(restoreBtn)
+        }
+        val tree = cardBoxT()
+        val fileRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(11)) }
+        fileRow.addView(ImageView(this).apply {
+            setImageDrawable(pathIconVc306("file", th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconSm)))
+            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { setMargins(0, 0, dp(9), 0) }
+        })
+        fileRow.addView(tv("SKILL.md", 13.5f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+        fileRow.addView(tv("›", 16f, th.dim, true))
+        tree.addView(fileRow)
+        tree.addView(android.view.View(this).apply {
+            setBackgroundColor(th.stroke)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { setMargins(0, 0, 0, dp(10)) }
+        })
+        val pathRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, 0, 0, dp(10)) }
+        pathRow.addView(TextView(this).apply {
+            text = "/SKILL.md"; textSize = 12.5f; setTextColor(th.dim); typeface = android.graphics.Typeface.MONOSPACE
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val eyeBtn = Button(this).apply {
+            text = "Preview"
+            background = if (!skillDetailCodeVc310) rounded(ACCENT, 10) else rounded(th.tileBg, 10)
+            setTextColor(if (!skillDetailCodeVc310) Color.WHITE else th.text)
+            textSize = 12f
+            setCompoundDrawables(pathIconVc306("eye", if (!skillDetailCodeVc310) Color.WHITE else th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconXs)), null, null, null)
+            compoundDrawablePadding = dp(6)
+            minWidth = 0; minHeight = 0
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, dp(6), 0) }
+            contentDescription = "Tampilkan preview markdown"
+            setOnClickListener { skillDetailCodeVc310 = false; refreshSetupNative() }
+        }
+        pathRow.addView(eyeBtn)
+        val codeBtn = Button(this).apply {
+            text = "Kode"
+            background = if (skillDetailCodeVc310) rounded(ACCENT, 10) else rounded(th.tileBg, 10)
+            setTextColor(if (skillDetailCodeVc310) Color.WHITE else th.text)
+            textSize = 12f
+            setCompoundDrawables(pathIconVc306("code", if (skillDetailCodeVc310) Color.WHITE else th.tileTint, chatIconSizeVc307(ChatThemeVc306.iconXs)), null, null, null)
+            compoundDrawablePadding = dp(6)
+            minWidth = 0; minHeight = 0
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            contentDescription = "Tampilkan kode mentah"
+            setOnClickListener { skillDetailCodeVc310 = true; refreshSetupNative() }
+        }
+        pathRow.addView(codeBtn)
+        tree.addView(pathRow)
+        val content = showing?.instruction ?: sk.instruction
+        if (!skillDetailCodeVc310) {
+            tree.addView(TextView(this).apply {
+                text = MdMini.render(content, th.codeText, th.codeBg)
+                textSize = 14f; setTextColor(th.text)
+            })
+        } else {
+            val pageSize = 8000
+            val pages = ArrayList<String>()
+            var off = 0
+            while (off < content.length) {
+                val end = minOf(off + pageSize, content.length)
+                pages.add(content.substring(off, end))
+                off = end
+            }
+            if (pages.isEmpty()) pages.add("(isi versi ini kosong)")
+            var page = 0
+            val infoTv = tv("", 12f, th.dim).apply { setPadding(0, 0, 0, dp(6)) }
+            tree.addView(infoTv)
+            val bodyTv = TextView(this).apply { setTextColor(th.text); textSize = 13f; typeface = android.graphics.Typeface.MONOSPACE }
+            tree.addView(bodyTv)
+            val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(10), 0, 0) }
+            val prevBtn = thSmallBtn("‹ Sebelumnya") {}
+            val nextBtn = thSmallBtn("Lanjut ›") {}
+            val renderCode: () -> Unit = {
+                infoTv.text = "Halaman " + (page + 1) + " dari " + pages.size + " • " + content.length + " char total" + if (showing != null) " (versi v" + showing.versionNo + ")" else ""
+                bodyTv.text = pages[page]
+                prevBtn.isEnabled = page > 0
+                nextBtn.isEnabled = page < pages.size - 1
+            }
+            prevBtn.setOnClickListener { if (page > 0) { page--; renderCode() } }
+            nextBtn.setOnClickListener { if (page < pages.size - 1) { page++; renderCode() } }
+            navRow.addView(prevBtn)
+            navRow.addView(nextBtn)
+            tree.addView(navRow)
+            renderCode()
+        }
+        wrap.addView(tree)
+        wrap.addView(tv("File tree Harness hari ini hanya berisi SKILL.md — tidak ada folder assets / references karena skill disimpan sebagai satu string instruction.", 12f, th.dim).apply { setPadding(dp(2), dp(10), dp(2), 0) })
+        return wrap
     }
 
     private fun uiSkillEdit(id: Int, name: String, descr: String) {
@@ -6854,7 +8875,7 @@ class MainActivity : Activity() {
         col.addView(tv("Deskripsi", 12f, th.dim, true).apply { setPadding(0, dp(10), 0, 0) })
         val descEt = EditText(this).apply { setText(sk.descr); setTextColor(th.text); setHintTextColor(th.dim); background = roundedS(th.bg, 12, th.stroke); setPadding(dp(12), dp(10), dp(12), dp(10)); minLines = 3; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
         col.addView(descEt)
-        col.addView(tv("Isi skill (instruksi) tetap dibaca dari file .md aslinya — yang diedit di sini hanya nama & deskripsi yang tampil di daftar.", 12f, th.dim).apply { setPadding(0, dp(8), 0, dp(10)) })
+        col.addView(tv("Nama & deskripsi diedit di sini; isi skill (instruksi) diubah lewat tombol “Edit isi skill” di bawah — disimpan sebagai versi baru dan evaluasi lama dihanguskan.", 12f, th.dim).apply { setPadding(0, dp(8), 0, dp(10)) })
         var dlgRef: android.app.AlertDialog? = null
         val bahasBtn = thBtn("💬 Bahas dengan Agen") {
             dlgRef?.dismiss()
@@ -6873,6 +8894,14 @@ class MainActivity : Activity() {
         }
         histBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
         col.addView(histBtn)
+        // vc310 Worker A (B13, S2=B): editor isi penuh — tombol ini membuka
+        // EditText multi-baris untuk instruction (simpan = versi baru).
+        val isiBtn = thBtn("📝 Edit isi skill (instruksi)") {
+            dlgRef?.dismiss()
+            showSkillContentEditorVc310(skillId.toLong())
+        }
+        isiBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(8), 0, 0) }
+        col.addView(isiBtn)
         val d = thDialog("Edit Skill", col, listOf(
             Triple("Simpan", true) { dlg: android.app.AlertDialog ->
                 val nm = nameEt.text.toString().trim()
@@ -7112,12 +9141,12 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
     }
 
-    private fun agentIconRes(id: String): Int = when (id) { "asisten" -> R.drawable.ic_robot; "mandor" -> R.drawable.ic_build; "mentor" -> R.drawable.ic_school; else -> R.drawable.ic_robot }
+    private fun agentIconRes(id: String): Int = when (id) { "senz" -> R.drawable.ic_robot; "mandor" -> R.drawable.ic_build; "mentor" -> R.drawable.ic_school; else -> R.drawable.ic_robot }
 
-    private fun agentEmoji(id: String): String = when (id) { "asisten" -> "🤖"; "mandor" -> "⚙️"; "mentor" -> "🎓"; else -> "🧠" }
+    private fun agentEmoji(id: String): String = when (id) { "senz" -> "🤖"; "mandor" -> "⚙️"; "mentor" -> "🎓"; else -> "🧠" }
 
     private fun agentRole(id: String, engine: String): String = agentRoleOverride(id) ?: when (id) {
-        "asisten" -> "Analisis & Riset"
+        "senz" -> "Analisis & Riset"
         "mandor" -> "Otomasi & Tugas"
         "mentor" -> "Belajar & Panduan"
         "agen4" -> "Generalis Serbaguna"
@@ -7169,8 +9198,8 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(dp(52), dp(52))
             })
             val hcol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(8), 0); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
-            hcol.addView(tv("$greet, Asisten", 18f, th.text, true))
-            hcol.addView(tv("Harness", 12.5f, th.dim))
+            hcol.addView(tv("$greet, Senz", 18f, th.text, true))
+            hcol.addView(tv("S&Harness", 12.5f, th.dim))
             head.addView(hcol)
             head.addView(TextView(this).apply {
                 text = if (logged) "DeepSeek Aktif" else "Belum Login"
@@ -7385,7 +9414,7 @@ class MainActivity : Activity() {
             val sc = cardBoxT()
             sc.addView(tv("PINTASAN", 12f, th.dim, true))
             sc.addView(thFuncTile("🧠", "OTAK AGEN", "Soul, memory & file agents tiap agen") { setupBrainDialog() })
-            sc.addView(thFuncTile("🎭", "PAK PERILAKU AGEN", "Pak perilaku: Asisten, Mandor, Mentor, dsb.") { setupBehaviorDialog() })
+            sc.addView(thFuncTile("🎭", "PAK PERILAKU AGEN", "Pak perilaku: Senz, Mandor, Mentor, dsb.") { setupBehaviorDialog() })
             sc.addView(thFuncTile("🔑", "POOL AKUN DEEPSEEK", "Login & slot 4 browser DeepSeek") { uiAccountsDialog() })
             sc.addView(thFuncTile("🗂", "KELOLA SESI PERCAKAPAN", "Riwayat & sesi percakapan tersimpan") { showSessionDialog() })
             sc.addView(thFuncTile("🎛", "COMMAND CENTER", "Antrean & persetujuan koordinator") { showCommandCenter() })
@@ -7399,15 +9428,15 @@ class MainActivity : Activity() {
             lanHead.addView(tv("⚙️ Lanjutan", 13f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
             lanHead.addView(tv(if (lanjutanOpen) "▾" else "▸", 16f, th.dim, true))
             lan.addView(lanHead)
-            lan.addView(tv("Token, Jejak Sesi Server, Serve :4199, Job Latar, Kill Switch", 11.5f, th.dim))
+            lan.addView(tv("Token, Jejak Sesi Server, Serve :4197, Job Latar, Kill Switch", 11.5f, th.dim))
             lan.setOnClickListener { getSharedPreferences("harness", MODE_PRIVATE).edit().putBoolean("profilLanjutanOpen", !lanjutanOpen).apply(); refreshProfil() }
             box.addView(lan)
             if (lanjutanOpen) {
                 box.addView(tok)
                 box.addView(jejak)
                 val dev = cardBoxT()
-                dev.addView(tv("SERVE :4199 — " + ServeHealth.lastStatus(this), 12.5f, th.dim))
-                dev.addView(thFuncTile("⚡", "BANGKITKAN SERVE :4199", "Hidupkan ulang serve lokal bila tidur") { Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { Toast.makeText(this@MainActivity, r, Toast.LENGTH_LONG).show() } } catch (e: Exception) {} }.start() })
+                dev.addView(tv("SERVE :4197 — " + ServeHealth.lastStatus(this), 12.5f, th.dim))
+                dev.addView(thFuncTile("⚡", "BANGKITKAN SERVE :4197", "Hidupkan ulang serve lokal bila tidur") { Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { Toast.makeText(this@MainActivity, r, Toast.LENGTH_LONG).show() } } catch (e: Exception) {} }.start() })
                 dev.addView(thFuncTile("📋", "JOB LATAR (F2) — KELOLA & LOG", "Job latar yang sedang berjalan") { jobDialog() })
                 dev.addView(thFuncTile("⛔", "KILL SWITCH F1 — HENTIKAN JOB LINTAS APLIKASI", "Darurat: hentikan semua job lintas aplikasi", true) { f1Dialog() })
                 (dev.getChildAt(dev.childCount - 1).layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
@@ -7433,7 +9462,7 @@ class MainActivity : Activity() {
             val onboarded = p.getBoolean("flowOnboarded", false)
             val login = p.getBoolean("flowLogin", false)
             val setup = p.getBoolean("flowSetup", false)
-            box.addView(tv("🧩 Harness — Setup Awal", 19f, TEXT, true))
+            box.addView(tv("🧩 S&Harness — Setup Awal", 19f, TEXT, true))
             // vc265 V-m6: pure punya 4 tahap (kenalan identitas dulu),
             // mainline 3 — header menyesuaikan varian.
             val stepsVc265 = if (Flavor.IS_PURE) "Empat langkah: kenalan → sambutan → login AI → full setup izin." else "Tiga langkah: kenalan → login AI → full setup izin."
@@ -7445,7 +9474,7 @@ class MainActivity : Activity() {
                 !onboarded -> {
                     val c = cardBox()
                     c.addView(tv("Selamat datang 👋", 16f, TEXT, true))
-                    c.addView(tv("Harness adalah harness agen AI yang tinggal di HP kamu: satu aplikasi, satu otak AI DeepSeek. Agen bisa bekerja antar aplikasi dengan izinmu, mengingat konteks, dan menjalankan rutinitas di latar. Semua tool jalan langsung tanpa gerbang persetujuan (vc247); keputusan per tugas tetap di tanganmu.", 13f, TEXT))
+                    c.addView(tv("S&Harness adalah harness agen AI yang tinggal di HP kamu: satu aplikasi, satu otak AI DeepSeek. Agen bisa bekerja antar aplikasi dengan izinmu, mengingat konteks, dan menjalankan rutinitas di latar. Semua tool jalan langsung tanpa gerbang persetujuan (vc247); keputusan per tugas tetap di tanganmu.", 13f, TEXT))
                     c.addView(tv("• 🧠 Otak AI DeepSeek di HP kamu\n• 🛠️ Tool HP lengkap + terminal (Ubuntu proot menyusul)\n• 🔓 Tool jalan langsung tanpa gerbang (vc247)", 12.5f, DIM))
                     c.addView(Button(this).apply { text = "Lanjut →"; setOnClickListener { uiSetFlow("onboarded"); refreshWizard() } })
                     box.addView(c)
@@ -8043,6 +10072,10 @@ class MainActivity : Activity() {
     // vc308 Worker A: "select" = kursor I-beam (pilih teks — menu "Salin
     // sebagian…"), digambar mengikuti pola Path yang sama (viewport 24×24,
     // stroke 2dp).
+    // vc310 Worker A (B13): "table" = grid tabel, "download" = panah +
+    // baki, "edit" = pensil, "eye" = mata, "code" = </>, "skill" =
+    // keping puzzle — semua Path, satu token warna th.tileTint di
+    // call-site (ChatThemeVc306, tanpa hex baru).
     // Viewport 24×24; tidak ada drawable ic_camera/ic_menu/ic_stop di res.
     // Stroke 2dp (diskala density) — vc306 memakai 2f px mentah: di xxhdpi
     // garis hanya ~0.67dp (terlalu tipis), di mdpi 2dp (terlalu tebal).
@@ -8155,6 +10188,62 @@ class MainActivity : Activity() {
                         canvas.drawLine(12f, 4f, 12f, 20f, strokePaint)
                         canvas.drawLine(8f, 4f, 16f, 4f, strokePaint)
                         canvas.drawLine(8f, 20f, 16f, 20f, strokePaint)
+                    }
+                    // vc310 Worker A (B13): 6 ikon baru fitur Skill UI.
+                    // Semua digambar Path/stroke pola yang sama (viewport
+                    // 24×24, stroke 2dp), SATU token warna di call-site:
+                    // th.tileTint (dark #97B1F0 / light #2E6BE6 dari
+                    // ChatThemeVc306 — tidak ada hex baru di sini).
+                    // "table" = grid tabel (kotak + 1 garis vertikal +
+                    // 1 garis header horizontal).
+                    "table" -> {
+                        canvas.drawRoundRect(android.graphics.RectF(3f, 4f, 21f, 20f), 2f, 2f, strokePaint)
+                        canvas.drawLine(12f, 4f, 12f, 20f, strokePaint)
+                        canvas.drawLine(3f, 9.5f, 21f, 9.5f, strokePaint)
+                    }
+                    // "download" = panah bawah + baki (beda dari "down"
+                    // yang hanya panah — Unduh butuh baki supaya jelas
+                    // menulis file, bukan sekadar arah).
+                    "download" -> {
+                        canvas.drawLine(12f, 4f, 12f, 15f, strokePaint)
+                        canvas.drawLine(6f, 10f, 12f, 16f, strokePaint)
+                        canvas.drawLine(18f, 10f, 12f, 16f, strokePaint)
+                        canvas.drawLine(4f, 19f, 4f, 16f, strokePaint)
+                        canvas.drawLine(4f, 19f, 20f, 19f, strokePaint)
+                        canvas.drawLine(20f, 19f, 20f, 16f, strokePaint)
+                    }
+                    // "edit" = pensil diagonal + garis ujung.
+                    "edit" -> {
+                        canvas.drawPath(android.graphics.Path().apply {
+                            moveTo(4f, 20f); lineTo(5f, 15f); lineTo(15.5f, 4.5f)
+                            lineTo(19.5f, 8.5f); lineTo(9f, 19f); close()
+                        }, strokePaint)
+                        canvas.drawLine(13.5f, 6.5f, 17.5f, 10.5f, strokePaint)
+                    }
+                    // "eye" = outline mata + pupil.
+                    "eye" -> {
+                        canvas.drawPath(android.graphics.Path().apply {
+                            moveTo(2f, 12f)
+                            cubicTo(6f, 5f, 18f, 5f, 22f, 12f)
+                            cubicTo(18f, 19f, 6f, 19f, 2f, 12f)
+                            close()
+                        }, strokePaint)
+                        canvas.drawCircle(12f, 12f, 3f, strokePaint)
+                    }
+                    // "code" = </> + garis miring.
+                    "code" -> {
+                        canvas.drawLine(8.5f, 7f, 4f, 12f, strokePaint)
+                        canvas.drawLine(4f, 12f, 8.5f, 17f, strokePaint)
+                        canvas.drawLine(15.5f, 7f, 20f, 12f, strokePaint)
+                        canvas.drawLine(20f, 12f, 15.5f, 17f, strokePaint)
+                        canvas.drawLine(13.5f, 5f, 10.5f, 19f, strokePaint)
+                    }
+                    // "skill" = keping puzzle (pengganti emoji 🧩):
+                    // kotak bersudut + 2 tonjolan bundar (atas + kanan).
+                    "skill" -> {
+                        canvas.drawRoundRect(android.graphics.RectF(5f, 6f, 18f, 19f), 2f, 2f, strokePaint)
+                        canvas.drawCircle(11.5f, 5f, 2.4f, fillPaint)
+                        canvas.drawCircle(19f, 12.5f, 2.4f, fillPaint)
                     }
                 }
                 canvas.restore()
@@ -8824,7 +10913,7 @@ class MainActivity : Activity() {
                     (mime == "application/pdf" || ext == "pdf" || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext == "docx" || ext == "doc" || mime == "application/msword" || ext in listOf("txt", "md", "csv")) -> {
                         // vc212 Item 2: dokumen teks penuh lewat API; gagal -> fallback perilaku lama.
                         val qDoc = question
-                        val useApiDoc = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode() } catch (e: Exception) { false }
+                        val useApiDoc = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode() } catch (e: Exception) { false }
                         runOnUiThread { showTab("Chat"); addBubble("📄 Dokumen '" + name + "' — mengunggah teks penuh lewat API internal… (status: mengunggah, menunggu parsing server…)", false) }
                         if (!useApiDoc) {
                             runOnUiThread { addBubble("📄 Dokumen '" + name + "' tidak lewat API (API Internal tidak aktif) — fallback ke perilaku lama.", false) }
@@ -9130,39 +11219,40 @@ class MainActivity : Activity() {
     }
 
     // v4.48.7 (dedup): hasToolResult=true hanya dari ketiga cabang hasil tool di execToolAndContinue.
+    // vc316 IXL — LANJUTAN DELTA (perbaikan akar input_exceeds_limit,
+    // lihat UKURAN-INPUT-VC316.md §4): lanjutan TIDAK LAGI membangun
+    // ulang seluruh prompt. Alasan terukur: DsApiClient/SlotClient
+    // memakai SATU sesi server yang dipakai ulang (chat_session_id
+    // sama, parent_message_id selalu null), jadi tiap POST prompt
+    // penuh TERSIMPAN sebagai pesan di sesi server — konteks server
+    // menumpuk ~1 prompt penuh per POST. Giliran tool = POST awal +
+    // 1 lanjutan per langkah tool, sehingga giliran ke-3 di sesi BARU
+    // pun sudah melewati batas server (~64.000 token buffer web)
+    // sementara giliran tanpa tool (1 POST) lolos. Lanjutan kini hanya
+    // membawa yang BARU / yang berubah: jangkar delta (format tool-call
+    // + perintah user — pengaman bila server ternyata tidak menyimpan
+    // konteks antar POST: model cukup panggil list_tools {} sekali),
+    // rencana aktif (dicap 2000), JEJAK (cap 12000, tidak berubah),
+    // digest (cap 2000, bukti giliran sebelumnya), work-notes (cap
+    // 4000+1000 — WAJIB dipertahankan, berisi "jangan ulangi"), dan
+    // HASIL TOOL TERBARU + trailer. Yang DIHAPUS dari lanjutan karena
+    // sudah ada di POST awal giliran ini DI SESI SERVER YANG SAMA:
+    // system prompt + katalog (s.d. 94.817 char), skills/fakta/goals
+    // (cap 20.000+20.000+10.000), dan riwayat 30 pesan/30.000 char.
+    // Perilaku tool TIDAK berubah: nama/argumen/hasil tool, cap langkah,
+    // Governor, dan gerbang tidak disentuh; guard cap + trim proaktif
+    // di bawah tetap jalan (kini hampir selalu no-op karena delta kecil).
     private fun sendContinuation(text: String, hasToolResult: Boolean = false) {
-        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
+        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode()
         if (!apiMode) { sendToAgent(text); return }
-        val sys = AgentPrompt.buildSystemPrompt(this, false, currentTurnUser)
-        val catLen = AgentPrompt.catalogForTask(this, currentTurnUser).length
+        val anchorVc316 = AgentPrompt.continuationAnchorVc316(currentTurnUser)
         val sb = StringBuilder()
-        sb.append(sys)
-        if (currentTurnUser.isNotBlank()) sb.append("\n\nPERINTAH USER GILIRAN INI: ").append(currentTurnUser)
+        sb.append(anchorVc316)
+        var planLenVc316 = 0
         if (planItems.isNotEmpty()) {
-            sb.append("\n\nRENCANA AKTIF GILIRAN INI:\n")
-            planItems.forEachIndexed { i, s -> sb.append(i + 1).append(". ").append(s).append("\n") }
-        }
-        // vc235 M1: continuation kini ikut membawa blok skills, fakta,
-        // dan goals dengan cap yang sama seperti prompt awal (skillsText
-        // ber-cap total 4000 + ranking relevansi vc238; factsText 4000;
-        // goalsText 2000;
-        // query = perintah user giliran ini agar ranking relevansi sama
-        // seperti prompt awal). MEMORY.md TIDAK digandakan: ia tetap ada
-        // lewat system prompt di atas. Ringkasan graph, konteks semantik,
-        // dan konteks HP TIDAK diulang di lanjutan (bukan blok yang
-        // diwajibkan arah M1): graph/semantik adalah potret awal giliran,
-        // konteks HP adalah titik waktu yang sudah lewat; model memakai
-        // JEJAK + hasil tool di bawah untuk keadaan terbaru. Penanda ini
-        // ditulis eksplisit agar tidak ada blok yang hilang diam-diam.
-        run {
-            val mdbVc235 = MemoryDb.get(this)
-            val skillsVc235 = redactSecrets(mdbVc235.skillsText(currentTurnUser))
-            if (skillsVc235.isNotBlank()) sb.append(H_SKILL).append(skillsVc235).append("\n\n")
-            val factsVc235 = redactSecrets(mdbVc235.factsText(currentTurnUser))
-            if (factsVc235.isNotBlank()) sb.append(H_MEMORI).append(factsVc235).append("\n\n")
-            val goalsVc235 = redactSecrets(mdbVc235.goalsText(currentTurnUser))
-            if (goalsVc235.isNotBlank()) sb.append(H_TUJUAN).append(goalsVc235).append("\n\n")
-            sb.append("CATATAN LANJUTAN: ringkasan graph, konteks semantik, dan konteks HP tidak diulang di lanjutan ini — pakai JEJAK + hasil tool di bawah untuk keadaan terbaru.\n\n")
+            val planTxtVc316 = planItems.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString("\n").take(2000)
+            sb.append("\n\nRENCANA AKTIF GILIRAN INI:\n").append(planTxtVc316)
+            planLenVc316 = planTxtVc316.length
         }
         // v4.48.6 (Butir 4): JEJAK dua pass dalam cap 12000 yang sama —
         // pass 1 langkah BUKTI terbaru dulu, pass 2 langkah non-bukti terbaru
@@ -9226,19 +11316,23 @@ class MainActivity : Activity() {
         var jejakTxt = buildJejak(12000)
         if (jejakTxt.isNotBlank()) sb.append(jejakTxt)
         // v4.48.6 (Butir 3b): blok digest yang SAMA dengan prompt awal,
-        // sesudah JEJAK, sebelum RIWAYAT. Jalur Web tidak diubah butir ini.
+        // sesudah JEJAK. Jalur Web tidak diubah butir ini.
         val db = digestBlock()
         if (db.isNotBlank()) sb.append(db)
-        // vc302 Fix C: prompt lanjutan dibangun dari nol tiap panggilan
-        // (klien API stateless per POST) — tanpa blok ini catatan kerja
+        // vc302 Fix C + vc316 IXL: work-notes DITAHAN di lanjutan delta
+        // (cap 4000 + status 1000 — murah) karena berisi aturan
+        // "jangan ulangi" lintas giliran; tanpa blok ini catatan kerja
         // giliran-giliran lalu hilang sesudah tool pertama giliran ini
         // (hanya digest 2000 char + JEJAK giliran ini yang tersisa).
-        // Tempel sesudah digest, dengan kunci sesi giliran ini.
-        run { val wb = AgentPrompt.workNotesBlockVc302(this, turnSessionId); if (wb.isNotBlank()) sb.append(wb).append("\n\n") }
-        // vc235 M2: transkrip Vc230 (potong di batas pesan, label
-        // Sistem, header provenance) atas sesi pemilik giliran.
-        val hist = try { MemoryDb.get(this).historyTranscriptVc230(30, 30000, turnSessionId) } catch (e: Exception) { "" }
-        if (hist.isNotBlank()) sb.append("\nRIWAYAT PERCAKAPAN TERAKHIR:\n").append(hist)
+        // Berbeda dengan system prompt/katalog/memori/riwayat yang
+        // dibuang vc316 (sudah ada di POST awal giliran ini di sesi
+        // server yang sama), work-notes adalah state kerja berjalan
+        // yang wajib terlihat di tiap lanjutan.
+        val wbVc316 = AgentPrompt.workNotesBlockVc302(this, turnSessionId)
+        if (wbVc316.isNotBlank()) sb.append(wbVc316).append("\n\n")
+        // vc316 IXL: riwayat 30 pesan/30.000 char TIDAK lagi dikirim
+        // ulang di lanjutan — riwayat sudah ada di POST awal giliran
+        // ini di sesi server yang sama (dan di riwayat lokal).
         // v4.48.7 (dedup): hasil penuh sebagai blok terakhir berlabel; trailer pindah ke sebelum blok hasil bila hasToolResult.
         if (hasToolResult) {
             sb.append("\n").append(PENTING_TRAILER)
@@ -9249,10 +11343,12 @@ class MainActivity : Activity() {
             sb.append("\n").append(PENTING_TRAILER)
         }
         // v4.48.6 (Butir 2): guard continuation. Urutan pangkas TETAP:
-        // RIWAYAT (baris tertua) -> JEJAK (anggaran diperkecil, bukti tetap
-        // didahulukan) -> digest (dibuang) -> darurat: teks lanjutan
-        // (kepala 2000 + penanda + ekor 2000). TIDAK PERNAH: prompt sistem,
-        // perintah user, rencana aktif, hasil tool terbaru (kecuali darurat).
+        // JEJAK (anggaran diperkecil, bukti tetap didahulukan) -> digest
+        // (dibuang) -> darurat: teks lanjutan (kepala 2000 + penanda +
+        // ekor 2000). Langkah RIWAYAT di trimPromptVc278 dipertahankan
+        // sebagai no-op (lanjutan delta vc316 tidak lagi membawa
+        // riwayat). TIDAK PERNAH: jangkar delta, rencana aktif, hasil
+        // tool terbaru (kecuali darurat).
         // vc278 O19: tiga langkah pertama kini satu fungsi bersama
         // (trimPromptVc278) — dipakai proaktif (target 80% cap) dan
         // darurat (target cap). Pemotongan darurat teks lanjutan tetap
@@ -9290,10 +11386,10 @@ class MainActivity : Activity() {
             }
             return Triple(beforeVc278 - finalTxt.length, histDroppedVc278, digestDroppedVc278)
         }
-        // vc278 O19(a): ambang proaktif 80% cap (320.000 char pada cap
-        // default 400.000): bila prompt lanjutan melewati ambang, pangkas
-        // LEBIH AWAL dengan urutan yang sama seperti guard darurat —
-        // jangan tunggu melewati cap.
+        // vc278 O19(a): ambang proaktif 80% cap (160.000 char pada cap
+        // default vc316 200.000): bila prompt lanjutan melewati ambang,
+        // pangkas LEBIH AWAL dengan urutan yang sama seperti guard
+        // darurat — jangan tunggu melewati cap.
         val proactiveThresholdVc278 = TurnMetrics.proactiveThreshold(cap)
         if (finalTxt.length > proactiveThresholdVc278) {
             val jejakDroppedBeforeVc278 = jejakDroppedN
@@ -9332,26 +11428,29 @@ class MainActivity : Activity() {
             TurnMetrics.recordGuardTrim(beforeGuardVc278 - finalTxt.length)
         }
         TurnMetrics.recordJejakDropped(jejakDroppedN, jejakDroppedChars)
-        // vc238 M14(c): memori lanjutan = isi segmen SKILL + MEMORI +
-        // TUJUAN yang benar-benar ada di finalTxt (bukan MEMORY.md saja);
-        // semantik tidak diulang di lanjutan (0, sesuai penanda M1);
-        // lainnya = residu finalTxt dikurangi lapisan bernama, sehingga
-        // jumlah lapisan = panjang prompt lanjutan yang dikirim.
-        val contMemVc238 = segLen(finalTxt, H_SKILL) + segLen(finalTxt, H_MEMORI) + segLen(finalTxt, H_TUJUAN)
-        val contKnownVc238 = (sys.length - catLen).coerceAtLeast(0) + catLen + contMemVc238 + hist.length + jejakTxt.length + db.length + text.length
+        // vc316 IXL (M14, lapisan lanjutan delta): katalog + memori +
+        // riwayat TIDAK dikirim ulang di lanjutan (0 — sudah ada di POST
+        // awal giliran ini di sesi server yang sama); "sistem" kini
+        // jangkar delta; work-notes ikut lapisan lainnya sebagai residu
+        // bernama; semantik tetap 0. Jumlah lapisan = panjang prompt
+        // lanjutan yang dikirim (bentuk selisih eksplisit, seperti dulu).
+        val contKnownVc316 = anchorVc316.length + planLenVc316 + jejakTxt.length + db.length + wbVc316.length + text.length
         TurnMetrics.recordPrompt(mapOf(
-            TurnMetrics.L_SYSTEM to (sys.length - catLen).coerceAtLeast(0),
-            TurnMetrics.L_CATALOG to catLen,
-            TurnMetrics.L_MEMORY to contMemVc238,
-            TurnMetrics.L_HISTORY to hist.length,
+            TurnMetrics.L_SYSTEM to anchorVc316.length,
+            TurnMetrics.L_CATALOG to 0,
+            TurnMetrics.L_MEMORY to 0,
+            TurnMetrics.L_HISTORY to 0,
             TurnMetrics.L_TRACE to jejakTxt.length,
             TurnMetrics.L_DIGEST to db.length,
             TurnMetrics.L_RESULT to text.length,
             TurnMetrics.L_SEMANTIK to 0,
-            TurnMetrics.L_OTHER to (finalTxt.length - contKnownVc238).coerceAtLeast(0)
+            TurnMetrics.L_OTHER to (finalTxt.length - contKnownVc316).coerceAtLeast(0)
         ))
         TurnMetrics.recordPromptTotal(finalTxt.length)
-        TurnMetrics.recordExtra(AgentPrompt.personaLength(this), planItems.joinToString("\n").length, PENTING_TRAILER.length)
+        // vc316: persona TIDAK dikirim ulang di lanjutan delta (0 —
+        // jujur: persona sudah ada di POST awal); rencana + trailer
+        // seperti dulu.
+        TurnMetrics.recordExtra(0, planItems.joinToString("\n").length, PENTING_TRAILER.length)
         sendToAgent(finalTxt)
     }
 
@@ -9379,7 +11478,7 @@ class MainActivity : Activity() {
     private fun sendToAgent(prompt: String) {
         statusTv.text = "DeepSeek: berpikir…"
         beginStreamBubble()
-        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
+        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode()
         val silent = internalTurn || verifyTurn
         if (apiMode) {
             dumpPromptLast(prompt)
@@ -9445,10 +11544,10 @@ class MainActivity : Activity() {
     // ---------- v4.7.0: Sesi Awet (checkpoint giliran) + Pool Akun ----------
     private fun turnPrefs() = getSharedPreferences("harness", MODE_PRIVATE)
 
-    /** v4.43.17 MODE OPERATOR: saklar diagnostik — paksa API Internal + rekam
+    /** v4.43.17 MODE JHON: saklar diagnostik — paksa API Internal + rekam
      *  diagnostik mentah (DsApiClient.recordDiag). Diaktifkan dari tombol
-     *  Setup 12b; Operator mengontrol default-nya lewat build. */
-    private fun operatorMode(): Boolean = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("operatorMode", false) } catch (e: Exception) { false }
+     *  Setup 12b; Jhon mengontrol default-nya lewat build. */
+    private fun jhonMode(): Boolean = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("jhonMode", false) } catch (e: Exception) { false }
 
     private fun saveTurnCheckpoint(userText: String) {
         try {
@@ -9583,7 +11682,7 @@ class MainActivity : Activity() {
             // dan tidak mereset agentSteps: sesudah app mati/proses dibunuh,
             // field kembali ke init (stepBudget 10, agentSteps 0) → giliran
             // resume kehabisan budget di 10 lalu +10 sekali = 20, walau pref
-            // maxToolSteps 200 (laporan user). Muat dari pref + reset
+            // maxToolSteps 200 (laporan Sendy). Muat dari pref + reset
             // penghitung & kuota perpanjangan +10 per giliran (cermin blok
             // reset onUserMessage). Hanya state anggaran — state lain
             // (stuckMap, planItems, turnWork, capStopSentVc277,
@@ -10153,7 +12252,10 @@ class MainActivity : Activity() {
                 if (ToolGate.level(rescuedTool) != RiskLevel.SAFE) {
                     val thinkingFull = turnThinking
                     turnThinking = ""
-                    addBubble("🧩 Panggilan tool '$rescuedTool' ditemukan di fragmen berpikir — TIDAK dieksekusi karena tool ini berisiko (rescue vc229 hanya untuk tool baca SAFE). Isi fragmen berpikir pemicu (lengkap):\n$thinkingFull", false, turn = true)
+                    // vc316 Worker BR (a): fragmen berpikir pemicu bisa memuat
+                    // markup DSML mentah — bersihkan sebelum tampil (hanya
+                    // tampilan; tidak dikirim ke tool/server dari sini).
+                    addBubble("🧩 Panggilan tool '$rescuedTool' ditemukan di fragmen berpikir — TIDAK dieksekusi karena tool ini berisiko (rescue vc229 hanya untuk tool baca SAFE). Isi fragmen berpikir pemicu (lengkap, markup tool mentah dibersihkan):\n" + AgentPrompt.stripRawToolMarkupForDisplay(thinkingFull), false, turn = true)
                     sendContinuation("SISTEM (rescue ditolak): panggilan tool '$rescuedTool' hanya muncul di fragmen berpikirmu, bukan di jawaban final — dan tool itu berisiko, jadi TIDAK dieksekusi. Bila kamu memang bermaksud menjalankan tool itu, kirim ulang SEKARANG sebagai blok json jawaban final (dengan argumen lengkap) dan tunggu persetujuan user; bila tidak, lanjutkan tanpa tool itu.")
                     return
                 }
@@ -10658,7 +12760,7 @@ class MainActivity : Activity() {
      *  (pref maxToolSteps, default 50, plafon 200 sejak vc299): saat tercapai dan
      *  askExtendSteps aktif, user ditanya dulu — setuju: anggaran +10 dan tool
      *  tertunda dijalankan; tolak: giliran berhenti dengan pesan batas yang jujur.
-     *  vc301 SF-C5 (Gas user 12 Nov ~14:58): dialog tanya-tambah ini adalah
+     *  vc301 SF-C5 (Gas Sendy 12 Nov ~14:58): dialog tanya-tambah ini adalah
      *  perpanjangan BUDGET langkah, BUKAN approval per-tool — syaratnya HANYA
      *  prefs askExtendSteps, dipisah dari ToolGate.GATES_DISABLED (vc247 menghapus
      *  checkpoint approval per-tool, bukan dialog budget; dialog ini sempat mati
@@ -10801,7 +12903,7 @@ class MainActivity : Activity() {
             if (agentSteps > stepBudget) {
                 pendingTool = tool to args
                 pendingCallIdVc272 = callId
-                // vc301 SF-C5 (Gas user 12 Nov ~14:58): dialog "Tambah 10
+                // vc301 SF-C5 (Gas Sendy 12 Nov ~14:58): dialog "Tambah 10
                 // langkah lagi?" adalah perpanjangan BUDGET langkah, bukan
                 // approval per-tool — syaratnya HANYA prefs askExtendSteps
                 // (dipisah dari ToolGate.GATES_DISABLED; vc247 TIDAK
@@ -10842,6 +12944,17 @@ class MainActivity : Activity() {
                 }
                 return
             }
+        }
+        // vc316 N9-B1/C1: konfirmasi KHUSUS op Concat yang merusak — cek
+        // di sini, SEBELUM early-return gerbang mati di bawah, supaya
+        // berlaku SELAGI GATES_DISABLED=true (bila gerbang hidup, WRITE
+        // Concat sudah REVIEW lewat jalur normal di bawah, jadi tidak
+        // ditanya dua kali). Ini BUKAN gerbang (tetap mati) dan BUKAN
+        // HIGH+PIN: dialog Ya/Batal sekali per panggilan; tanpa
+        // konfirmasi, tool TIDAK dieksekusi (fail-closed).
+        if (ToolGate.GATES_DISABLED && ConcatTools.requiresSpecialConfirmVc316(tool, args)) {
+            askConcatDestructiveConfirmVc316(tool, args, callId)
+            return
         }
         // vc247: gate dimatikan — lewati seluruh cabang persetujuan di
         // bawah (autoAllow, mandat, dialog/PIN, parkir notifikasi).
@@ -10889,7 +13002,7 @@ class MainActivity : Activity() {
                 var floatHandled = false
                 if (!activityResumed) {
                     // v4.10.4 IZIN MELAYANG: app tidak di depan — dialog activity
-                    // tampil tak terlihat & menggantung (kasus user 2026-10-23:
+                    // tampil tak terlihat & menggantung (kasus Sendy 2026-10-23:
                     // persetujuan go_back menunggu 26 menit). Popup melayang
                     // global mengambil alih; PIN tetap hanya di dalam app.
                     val reqF = ToolGate.describe(tool, args, this@MainActivity)
@@ -11311,7 +13424,7 @@ class MainActivity : Activity() {
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             AlertDialog.Builder(this)
                 .setTitle("Izin kamera")
-                .setMessage("Harness butuh izin kamera supaya kamu bisa memotret dari chat dan memakai mode kamera live. Foto hanya diambil saat kamu menekan Tangkap atau saat live yang kamu mulai sendiri dengan preview terlihat — tidak pernah diam-diam di background.")
+                .setMessage("S&Harness butuh izin kamera supaya kamu bisa memotret dari chat dan memakai mode kamera live. Foto hanya diambil saat kamu menekan Tangkap atau saat live yang kamu mulai sendiri dengan preview terlihat — tidak pernah diam-diam di background.")
                 .setPositiveButton("Minta Izin") { _, _ ->
                     try {
                         requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 9101)
@@ -11687,7 +13800,7 @@ class MainActivity : Activity() {
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
                 val b64 = android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP)
-                // v4.10.3: foto lewat API INTERNAL (perintah user 2026-10-23 10:02)
+                // v4.10.3: foto lewat API INTERNAL (perintah Sendy 2026-10-23 10:02)
                 // — berkas diunggah lalu dibaca di SESI SERVER YANG SAMA. Jalur Web
                 // lama membuka sesi chat baru sendiri ("Penjelasan Gambar Aplikasi");
                 // kini jalur Web hanya cadangan bila API gagal.
@@ -12112,6 +14225,12 @@ class MainActivity : Activity() {
         val special = setOf("make_plan", "update_plan", "analyze_photo", "delete_session")
         if (calls.any { it.optString("tool") in special }) return false
         if (calls.any { it.optString("tool").isBlank() }) return false
+        // vc316 N9-B1/C1: batch 1-1 TIDAK dipakai bila berisi op Concat
+        // yang butuh konfirmasi khusus — batch mengeksekusi langsung
+        // tanpa lewat proceedTool, jadi dialog konfirmasi akan dilewati
+        // diam-diam. Batch seperti itu jatuh ke jalur tunggal (hanya call
+        // pertama yang dieksekusi, sisanya diminta ulang).
+        if (calls.any { ConcatTools.requiresSpecialConfirmVc316(it.optString("tool"), it.optJSONObject("args") ?: JSONObject()) }) return false
         return true
     }
 
@@ -12517,6 +14636,36 @@ class MainActivity : Activity() {
         return ToolExecOutcomeVc278(holder[0] as? String ?: "ERROR: tool $tool tidak mengembalikan hasil.", holder[1] as? String, (holder[2] as? Int) ?: 0, false, timeoutSec)
     }
 
+    // vc316 N9-B1/C1: dialog KONFIRMASI KHUSUS op Concat yang merusak di
+    // chat 1-1 — pola dialog REVIEW di proceedTool, tapi LEBIH SEDERHANA:
+    // BUKAN gerbang (tetap mati, ToolGate tidak disentuh), BUKAN HIGH+PIN,
+    // tanpa Panel Approval / autoAllow / mandat / parkir: Ya/Batal sekali
+    // per panggilan, tanpa "jangan tanya lagi". Dialog tidak bisa tampil
+    // (app tidak di depan) -> FAIL CLOSED: tool TIDAK dieksekusi dan model
+    // diberi tahu lewat continuation (bukan diam-diam). setCancelable
+    // (false) supaya selalu ada keputusan eksplisit — bila dialog bisa
+    // ditutup tanpa tombol, giliran akan menggantung tanpa hasil tool.
+    private fun askConcatDestructiveConfirmVc316(tool: String, args: JSONObject, callId: String = "") {
+        val descVc316 = ConcatTools.describeDestructiveConcatCallVc316(tool, args)
+        runOnUiThread {
+            try {
+                AlertDialog.Builder(this)
+                    .setTitle("Jalankan perintah Concat yang merusak?")
+                    .setMessage(descVc316 + "\n\nPerintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save).")
+                    .setPositiveButton("Ya, jalankan") { _, _ -> execToolAndContinue(tool, args, callId) }
+                    .setNegativeButton("Batal") { _, _ ->
+                        addMsg("⏹️ $tool tidak dijalankan (ditolak user — konfirmasi khusus Concat).", "meta", turn = true)
+                        sendContinuation("User MENOLAK aksi tool $tool (konfirmasi khusus Concat: perintah ini merusak). Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.")
+                    }
+                    .setCancelable(false)
+                    .create().show()
+            } catch (e: Exception) {
+                addMsg("⏹️ $tool tidak dijalankan (konfirmasi khusus Concat tidak bisa tampil — app tidak di depan).", "meta", turn = true)
+                sendContinuation("Tool $tool TIDAK dijalankan: perintah Concat ini merusak dan butuh konfirmasi user, tetapi dialog konfirmasinya tidak bisa tampil (app sedang tidak di depan). Minta user membuka app lalu memicu ulang tugasnya; jangan ulangi panggilan ini sendiri.")
+            }
+        }
+    }
+
     private fun execToolAndContinue(tool: String, args: JSONObject, callId: String = "") {
         // vc306 Worker B: stop dari tombol ■ composer — pola sama seperti
         // kill switch F1 di bawah: langkah berikutnya ditolak, model diminta
@@ -12746,11 +14895,11 @@ class MainActivity : Activity() {
         box.addView(utilScroll)
         // F3 (v4.37.0): status + bangkit serve satu ketukan.
         val serveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        serveStatusTv = TextView(this).apply { text = "Serve :4199 — " + ServeHealth.lastStatus(this@MainActivity); textSize = 12f; setTextColor(th.dim); setPadding(dp(8), dp(4), dp(8), dp(4)); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
+        serveStatusTv = TextView(this).apply { text = "Serve :4197 — " + ServeHealth.lastStatus(this@MainActivity); textSize = 12f; setTextColor(th.dim); setPadding(dp(8), dp(4), dp(8), dp(4)); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
         serveRow.addView(serveStatusTv)
         serveRow.addView(Button(this).apply { text = "⚡ Bangkitkan Serve"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(6), 0, 0, 0) }; setOnClickListener {
-            serveStatusTv?.text = "Serve :4199 — membangkitkan…"
-            Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { serveStatusTv?.text = "Serve :4199 — $r"; termAppend(r) } } catch (e: Exception) { runOnUiThread { serveStatusTv?.text = "Serve :4199 — gagal: ${e.message}" } } }.start()
+            serveStatusTv?.text = "Serve :4197 — membangkitkan…"
+            Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { serveStatusTv?.text = "Serve :4197 — $r"; termAppend(r) } } catch (e: Exception) { runOnUiThread { serveStatusTv?.text = "Serve :4197 — gagal: ${e.message}" } } }.start()
         } })
         box.addView(serveRow)
         // F3-Tailscale (v4.48.4): baris status tailscale (baca saja; watchdog service yang menjaga).
@@ -12967,7 +15116,7 @@ class MainActivity : Activity() {
         topBtn("▶ Mulai Job Baru") { prootJobStartFlow() }
         topBtn("➕ Daftarkan Job Lama (PID sudah jalan)") { prootJobRegisterFlow() }
         if (jobs.isEmpty()) {
-            col.addView(TextView(this).apply { text = "Belum ada job terdaftar.\n\nSupervisor hanya mengelola job yang didaftarkan lewat panel ini (Mulai Job Baru / Daftarkan Job Lama). Job nohup dari run_terminal TIDAK otomatis terdaftar — daftarkan PID-nya bila ingin diawasi.\n\nTangan serve (serve:4199 + tailscaled) TIDAK dikelola di sini — milik ServeHealth/Standby."; setTextColor(th.dim); textSize = 13f; setPadding(0, dp(8), 0, dp(8)) })
+            col.addView(TextView(this).apply { text = "Belum ada job terdaftar.\n\nSupervisor hanya mengelola job yang didaftarkan lewat panel ini (Mulai Job Baru / Daftarkan Job Lama). Job nohup dari run_terminal TIDAK otomatis terdaftar — daftarkan PID-nya bila ingin diawasi.\n\nTangan serve (serve:4197 + tailscaled) TIDAK dikelola di sini — milik ServeHealth/Standby."; setTextColor(th.dim); textSize = 13f; setPadding(0, dp(8), 0, dp(8)) })
         }
         for (job in jobs) {
             val info = "📌 ${job.name}\n${job.session} • PID ${job.pid} • ${ProotJobs.statusLabel(job.status)} • ${if (job.policy == "AUTO") "restart AUTO" else "restart MANUAL"}${if (job.restartCount > 0) " • restart ${job.restartCount}x" else ""}\nLog: ${job.logPath}\n${job.lastEvent}"
@@ -13140,8 +15289,8 @@ class MainActivity : Activity() {
                 runOnUiThread { Toast.makeText(this@MainActivity, msgs.joinToString("\n"), Toast.LENGTH_LONG).show(); showWorkerDialog() }
             }.start()
         }
-        // vc258 Fase 2: status + kendali endpoint :4200.
-        val epStatus = try { WorkerEndpoint.status(this@MainActivity) } catch (e: Exception) { "Endpoint :4200: (tidak terbaca)" }
+        // vc258 Fase 2: status + kendali endpoint :4198.
+        val epStatus = try { WorkerEndpoint.status(this@MainActivity) } catch (e: Exception) { "Endpoint :4198: (tidak terbaca)" }
         col.addView(TextView(this).apply { text = "🔌 $epStatus\nToken TIDAK PERNAH ditampilkan di sini — tersimpan di SecureStore; file token untuk opencode ada di proot /root/.harness/worker-endpoint-token (0600)."; setTextColor(th.dim); textSize = 12f; setPadding(0, dp(8), 0, dp(2)) })
         val epRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         fun epBtn(label: String, fn: () -> Unit) {
@@ -13180,7 +15329,7 @@ class MainActivity : Activity() {
         }
         col.addView(epRow)
         if (workers.isEmpty()) {
-            col.addView(TextView(this).apply { text = "Belum ada worker.\n\nWorker = satu unit kerja yang bisa di-spawn, dimonitor, di-stop, dan di-restart (Fase 1 Device-as-Server). Jenis: Proot (perintah shell) dan Script Python. Worker stateless — file, tugas, dan hasil tersimpan di agen (filesDir/workers/<id>/) + cermin /sdcard/Harness-Workers/<id>/ (terlihat dari luar app).\n\nBatas: maks 5 worker JALAN bersamaan; TANPA batasan baterai (K4); restart hanya manual (tanpa auto-restart). Isolasi Fase 3 (vc281): tiap sesi proot HANYA meng-bind folder cermin worker yang JALAN di sesi itu — /sdcard di luar folder itu tidak terlihat dari worker. Worker yang berbagi satu sesi bisa melihat folder cermin satu sama lain (batas jujur K4: 5 worker, 4 sesi). Kuota default 1024 MB per worker bila belum di-set; janitor menghapus hasil tertua bila melewati kuota + memberi tahu lewat notifikasi (bila masih over-kuota, janitor juga menghapus file kerja lama >7 hari; antrean Operator ikut kuota 1024 MB + janitor); log worker dirotasi di 1 MB. Verifikasi tugas sisi server: POST /workers/<id>/verify-task (body berisi nama file tugas) dengan token per-worker — kunci HMAC tidak pernah keluar dari app, jadi jawaban VALID dari rute itu benar-benar bukti asal agen; verify-queue.py di proot sudah dihapus. Hasil yang ditulis worker langsung ke cermin tanpa lewat endpoint tidak bertanda tangan dan dilabeli DATA TIDAK TEPERCAYA. Tangan serve (serve:4199) TIDAK dikelola di sini."; setTextColor(th.dim); textSize = 13f; setPadding(0, dp(8), 0, dp(8)) })
+            col.addView(TextView(this).apply { text = "Belum ada worker.\n\nWorker = satu unit kerja yang bisa di-spawn, dimonitor, di-stop, dan di-restart (Fase 1 Device-as-Server). Jenis: Proot (perintah shell) dan Script Python. Worker stateless — file, tugas, dan hasil tersimpan di agen (filesDir/workers/<id>/) + cermin /sdcard/Harness-Workers/<id>/ (terlihat dari luar app).\n\nBatas: maks 5 worker JALAN bersamaan; TANPA batasan baterai (K4); restart hanya manual (tanpa auto-restart). Isolasi Fase 3 (vc281): tiap sesi proot HANYA meng-bind folder cermin worker yang JALAN di sesi itu — /sdcard di luar folder itu tidak terlihat dari worker. Worker yang berbagi satu sesi bisa melihat folder cermin satu sama lain (batas jujur K4: 5 worker, 4 sesi). Kuota default 1024 MB per worker bila belum di-set; janitor menghapus hasil tertua bila melewati kuota + memberi tahu lewat notifikasi (bila masih over-kuota, janitor juga menghapus file kerja lama >7 hari; antrean Jhon ikut kuota 1024 MB + janitor); log worker dirotasi di 1 MB. Verifikasi tugas sisi server: POST /workers/<id>/verify-task (body berisi nama file tugas) dengan token per-worker — kunci HMAC tidak pernah keluar dari app, jadi jawaban VALID dari rute itu benar-benar bukti asal agen; verify-queue.py di proot sudah dihapus. Hasil yang ditulis worker langsung ke cermin tanpa lewat endpoint tidak bertanda tangan dan dilabeli DATA TIDAK TEPERCAYA. Tangan serve (serve:4197) TIDAK dikelola di sini."; setTextColor(th.dim); textSize = 13f; setPadding(0, dp(8), 0, dp(8)) })
         }
         for (w in workers) {
             val disp = try { WorkerRegistry.displayStatus(this@MainActivity, w) } catch (e: Exception) { w.status }
@@ -14054,22 +16203,22 @@ private fun showApiTokenDialog() {
             prefs.edit().putBoolean("apiMode", now).apply()
             setupStatusTv.text = "Mode chat sekarang: ${if (now) "API INTERNAL (PoW) — eksperimen Jalur B" else "WebView (stabil)"}. Berlaku mulai pesan chat berikutnya. Mode API butuh tab Web sudah login."
         }
-        addBtn("12b. Mode Operator: paksa API Internal + rekam diagnostik") {
+        addBtn("12b. Mode Jhon: paksa API Internal + rekam diagnostik") {
             val prefs = getSharedPreferences("harness", MODE_PRIVATE)
-            val now = !prefs.getBoolean("operatorMode", false)
-            prefs.edit().putBoolean("operatorMode", now).apply()
-            setupStatusTv.text = "Mode Operator sekarang: ${if (now) "AKTIF — chat DeepSeek dipaksa lewat API Internal + tiap panggilan API direkam (maks 20 baris, token hanya 12 karakter pertama)" else "NONAKTIF"}. Berlaku mulai pesan chat berikutnya. Lihat rekamannya di tombol 12c."
+            val now = !prefs.getBoolean("jhonMode", false)
+            prefs.edit().putBoolean("jhonMode", now).apply()
+            setupStatusTv.text = "Mode Jhon sekarang: ${if (now) "AKTIF — chat DeepSeek dipaksa lewat API Internal + tiap panggilan API direkam (maks 20 baris, token hanya 12 karakter pertama)" else "NONAKTIF"}. Berlaku mulai pesan chat berikutnya. Lihat rekamannya di tombol 12c."
         }
-        addBtn("12c. Lihat Rekaman Diagnostik API (Mode Operator)") {
+        addBtn("12c. Lihat Rekaman Diagnostik API (Mode Jhon)") {
             val diag = try { getSharedPreferences("harness", MODE_PRIVATE).getString("dsApiDiag", "") ?: "" } catch (e: Exception) { "" }
-            val msg = if (diag.isBlank()) "Belum ada rekaman. Nyalakan Mode Operator (tombol 12b), kirim satu chat DeepSeek, lalu buka lagi tombol ini." else diag
+            val msg = if (diag.isBlank()) "Belum ada rekaman. Nyalakan Mode Jhon (tombol 12b), kirim satu chat DeepSeek, lalu buka lagi tombol ini." else diag
             android.app.AlertDialog.Builder(this)
                 .setTitle("Rekaman Diagnostik API DeepSeek")
                 .setMessage(msg)
                 .setPositiveButton("Tutup", null)
                 .show()
         }
-        addBtn("12d. Bandingin Rekaman Browser DeepSeek (Mode Operator)") {
+        addBtn("12d. Bandingin Rekaman Browser DeepSeek (Mode Jhon)") {
             Toast.makeText(this, "Membaca rekaman browser…", Toast.LENGTH_SHORT).show()
             apiClient.readDeepSeekCapture { msg ->
                 android.app.AlertDialog.Builder(this)
@@ -14084,7 +16233,7 @@ private fun showApiTokenDialog() {
             val prefs = getSharedPreferences("harness", MODE_PRIVATE)
             if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                setupStatusTv.text = "Izinkan 'Tampilkan di atas aplikasi lain' untuk Harness, lalu tekan tombol 13 lagi."
+                setupStatusTv.text = "Izinkan 'Tampilkan di atas aplikasi lain' untuk S&Harness, lalu tekan tombol 13 lagi."
                 return@addBtn
             }
             val now = !prefs.getBoolean("overlayOn", false)
@@ -14107,10 +16256,10 @@ private fun showApiTokenDialog() {
         addBtn("16. Jadikan Asisten Default Android") {
             try {
                 startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
-                setupStatusTv.text = "Di pengaturan asisten: pilih 'Harness' sebagai aplikasi asisten default. Setelah itu tahan tombol Home/Power atau gesture asisten akan membuka chat harness."
+                setupStatusTv.text = "Di pengaturan asisten: pilih 'S&Harness' sebagai aplikasi asisten default. Setelah itu tahan tombol Home/Power atau gesture asisten akan membuka chat harness."
             } catch (e: Exception) {
                 try { startActivity(Intent(Settings.ACTION_SETTINGS)) } catch (e2: Exception) {}
-                setupStatusTv.text = "Buka Pengaturan > Aplikasi > Aplikasi default > Asisten digital > pilih Harness."
+                setupStatusTv.text = "Buka Pengaturan > Aplikasi > Aplikasi default > Asisten digital > pilih S&Harness."
             }
         }
         addBtn("17. Hapus Semua Memori & Riwayat (reset asisten)") {
@@ -14218,7 +16367,7 @@ private fun showApiTokenDialog() {
                 .setNegativeButton("Batal", null)
                 .show()
         }
-        addBtn("23. Mode Siaga Wake Word ('Hai Asisten') — dengar terus, boros baterai") {
+        addBtn("23. Mode Siaga Wake Word ('Hai Senz') — dengar terus, boros baterai") {
             val prefs = getSharedPreferences("harness", MODE_PRIVATE)
             val turnOn = !prefs.getBoolean("wakeWordOn", false)
             if (turnOn) {
@@ -14227,7 +16376,7 @@ private fun showApiTokenDialog() {
             prefs.edit().putBoolean("wakeWordOn", turnOn).apply()
             try { startService(Intent(this, HarnessService::class.java)) } catch (e: Exception) {}
             setupStatusTv.text = if (turnOn)
-                "Mode siaga AKTIF: ucapkan 'Hai Asisten' kapan pun untuk memanggil asisten (ia mendengarkan terus lewat mikrofon — baterai lebih boros, dan recognizer bawaan butuh internet). Matikan lewat tombol ini juga."
+                "Mode siaga AKTIF: ucapkan 'Hai Senz' kapan pun untuk memanggil asisten (ia mendengarkan terus lewat mikrofon — baterai lebih boros, dan recognizer bawaan butuh internet). Matikan lewat tombol ini juga."
             else "Mode siaga MATI."
         }
         addBtn("24. Komentar Layar Proaktif (tawaran bantuan dari isi layar)") {
@@ -14306,7 +16455,7 @@ private fun showApiTokenDialog() {
                 .show()
         }
         addBtn("27. UI React (sudah pensiun — UI native permanen)") {
-            Toast.makeText(this, "UI React sudah pensiun sejak v4.26.0 — Harness sekarang 100% native.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "UI React sudah pensiun sejak v4.26.0 — S&Harness sekarang 100% native.", Toast.LENGTH_LONG).show()
         }
         addBtn("28. Memori Vektor — Unduh Paket Model (135 MB, sekali saja)") {
             val wifiBox = CheckBox(this).apply { text = "Unduh lewat WiFi saja (hemat kuota)"; isChecked = false }
@@ -14387,15 +16536,15 @@ private fun showApiTokenDialog() {
         addBtn("70. 🎨 Artifact Anti-Slop (vc297)") { vc297ShowArtifactDialog() }
         addBtn("33. Koordinator OpenCode — Cek Jalur Serve") {
             val act = this
-            setupStatusTv.text = "Mengecek serve 4097/4096/4100…"
+            setupStatusTv.text = "Mengecek serve 4097/4096/4099…"
             Thread {
                 val s = OcCoord.statusText(act, forceProbe = true)
                 runOnUiThread { setupStatusTv.text = "🤖 KOORDINATOR OPENCODE\n$s" }
             }.start()
         }
-        addBtn("34. Koordinator — Pasang Serve Mandiri (4100) + Boot Script") {
+        addBtn("34. Koordinator — Pasang Serve Mandiri (4099) + Boot Script") {
             val act = this
-            setupStatusTv.text = "Memasang boot script + menyalakan serve mandiri 4100 via Termux… (butuh izin RUN_COMMAND)"
+            setupStatusTv.text = "Memasang boot script + menyalakan serve mandiri 4099 via Termux… (butuh izin RUN_COMMAND)"
             Thread {
                 val s = OcCoord.installBootAndStart(act)
                 runOnUiThread { setupStatusTv.text = "🤖 SERVE MANDIRI\n$s" }
@@ -14640,6 +16789,9 @@ private fun showApiTokenDialog() {
         addBtn("63. 🧑‍🏭 Jobs Proot (Supervisor)") { showProotJobsDialog() }
         addBtn("64. 🔍 Mitmproxy Terkelola") { showMitmProxyDialog() }
         addBtn("67. 👷 Worker (Device Server)") { showWorkerDialog() }
+        // vc314 Worker B — Concat: entri Setup → Konektor → Concat
+        // (layar detail buildConcatCardVc314, desain Mist).
+        addBtn("71. Concat") { setupView = "concat"; refreshSetupNative() }
         // vc183: catatan klasik tidak dirender lagi.
         // vc183: klasik tidak dirender sama sekali (dulu T8: dibangun lalu GONE).
         // setupBtnViews tetap terdaftar & performClick tetap bekerja.
@@ -14790,7 +16942,7 @@ private fun showApiTokenDialog() {
     /** J6: pilih pak perilaku agen (preset gaya kerja sebagai data). */
     private fun setupBehaviorDialog() {
         val th = currentTheme()
-        val cur = Behaviors.byId(getSharedPreferences("harness", MODE_PRIVATE).getString("behaviorPack", "asisten") ?: "asisten")
+        val cur = Behaviors.byId(getSharedPreferences("harness", MODE_PRIVATE).getString("behaviorPack", "senz") ?: "senz")
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         var dlgRef: android.app.AlertDialog? = null
         for (p in Behaviors.PACKS) {
@@ -14958,7 +17110,7 @@ private fun showApiTokenDialog() {
             val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "id-ID")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Ngomong aja…")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Ngomong aja, Senz…")
             }
             startActivityForResult(i, 77)
         } catch (e: Exception) {
@@ -14968,6 +17120,25 @@ private fun showApiTokenDialog() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // vc313: pemilih file tab agen (WebChromeClient.onShowFileChooser).
+        if (requestCode == 4101) {
+            val cb = browserFileChooserCallback
+            browserFileChooserCallback = null
+            if (cb != null) {
+                try {
+                    if (resultCode == RESULT_OK && data != null) {
+                        val uris = ArrayList<android.net.Uri>()
+                        val clip = data.clipData
+                        if (clip != null) { for (i in 0 until clip.itemCount) { clip.getItemAt(i).uri?.let { uris.add(it) } } }
+                        else if (data.data != null) uris.add(data.data!!)
+                        cb.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+                    } else cb.onReceiveValue(null)
+                } catch (e: Exception) {
+                    try { cb.onReceiveValue(null) } catch (e2: Exception) {}
+                }
+            }
+            return
+        }
         if (requestCode == 77 && resultCode == RESULT_OK && data != null) {
             val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
             val text = results?.firstOrNull()?.trim().orEmpty()
@@ -15059,7 +17230,17 @@ private fun showApiTokenDialog() {
     override fun onPause() {
         activityResumed = false
         try { stopCameraVisionSilent() } catch (e: Exception) {}
+        // vc313 §3.5: flush cookie + simpan metadata tab saat app ke latar.
+        try { CookieManager.getInstance().flush() } catch (e: Exception) {}
+        try { saveBrowserTabsVc313() } catch (e: Exception) {}
         super.onPause()
+    }
+
+    override fun onStop() {
+        // vc313 §3.5: flush cookie saat app berhenti (jangan duplikasi
+        // flush setupWebView login DeepSeek — ini flush tambahan browser).
+        try { CookieManager.getInstance().flush() } catch (e: Exception) {}
+        super.onStop()
     }
 
     /** F3 (v4.37.0): cek + bangkit serve saat app kembali ke depan.
@@ -15078,7 +17259,7 @@ private fun showApiTokenDialog() {
         Thread {
             try {
                 val st = ServeHealth.ensureAlive(this)
-                runOnUiThread { serveStatusTv?.text = "Serve :4199 — " + if (st.alive) "hidup • PID ${st.pid}" else "tidur"; tsStatusTv?.text = "Tailscale — " + TailscaleHealth.lastStatus(this) + " (" + TailscaleHealth.lastCheckText(this) + ")" }
+                runOnUiThread { serveStatusTv?.text = "Serve :4197 — " + if (st.alive) "hidup • PID ${st.pid}" else "tidur"; tsStatusTv?.text = "Tailscale — " + TailscaleHealth.lastStatus(this) + " (" + TailscaleHealth.lastCheckText(this) + ")" }
                 // vc246 GELOMBANG 5 (NT-M5): status serve yang butuh
                 // tindakan kini juga menjadi notifikasi Android (dulu
                 // hanya teks UI) — throttle 1 jam agar tidak spam.
@@ -15091,7 +17272,7 @@ private fun showApiTokenDialog() {
                             if (android.os.Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel("harness_auto_heal") == null) nm.createNotificationChannel(android.app.NotificationChannel("harness_auto_heal", "Automation Perlu Perhatian", android.app.NotificationManager.IMPORTANCE_DEFAULT))
                             val pi = android.app.PendingIntent.getActivity(this, 73, Intent(this, MainActivity::class.java), android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
                             val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, "harness_auto_heal") else android.app.Notification.Builder(this)
-                            nm.notify(7103, nb.setSmallIcon(android.R.drawable.ic_dialog_alert).setContentTitle("Serve :4199 tidur — perlu tindakan").setContentText("Buka app > Setup serve untuk menyalakan ulang serve.").setContentIntent(pi).setAutoCancel(true).build())
+                            nm.notify(7103, nb.setSmallIcon(android.R.drawable.ic_dialog_alert).setContentTitle("Serve :4197 tidur — perlu tindakan").setContentText("Buka app > Setup serve untuk menyalakan ulang serve.").setContentIntent(pi).setAutoCancel(true).build())
                         }
                     } catch (e: Exception) {}
                 }
@@ -15127,7 +17308,7 @@ private fun showApiTokenDialog() {
     }
 
     // vc226 Panel Approval "Butuh Manusia" (BRIEF-PANEL-APPROVAL, disetujui
-    // user 2026-11-01). Satu inbox approval pending lintas room/sesi +
+    // Sendy 2026-11-01). Satu inbox approval pending lintas room/sesi +
     // daftar Mandat aktif. Lokasi: kartu Beranda + pintu dari tiap room
     // (tanpa Command Center, sesuai keputusan §7). Badge Laporan vc191
     // tetap terpisah — tidak digabung ke panel ini.
@@ -15442,7 +17623,7 @@ private fun showApiTokenDialog() {
         val soloAgent = Agents.active(this).id
         Automation.ensureSessions(this, room)
         val divDef = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("sessDefDivMode", "bebas") ?: "bebas"
-        val sess = Automation.createSession(this, room, firstMode, task.take(60), if (firstMode == "multi") "" else soloAgent, if (firstMode == "multi") listOf("asisten", "mandor", "mentor", "agen4") else emptyList(), if (firstMode == "multi") divDef else "bebas", if (firstMode == "multi") "mandor" else soloAgent, emptyList(), durKind, nDays, "", 0)
+        val sess = Automation.createSession(this, room, firstMode, task.take(60), if (firstMode == "multi") "" else soloAgent, if (firstMode == "multi") listOf("senz", "mandor", "mentor", "agen4") else emptyList(), if (firstMode == "multi") divDef else "bebas", if (firstMode == "multi") "mandor" else soloAgent, emptyList(), durKind, nDays, "", 0)
         Automation.addSessionTask(this, room, sess, task, if (firstMode == "multi") "mandor" else soloAgent, criteria)
         // vc263 (FT-M7): pulihkan isi template ke room/sesi baru — jadwal
         // (via syncSessionSchedule), rerank, digest 07:00, member + divMode
@@ -16512,7 +18693,20 @@ private fun showApiTokenDialog() {
                 val blockedBatchVc274 = ArrayList<String>()
                 val blArrBatchVc274 = roomNowBatchVc274.optJSONArray("blocklist") ?: org.json.JSONArray()
                 for (biVc274 in 0 until blArrBatchVc274.length()) blockedBatchVc274.add(blArrBatchVc274.optString(biVc274))
-                val roomBatchOkVc274 = BatchToolVc274.useBatch(multiRoomVc249) && multiRoomVc249.all { oVc274 ->
+                // vc316 N9-B1/C1 + N9-C2: batch room TIDAK BOLEH berisi (a)
+                // op Concat yang butuh konfirmasi khusus — dialog hanya
+                // ada di jalur tunggal, batch akan melewatinya diam-diam;
+                // (b) tool WRITE Concat apa pun — batch mengeksekusi tulis
+                // sekuensial di UI thread (BatchToolVc274.runBatch, jalur
+                // sekuensial), risiko ANR yang sama seperti N9-C2; jalur
+                // tunggal sudah dipindah ke worker thread. Batch seperti
+                // itu jatuh ke jalur tunggal di bawah: hanya call pertama
+                // yang dieksekusi (pola yang sama seperti batch berisi tool
+                // non-SAFE). READ Concat tetap boleh di batch (kelompok
+                // baca jalan di pool thread, bukan UI thread).
+                val roomBatchHasConcatConfirmVc316 = multiRoomVc249.any { oVc274 -> ConcatTools.requiresSpecialConfirmVc316(oVc274.optString("tool"), oVc274.optJSONObject("args") ?: org.json.JSONObject()) }
+                val roomBatchHasConcatWriteVc316 = multiRoomVc249.any { oVc274 -> val tVc274 = oVc274.optString("tool"); tVc274.startsWith("concat_") && tVc274 !in Tools.READ_TOOLS }
+                val roomBatchOkVc274 = BatchToolVc274.useBatch(multiRoomVc249) && !roomBatchHasConcatConfirmVc316 && !roomBatchHasConcatWriteVc316 && multiRoomVc249.all { oVc274 ->
                     val tVc274 = oVc274.optString("tool")
                     tVc274 !in blockedBatchVc274 && ToolGate.level(tVc274, oVc274.optJSONObject("args") ?: org.json.JSONObject(), this) == RiskLevel.SAFE
                 }
@@ -16689,6 +18883,92 @@ private fun showApiTokenDialog() {
                     renderMessages(); scrollBottom()
                     return
                 }
+                // vc316 N9-C2: penuntasan SATU tool room jalur SAFE —
+                // dipisah dari pemicu eksekusi supaya Concat bisa jalan di
+                // worker thread (runRoomSafeToolVc316 di bawah) sementara
+                // hasil + jejak + StuckDetector + self-healing tetap di UI
+                // thread, persis seperti jalur sinkron lama. resultId /
+                // totalChars DITANGKAP di thread eksekusi (ThreadLocal —
+                // dibaca di UI thread akan memberi id basi; lihat komentar
+                // VC303-P2-9 di dalam). Render TIDAK di sini: jalur sinkron
+                // dirender akhir handleRoomReply seperti dulu; jalur worker
+                // merender sendiri sesudah penuntasan (lihat bawah).
+                fun finishRoomSafeToolVc316(tVc316: String, aVc316: org.json.JSONObject, resVc316: String, msVc316: Long, callIdVc316: String, resultIdVc316: String?, totalCharsVc316: Int) {
+                    // VC303-P2-9 (CX-2): kumpulkan jejak tool room (jalur tunggal).
+                    // resultId/totalChars sudah ditangkap di thread eksekusi
+                    // (execute() membersihkan ThreadLocal R-id di awal, jadi
+                    // nilai ini = R-id tool ini, atau null).
+                    roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(tVc316, msVc316, !WorkLog.isFailed(resVc316), RedactSecrets.redact(resVc316).take(120), evidence = resVc316, args = aVc316.toString().take(4000), resultId = resultIdVc316 ?: "", totalChars = totalCharsVc316, callId = callIdVc316))
+                    Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", ActivityTitle.formatText(tVc316, aVc316, resVc316, msVc316, !WorkLog.isFailed(resVc316)), effSess)
+                    // vc263 (N-m21): detektor putaran room — peringatan/
+                    // berhenti ditempel sebagai pesan sistem (model
+                    // membacanya di balasan berikut, seperti suffix 1-1).
+                    val roomWatchVc263 = roomStuckWatchesVc263.getOrPut(effSess + "|" + agentName) { AgentPrompt.StuckWatch() }
+                    val stuckRoomVc263 = roomWatchVc263.observe(tVc316, aVc316, resVc316)
+                    if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) roomStuckLocksVc277[effSess + "|" + agentName] = true
+                    // VC303-P3-19 (LP-5): catat bacaan sukses ronde ini per
+                    // agen + simpan pola room yang mengunci giliran.
+                    try { noteRoomReadVc303(room.optString("id"), effSess, agentName, tVc316, aVc316, resVc316) } catch (e: Exception) {}
+                    if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) try { recordRoomLockedPatternVc303(room.optString("id"), effSess, agentName, tVc316, aVc316) } catch (e: Exception) {}
+                    if (stuckRoomVc263.isNotBlank()) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "StuckDetector room: tool $tVc316 berputar (pola/hasil sama berulang)." + stuckRoomVc263, effSess)
+                    Automation.logAction(this, room.optString("id"), agentName, "eksekusi tool", tVc316 + " → " + resVc316.take(120), effSess)
+                    if (resVc316.startsWith("Gagal:")) {
+                        val hk = agentName + "|" + tVc316
+                        val hc = (healCounts[hk] ?: 0) + 1; healCounts[hk] = hc
+                        Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool $tVc316 gagal — agen dapat mencoba pendekatan lain pada pesan berikutnya.", effSess)
+                        if (hc >= 3) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool $tVc316 sudah gagal identik $hc kali (pola StuckDetector) — jangan ulangi pendekatan yang sama.", effSess)
+                    }
+                }
+                // vc316 N9-C2: eksekusi SATU tool room jalur SAFE. Tool
+                // Concat (concat_*) I/O-nya sinkron (connect 5 dtk + read
+                // 15 dtk per panggilan, sampai 3 panggilan = 40-60 dtk) —
+                // JANGAN di main thread: jalan di thread worker daemon,
+                // hasilnya kembali ke UI thread (penuntasan di atas).
+                // Tool lain tetap sinkron seperti dulu (tidak berubah).
+                fun runRoomSafeToolVc316(tVc316: String, aVc316: org.json.JSONObject, callIdVc316: String, t0Vc316: Long) {
+                    if (tVc316.startsWith("concat_")) {
+                        Thread {
+                            val resVc316 = try { Tools.execute(this, tVc316, aVc316, callIdVc316) } catch (e: Exception) { "Gagal: ${e.message}" }
+                            val msVc316 = System.currentTimeMillis() - t0Vc316
+                            val ridVc316 = try { Tools.lastResultId() } catch (e: Exception) { null }
+                            val totVc316 = try { Tools.lastFullLength() } catch (e: Exception) { 0 }
+                            runOnUiThread { finishRoomSafeToolVc316(tVc316, aVc316, resVc316, msVc316, callIdVc316, ridVc316, totVc316); renderMessages(); scrollBottom() }
+                        }.apply { isDaemon = true; name = "room-concat-tool-vc316" }.start()
+                    } else {
+                        val resVc316 = try { Tools.execute(this, tVc316, aVc316, callIdVc316) } catch (e: Exception) { "Gagal: ${e.message}" }
+                        val msVc316 = System.currentTimeMillis() - t0Vc316
+                        finishRoomSafeToolVc316(tVc316, aVc316, resVc316, msVc316, callIdVc316, Tools.lastResultId(), Tools.lastFullLength())
+                    }
+                }
+                // vc316 N9-B1/C1: dialog KONFIRMASI KHUSUS op Concat yang
+                // merusak di room — pola askRoomReviewApproval (dialog di
+                // UI thread, fail-closed bila tidak bisa tampil). BUKAN
+                // gerbang (tetap mati), BUKAN HIGH+PIN: Ya/Batal sekali
+                // per panggilan; "Ya" -> eksekusi lewat worker thread
+                // (N9-C2, Concat selalu lewat runRoomSafeToolVc316).
+                fun askRoomConcatConfirmVc316(roomSubVc316: String, agentNameVc316: String, toolVc316: String, argsVc316: org.json.JSONObject, effSessVc316: String, roomNowVc316: org.json.JSONObject, callIdVc316: String, t0Vc316: Long) {
+                    val descVc316 = ConcatTools.describeDestructiveConcatCallVc316(toolVc316, argsVc316)
+                    val showVc316 = {
+                        try {
+                            AlertDialog.Builder(this)
+                                .setTitle("Jalankan perintah Concat yang merusak di room?")
+                                .setMessage("Agen $agentNameVc316 di room ini ingin menjalankan:\n$descVc316\n\nPerintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save).")
+                                .setPositiveButton("Ya, jalankan") { _, _ -> runRoomSafeToolVc316(toolVc316, argsVc316, callIdVc316, t0Vc316) }
+                                .setNegativeButton("Batal") { _, _ ->
+                                    Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 ditolak user (konfirmasi khusus Concat) — tidak dieksekusi di room.", effSessVc316)
+                                    Automation.logAction(this, roomNowVc316.optString("id"), agentNameVc316, "tool ditolak", toolVc316, effSessVc316)
+                                    renderMessages(); scrollBottom()
+                                }
+                                .setCancelable(false)
+                                .create().show()
+                        } catch (e: Exception) {
+                            Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 butuh konfirmasi khusus Concat — jalankan dari chat 1-1 (dialog tidak bisa tampil di room).", effSessVc316)
+                            Automation.logAction(this, roomNowVc316.optString("id"), agentNameVc316, "tool ditahan", toolVc316, effSessVc316)
+                            renderMessages(); scrollBottom()
+                        }
+                    }
+                    if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) showVc316() else runOnUiThread { showVc316() }
+                }
                 val blocked = ArrayList<String>()
                 val blArr = roomNow.optJSONArray("blocklist") ?: org.json.JSONArray()
                 for (i in 0 until blArr.length()) blocked.add(blArr.optString(i))
@@ -16708,30 +18988,17 @@ private fun showApiTokenDialog() {
                     RiskLevel.SAFE -> {
                         try { val bpVc263 = getSharedPreferences("harness", MODE_PRIVATE); bpVc263.edit().putInt(roomBudgetKeyVc263, bpVc263.getInt(roomBudgetKeyVc263, 0) + 1).apply() } catch (e: Exception) {}
                         val t0RoomVc254 = System.currentTimeMillis()
-                        val res = try { Tools.execute(this, tool, args, toolObj?.optString("id") ?: "") } catch (e: Exception) { "Gagal: ${e.message}" }
-                        val msRoomVc254 = System.currentTimeMillis() - t0RoomVc254
-                        // VC303-P2-9 (CX-2): kumpulkan jejak tool room (jalur tunggal).
-                        // execute() membersihkan ThreadLocal R-id di awal, jadi
-                        // lastResultId() sesudah ini = R-id tool ini (atau null).
-                        roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(tool, msRoomVc254, !WorkLog.isFailed(res), RedactSecrets.redact(res).take(120), evidence = res, args = args.toString().take(4000), resultId = Tools.lastResultId() ?: "", totalChars = Tools.lastFullLength(), callId = toolObj?.optString("id") ?: ""))
-                        Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", ActivityTitle.formatText(tool, args, res, msRoomVc254, !WorkLog.isFailed(res)), effSess)
-                        // vc263 (N-m21): detektor putaran room — peringatan/
-                        // berhenti ditempel sebagai pesan sistem (model
-                        // membacanya di balasan berikut, seperti suffix 1-1).
-                        val roomWatchVc263 = roomStuckWatchesVc263.getOrPut(effSess + "|" + agentName) { AgentPrompt.StuckWatch() }
-                        val stuckRoomVc263 = roomWatchVc263.observe(tool, args, res)
-                        if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) roomStuckLocksVc277[effSess + "|" + agentName] = true
-                        // VC303-P3-19 (LP-5): catat bacaan sukses ronde ini per
-                        // agen + simpan pola room yang mengunci giliran.
-                        try { noteRoomReadVc303(room.optString("id"), effSess, agentName, tool, args, res) } catch (e: Exception) {}
-                        if (AgentPrompt.StuckWatch.isStop(stuckRoomVc263)) try { recordRoomLockedPatternVc303(room.optString("id"), effSess, agentName, tool, args) } catch (e: Exception) {}
-                        if (stuckRoomVc263.isNotBlank()) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "StuckDetector room: tool $tool berputar (pola/hasil sama berulang)." + stuckRoomVc263, effSess)
-                        Automation.logAction(this, room.optString("id"), agentName, "eksekusi tool", tool + " → " + res.take(120), effSess)
-                        if (res.startsWith("Gagal:")) {
-                            val hk = agentName + "|" + tool
-                            val hc = (healCounts[hk] ?: 0) + 1; healCounts[hk] = hc
-                            Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool $tool gagal — agen dapat mencoba pendekatan lain pada pesan berikutnya.", effSess)
-                            if (hc >= 3) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool $tool sudah gagal identik $hc kali (pola StuckDetector) — jangan ulangi pendekatan yang sama.", effSess)
+                        val callIdRoomVc316 = toolObj?.optString("id") ?: ""
+                        // vc316 N9-B1/C1: op Concat yang merusak butuh
+                        // KONFIRMASI KHUSUS (dialog) walau gerbang mati —
+                        // cek di sini, SEBELUM eksekusi apa pun, supaya
+                        // tidak bisa dilewati diam-diam oleh funnel room.
+                        // N9-C2: eksekusi Concat lewat worker thread
+                        // (runRoomSafeToolVc316); tool lain tetap sinkron.
+                        if (ToolGate.GATES_DISABLED && ConcatTools.requiresSpecialConfirmVc316(tool, args)) {
+                            askRoomConcatConfirmVc316(roomSub, agentName, tool, args, effSess, roomNow, callIdRoomVc316, t0RoomVc254)
+                        } else {
+                            runRoomSafeToolVc316(tool, args, callIdRoomVc316, t0RoomVc254)
                         }
                     }
                     RiskLevel.REVIEW -> {
@@ -16850,7 +19117,7 @@ private fun showApiTokenDialog() {
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
             if (attempt > 3) {
                 var fb: Triple<Agents.Profile, Int, Pair<String, String>>? = null
-                val others = Agents.all(this).filter { (it.id == "asisten" || it.id == "mandor" || it.id == "mentor" || it.id == "agen4") && it.id != ag.id }
+                val others = Agents.all(this).filter { (it.id == "senz" || it.id == "mandor" || it.id == "mentor" || it.id == "agen4") && it.id != ag.id }
                 for (o in others) {
                     val bound = try { GroupChat.boundSlotFor(applicationContext, o.id) } catch (e: Exception) { null }
                     val fbSlot = if (bound != null && !usedSlots.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !usedSlots.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
@@ -16908,7 +19175,7 @@ private fun showApiTokenDialog() {
         }
 
         fun dispatchMulti(text: String, sessId: String = "", memberIds: List<String> = emptyList(), preRanked: List<Fact>? = null) {
-            val builtinIds = setOf("asisten", "mandor", "mentor", "agen4")
+            val builtinIds = setOf("senz", "mandor", "mentor", "agen4")
             val agents = if (memberIds.isNotEmpty()) Agents.all(this).filter { memberIds.contains(it.id) }.ifEmpty { Agents.all(this).filter { builtinIds.contains(it.id) } } else Agents.all(this).filter { builtinIds.contains(it.id) }
             val mentioned = agents.filter { text.contains("@" + it.name, ignoreCase = true) }
             val targets = if (mentioned.isNotEmpty()) mentioned else agents
@@ -17020,7 +19287,7 @@ private fun showApiTokenDialog() {
         // LEWATI tidak dirender tapi dicatat, gagal dicatat TANPA retry
         // (sintesis TIDAK PERNAH memblokir) → sintesis juri 1 panggilan.
         fun dispatchDebate(origText: String, question: String, sessId: String = "", memberIds: List<String> = emptyList(), preRanked: List<Fact>? = null) {
-            val builtinIds = setOf("asisten", "mandor", "mentor", "agen4")
+            val builtinIds = setOf("senz", "mandor", "mentor", "agen4")
             val agents = if (memberIds.isNotEmpty()) Agents.all(this).filter { memberIds.contains(it.id) }.ifEmpty { Agents.all(this).filter { builtinIds.contains(it.id) } } else Agents.all(this).filter { builtinIds.contains(it.id) }
             val used = HashSet<Int>()
             val jobs = ArrayList<Triple<Agents.Profile, Int, Pair<String, String>>>()
@@ -17228,7 +19495,7 @@ private fun showApiTokenDialog() {
                                         "👷 Hasil per pekerja, SATU BARIS PER PEKERJA dengan format persis: • N — <nama pekerja>: <STATUS> — <hasil kunci singkat>\n" +
                                         "⚠️ Temuan penting: MAKSIMAL 3 butir, masing-masing diawali emoji severity 🔴 (kritis), 🟡 (perhatian), atau 🟢 (aman)\n" +
                                         "➡️ Langkah lanjut: saran + satu pertanyaan penutup untuk user\n" +
-                                        "LARANGAN: JANGAN pakai tabel pipa/markdown dan JANGAN pakai sintaks tabel apa pun — chat menampilkan teks polos sehingga karakter pipa tampil mentah dan berantakan. Hasil pekerja:\n" + results.toString()
+                                        "Tabel pipa BOLEH dipakai bila memang membantu (mis. ringkasan per pekerja) — chat kini menampilkan tabel sebagai view tabel; jaga tetap ringkas (maks ~20 baris) dan jangan pakai tabel untuk teks narasi. Hasil pekerja:\n" + results.toString()
                                     val synthClient = SlotClient(applicationContext, pSlot, pAuth2.first, pAuth2.second)
                                     val synthPromptVc244 = if (memCtxVc244.isNotBlank()) synthPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else synthPrompt
                                     val (synth, _) = synthClient.chatSync(synthPromptVc244, false, false)
@@ -17630,7 +19897,7 @@ private fun showApiTokenDialog() {
                 agentBox.addView(b)
             }
             val memberSet = HashSet<String>()
-            if (isEdit) { val mm = editSess!!.optJSONArray("members") ?: org.json.JSONArray(); for (i in 0 until mm.length()) memberSet.add(mm.optString(i)) } else { memberSet.add("asisten"); memberSet.add("mandor"); memberSet.add("mentor"); memberSet.add("agen4") }
+            if (isEdit) { val mm = editSess!!.optJSONArray("members") ?: org.json.JSONArray(); for (i in 0 until mm.length()) memberSet.add(mm.optString(i)) } else { memberSet.add("senz"); memberSet.add("mandor"); memberSet.add("mentor"); memberSet.add("agen4") }
             val memberBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val memberBtns = HashMap<String, android.widget.Button>()
             for (ag in agents) {
@@ -17847,7 +20114,7 @@ private fun showApiTokenDialog() {
             col2.addView(divRow)
             col2.addView(divNote)
             col2.addView(tv("FOLDER OUTPUT (cadangan)", 12f, th2.dim, true).apply { setPadding(0, dp(10), 0, 0) })
-            val eRoot = EditText(this).apply { setText(sp.getString("sessOutRoot", "/sdcard/Harness/") ?: "/sdcard/Harness/"); setTextColor(th2.text); setHintTextColor(th2.dim); background = roundedS(th2.bg, 12, th2.stroke); setPadding(dp(12), dp(10), dp(12), dp(10)); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
+            val eRoot = EditText(this).apply { setText(sp.getString("sessOutRoot", "/sdcard/S&Harness/") ?: "/sdcard/S&Harness/"); setTextColor(th2.text); setHintTextColor(th2.dim); background = roundedS(th2.bg, 12, th2.stroke); setPadding(dp(12), dp(10), dp(12), dp(10)); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
             col2.addView(eRoot)
             col2.addView(tv("Berlaku hanya bila tugas menghasilkan file/laporan DAN user tidak memberi arahan output. Arahan user selalu menang; tugas modifikasi/optimasi device bebas dari aturan ini.", 12f, th2.dim).apply { setPadding(0, dp(4), 0, 0) })
             val hasDigest = try {
@@ -18280,7 +20547,7 @@ private fun showApiTokenDialog() {
         val status = ServeHealth.lastStatus(this)
         android.app.AlertDialog.Builder(this)
             .setTitle("⚡ Serve Standby (F3)")
-            .setMessage("Serve proot :4199 — " + status + "\n\nAktif: service foreground persisten \"Harness standby\" menjaga proses app hidup sehingga serve ikut hidup, + percobaan bangkit otomatis pasca-reboot (Auto Start).\n\nWatchdog kini juga menjaga tailscaled + serve :4199: tiap 5 menit memastikan daemon tailscale jalan dan serve :4199 terserve (tailnet-only, tanpa funnel). Bila status \"perlu login ulang\", buka URL login dari agent — watchdog tidak bisa login sendiri.\n\nBatas jujur: MIUI tetap bisa membunuh service; bila itu terjadi, serve kembali saat app dibuka (revive pasca-update/luncur) atau lewat tombol Bangkitkan di Terminal/Profil.\n\nAgar Auto Start bekerja di MIUI: aktifkan Autostart untuk Harness di Info aplikasi (tombol di bawah), dan set Baterai = Tanpa batasan bila tersedia.")
+            .setMessage("Serve proot :4197 — " + status + "\n\nAktif: service foreground persisten \"S&Harness standby\" menjaga proses app hidup sehingga serve ikut hidup, + percobaan bangkit otomatis pasca-reboot (Auto Start).\n\nWatchdog kini juga menjaga tailscaled + serve :4197: tiap 5 menit memastikan daemon tailscale jalan dan serve :4197 terserve (tailnet-only, tanpa funnel). Bila status \"perlu login ulang\", buka URL login dari agent — watchdog tidak bisa login sendiri.\n\nBatas jujur: MIUI tetap bisa membunuh service; bila itu terjadi, serve kembali saat app dibuka (revive pasca-update/luncur) atau lewat tombol Bangkitkan di Terminal/Profil.\n\nAgar Auto Start bekerja di MIUI: aktifkan Autostart untuk S&Harness di Info aplikasi (tombol di bawah), dan set Baterai = Tanpa batasan bila tersedia.")
             .setPositiveButton(if (on) "Matikan Standby" else "Aktifkan Standby") { _, _ ->
                 if (on) {
                     prefs.edit().putBoolean("serveStandby", false).apply()
@@ -18458,7 +20725,7 @@ object ChatCardsVc306 {
     private val AGENT_TOOLS = setOf(
         "delegate_task", "delegate_session", "delegate_result", "delegate_wait",
         "delegate_status", "run_team", "chain_tasks", "use_skill", "create_subroom",
-        "oc_checkpoint", "coord_rule", "ask_operator", "check_operator", "mcp_call",
+        "oc_checkpoint", "coord_rule", "ask_jhon", "check_jhon", "mcp_call",
         "mcp_list_servers", "mcp_list_tools", "mcp_setup", "judge_skill",
         "export_skill", "export_skill_version", "create_skill", "delete_skill",
         "sync_memory", "rote_run", "transcribe_media", "analyze_photo"

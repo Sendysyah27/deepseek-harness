@@ -2,7 +2,7 @@ package com.senzwh.deepharness
 
 // vc304 B2 — Giliran jalan di background, output live-nya TIDAK bocor ke sesi lain.
 //
-// Syarat user (seperti Claude sessions): pindah sesi TIDAK menghentikan /
+// Syarat Sendy (seperti Claude sessions): pindah sesi TIDAK menghentikan /
 // membatalkan giliran yang sedang jalan. Yang di-gate HANYA render live-nya:
 // bubble jawaban, baris aktivitas tool, kartu kerja, status "sedang bekerja",
 // dialog +10 / approval — semuanya hanya tampil di sesi pemilik giliran

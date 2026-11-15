@@ -11,7 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** v4.18.0 — Sistem Konektor (adaptasi Connectors ala Muse atas
- *  permintaan user): registri layanan yang memberi kemampuan ke agen.
+ *  permintaan Sendy): registri layanan yang memberi kemampuan ke agen.
  *  Panel Konektor di Settings menampilkan status jujur tiap konektor;
  *  saklar user (pref conn_<id>, bawaan AKTIF) menjadi gerbang tool di
  *  Tools.execute; katalog ringkas disuntik ke prompt sistem supaya agen
@@ -26,7 +26,7 @@ object Connectors {
 
     val DEFS: List<Def> = listOf(
         Def("deepseek", "DeepSeek", "🐳", "Otak agen — sesi login DeepSeek (Web / API Internal).", emptySet(), canToggle = false),
-        Def("termux", "Termux", "⌨️", "Terminal Linux di HP + jembatan Operator & MCP.", setOf("ask_operator", "check_operator", "sync_memory", "mcp_call", "mcp_setup")),
+        Def("termux", "Termux", "⌨️", "Terminal Linux di HP + jembatan Jhon & MCP.", setOf("ask_jhon", "check_jhon", "sync_memory", "mcp_call", "mcp_setup")),
         Def("opencode", "Koordinator OpenCode", "🧭", "Delegasi tugas berat ke agen OpenCode di Termux.", setOf("delegate_session", "delegate_task", "delegate_status", "delegate_wait", "delegate_result", "chain_tasks", "coord_rule")),
         Def("gmail", "Gmail", "✉️", "Baca & kirim email via IMAP/SMTP (App Password Google).", setOf("gmail_unread", "gmail_search", "gmail_send")),
         Def("notifikasi", "Notifikasi HP", "🔔", "Baca & balas notifikasi yang masuk ke HP.", setOf("get_notifications", "reply_notification")),

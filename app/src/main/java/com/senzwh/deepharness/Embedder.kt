@@ -23,7 +23,7 @@ import kotlin.math.sqrt
 /**
  * Tahap B — Memori Vektor.
  * Model: paraphrase-multilingual-MiniLM-L12-v2 (ONNX int8) sebagai PAKET UNDUH
- * di dalam app (keputusan user 2026-10-22): diunduh dari HuggingFace ke
+ * di dalam app (keputusan Sendy 2026-10-22): diunduh dari HuggingFace ke
  * filesDir/models/, diverifikasi SHA-256. ONNX Runtime-nya dibundel di APK.
  *
  * Tokenizer = Unigram (SentencePiece XLM-R) yang diimplementasikan manual:

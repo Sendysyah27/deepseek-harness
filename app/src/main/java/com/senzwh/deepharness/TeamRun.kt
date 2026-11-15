@@ -6,7 +6,7 @@ import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/** v4.8.0 — TIM AGEN (pola ruang kerja, meniru cara Operator membagi kerja ke
+/** v4.8.0 — TIM AGEN (pola ruang kerja, meniru cara Jhon membagi kerja ke
  *  banyak ruang chat): orkestrator (agen utama di chat) memanggil tool
  *  run_team; tiap sub-tugas jalan PARALEL di "ruang" sendiri — klien
  *  DeepSeek sendiri, slot akun pool sendiri, profil agen sendiri. Status
@@ -114,7 +114,7 @@ object TeamRun {
             "mandor" -> "Kamu berperan sebagai Mandor — eksekutor lapangan: kerjakan tugas secara konkret langkah demi langkah, pakai tool yang perlu, laporkan hasil apa adanya termasuk kegagalan."
             "mentor" -> "Kamu berperan sebagai Mentor — pemeriksa kritis: kerjakan tugas dengan teliti, tandai risiko, asumsi, dan ketidakpastian secara eksplisit."
             "agen4" -> "Kamu berperan sebagai Agen 4 — generalis serbaguna: kerjakan sub-tugas secara praktis, riset singkat + eksekusi langsung, laporkan hasil secara ringkas dan jelas."
-            else -> "Kamu berperan sebagai Asisten — peneliti & penulis utama: kerjakan tugas dengan rapi, jelas, dan terstruktur."
+            else -> "Kamu berperan sebagai Senz — peneliti & penulis utama: kerjakan tugas dengan rapi, jelas, dan terstruktur."
         }
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
         sb.append(memoryBlockForTask(app, lane.task))

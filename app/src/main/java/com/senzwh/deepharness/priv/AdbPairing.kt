@@ -100,7 +100,7 @@ object AdbPairing {
 
     // vc171: coba kandidat host berurutan — host NSD (tersegar) →
     // host tersimpan (pernah ditempel user) → loopback (terbukti mati di
-    // HP user, jadi terakhir). Hanya gagal level KONEKSI yang lanjut ke
+    // HP Sendy, jadi terakhir). Hanya gagal level KONEKSI yang lanjut ke
     // kandidat berikut; kode salah/kedaluwarsa langsung kembali (tidak
     // ada gunanya mencoba host lain dengan kode yang sama). Sukses via
     // host non-loopback ditandai "[via <host>]" untuk diagnosis.

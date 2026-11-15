@@ -29,7 +29,7 @@ object BriefingVc295 {
     const val DIR_NAME = "briefing"
     const val SEEN_CAP = 500
     const val MAX_BULLETS = 15
-    const val AUDIENCE = "user — builder AI-agent mobile (Harness), kreator konten finansial & motion graphics"
+    const val AUDIENCE = "Sendy — builder AI-agent mobile (DeepSeek Harness), kreator konten finansial & motion graphics"
 
     data class BriefItem(val source: String, val title: String, val url: String, val date: String, val extra: String)
 
@@ -47,7 +47,7 @@ object BriefingVc295 {
      *  Harian (routing appendJobReportEx via sessionId+roomId routine). */
     fun briefingPrompt(): String = """BRIEFING HARIAN (vc295) — buat digest pagi ini untuk room Briefing Harian:
 (1) Panggil briefing_scan (ambil rilis/commit baru + HN, sudah ter-dedup via seen.json) dan briefing_yesterday (aktivitas kemarin).
-(2) Susun digest Markdown: judul "# Briefing Harian — <tanggal hari ini>", seksi per sumber (## Rilis DeepSeek, ## Claude Code, ## Repo Agentic Baru, ## Hacker News, ## Kemarin di Harness), tiap item rilis/HN dengan SATU baris "Kenapa penting: ..." untuk user (builder AI-agent mobile + kreator konten) + tautannya. Bila TIDAK ADA item baru sama sekali, tulis SATU baris "Tidak ada pergerakan relevan hari ini." — jangan mengarang item.
+(2) Susun digest Markdown: judul "# Briefing Harian — <tanggal hari ini>", seksi per sumber (## Rilis DeepSeek, ## Claude Code, ## Repo Agentic Baru, ## Hacker News, ## Kemarin di Harness), tiap item rilis/HN dengan SATU baris "Kenapa penting: ..." untuk Sendy (builder AI-agent mobile + kreator konten) + tautannya. Bila TIDAK ADA item baru sama sekali, tulis SATU baris "Tidak ada pergerakan relevan hari ini." — jangan mengarang item.
 (3) Akhiri digest dengan 4 pertanyaan wawancara (satu per satu, pakai data kemarin sebagai konteks, mis. "Kemarin kamu ... , apa lagi?"): (a) kemarin — apa lagi yang dikerjakan selain yang tercatat? (b) hari ini — apa yang dikerjakan? (c) blocker — ada yang menghambat? (d) topik diskusi — ada yang mau dibahas?
 Jawaban akhirmu = digest lengkap itu (ini yang terkirim sebagai laporan ke room). Jangan kirim email, jangan pakai API berbayar, jangan laporkan item yang sudah ada di seen.json."""
 

@@ -37,7 +37,7 @@ object Tools {
      *  (tabel mulai kosong; "builtin" di kode merujuk agen/MCP, bukan skill) —
      *  daftar ini BARU diperkenalkan vc216 sebagai pagar forge: slug agen
      *  builtin + kata yang dicadangkan app. */
-    val SYSTEM_SKILL_SLUGS = setOf("asisten", "mandor", "mentor", "agen4", "skill", "skill-agen", "sistem", "system", "harness", "setup")
+    val SYSTEM_SKILL_SLUGS = setOf("senz", "mandor", "mentor", "agen4", "skill", "skill-agen", "sistem", "system", "harness", "setup")
     // vc228 R-03(c): diff instruksi skill AKTIF lama vs baru, untuk dialog
     // REVIEW. "" bila skill belum ada, nonaktif, atau instruksinya sama.
     fun skillUpdateDiff(ctx: Context, args: JSONObject): String {
@@ -57,6 +57,29 @@ object Tools {
             if (added.isNotEmpty()) sb.append(" Ditambah: ").append(added.joinToString(" | ") { it.take(80) })
             sb.toString().take(600)
         } catch (e: Exception) { "" }
+    }
+
+    // vc311 B14 bagian 2: guard anti-truncate create_skill (pure, tanpa
+    // Context/DB — bisa diuji JVM langsung). Dipanggil handler create_skill
+    // TEPAT sebelum forgeUpsert, sesudah cek LiveReadGateVc302.
+    // Return null = lolos; return pesan = DITOLAK, pemanggil JANGAN panggil
+    // forgeUpsert (tanpa snapshot, tanpa ubah DB).
+    // Aturan: skill yang SUDAH ADA (liveInstruction != null) dengan live
+    // tidak blank, dan instruction baru < 80% panjang live (aritmetika
+    // integer: ins.length * 100 < 80 * liveLen — tanpa float, tepat 80%
+    // LOLOS) -> tolak. Skill BARU (null) dan live blank -> lolos (tidak ada
+    // pembanding; forgeUpsert sendiri menolak instruction blank).
+    // Akar: telegram-gui #7 kena 3x — v8 15 char, v13 1535 char menimpa live
+    // ~7500 char karena create_skill menimpa SELURUH instruction.
+    fun createSkillTruncateGuardVc311(liveInstruction: String?, ins: String): String? {
+        if (liveInstruction.isNullOrBlank()) return null
+        val liveLen = liveInstruction.length
+        if (ins.length * 100 < 80 * liveLen) {
+            val pct = ins.length * 100 / liveLen
+            val minLen = (80 * liveLen + 99) / 100
+            return "create_skill DITOLAK (anti-truncate vc311): instruction baru ${ins.length} karakter hanya $pct% dari instruction live $liveLen karakter (ambang 80%, minimal $minLen karakter) — ini tampak seperti instruction yang terpotong, bukan rewrite penuh. Skill TIDAK disimpan; instruction live tetap utuh. Lanjutkan dengan salah satu: (1) kirim instruction LENGKAP (≥80% dari live); (2) bila hanya deskripsi yang berubah, pakai update_skill_description; (3) bila rewrite yang lebih pendek memang disengaja, pakai editor isi di app (Setup → Skill Agen → detail skill → Edit isi)."
+        }
+        return null
     }
 
     fun slugifySkillName(raw: String): String {
@@ -151,8 +174,15 @@ object Tools {
     // MEMORY_WRITE = tulis/hapus memori (13 anggota — TIDAK BERUBAH dari
     // sebelum vc272, karena GroupChat/BgBrain memakainya di jalur
     // auto-approve). Pergerakan vs vc271 didokumentasikan di BUILD-VC272.md.
+    // vc313 K-03 (keputusan Sendy 14 Nov 16:40, TANPA BATASAN): tool
+    // browser dikecualikan dari ToolGate sepenuhnya (tidak REVIEW, tidak
+    // HIGH), bahkan bila gerbang dihidupkan kembali — jadi RISKY_TOOLS
+    // = (WRITE + MEMORY) MINUS semua tool bernama "browser_*" (lama +
+    // baru). Tool WRITE/MEMORY non-browser tetap anggota. isRisky()
+    // memakai RISKY_TOOLS, jadi pengecualian mengalir otomatis ke
+    // ToolGate.level(), BgBrain, GroupChat, TeamRun, dan levelsText().
     val READ_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.READ)
-    val RISKY_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.WRITE) + ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)
+    val RISKY_TOOLS: Set<String> = (ToolRegistry.namesByKind(ToolRegistry.Kind.WRITE) + ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)) - ToolRegistry.ALL.filter { it.name.startsWith("browser_") }.map { it.name }.toSet()
     val MEMORY_WRITE_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)
 
     fun isRisky(name: String) = if (ToolGate.GATES_DISABLED) false else name in RISKY_TOOLS
@@ -220,6 +250,30 @@ object Tools {
         "browser_open" to "url",
         "browser_tap" to "ref",
         "browser_type" to "ref",
+        "browser_tabs" to "action",
+        "browser_find" to "query",
+        "browser_ua" to "mode",
+        // vc314 Worker B — Concat: argumen wajib 'project' (nama/path).
+        "concat_project_get" to "project",
+        "concat_project_open" to "project",
+        // vc315 Worker B — Concat gelombang 2: kunci argumen pertama yang
+        // wajib (tool tanpa argumen wajib tidak dapat entri: catalogue_list,
+        // template_list).
+        "concat_project_create" to "name",
+        "concat_project_close" to "project",
+        "concat_project_save" to "project",
+        "concat_project_set_video" to "project",
+        "concat_edit_apply" to "project",
+        "concat_edit_undo" to "project",
+        "concat_edit_redo" to "project",
+        "concat_media_probe" to "file",
+        "concat_media_import" to "project",
+        "concat_template_instantiate" to "template",
+        "concat_template_save" to "project",
+        "concat_export_run" to "project",
+        "concat_export_cancel" to "job",
+        "concat_export_status" to "job",
+        "concat_preview_frame" to "project",
         "delegate_session" to "task",
         "oc_checkpoint" to "action",
         "otak_write" to "file",
@@ -552,7 +606,7 @@ object Tools {
         val agentId: String
         val members: List<String>
         if (mode == "solo") {
-            var defAgent = "asisten"
+            var defAgent = "senz"
             run {
                 val ss = Automation.sessions(parent)
                 for (i in 0 until ss.length()) {
@@ -586,7 +640,7 @@ object Tools {
                         if (memList.isNotEmpty()) break
                     }
                 }
-                if (memList.isEmpty()) { memList.add("asisten"); memList.add("mandor"); memList.add("mentor"); memList.add("agen4") }
+                if (memList.isEmpty()) { memList.add("senz"); memList.add("mandor"); memList.add("mentor"); memList.add("agen4") }
             }
             val unknown = memList.filter { it !in catIds }
             if (unknown.isNotEmpty()) return "Persona tidak dikenal: " + unknown.joinToString(", ") + " — pilih dari katalog yang ada (" + catIds.sorted().joinToString(", ") + "); persona baru tidak dibuat otomatis."
@@ -817,6 +871,18 @@ object Tools {
                         else "\nterverifikasi: tidak (skill belum tercatat sesudah simpan: $slug)"
                     }
                 }
+                // vc311 B14: baca balik deskripsi (handler sudah baca
+                // balik sendiri; flag ini konsisten dengan create_skill).
+                "update_skill_description" -> {
+                    if (!raw.startsWith("Deskripsi skill '")) null
+                    else {
+                        val slug = slugifySkillName(args.optString("name"))
+                        val sk = try { MemoryDb.get(ctx).skillByName(slug) } catch (e: Exception) { null }
+                        val dsc = args.optString("description").trim()
+                        if (sk != null && sk.descr == dsc) "\nterverifikasi: ya (deskripsi tercatat: $slug)"
+                        else "\nterverifikasi: tidak (deskripsi belum tercatat sesudah simpan: $slug)"
+                    }
+                }
                 "make_plan" -> {
                     if (!raw.startsWith("Rencana tercatat dari jalur tool")) null
                     else {
@@ -880,6 +946,7 @@ object Tools {
                 "remember_fact" -> raw.startsWith("Tersimpan di memori permanen") || raw.contains("DITIMPA langsung")
                 "learn_rule" -> raw.startsWith("Aturan baru disimpan")
                 "create_skill" -> raw.startsWith("Skill '")
+                "update_skill_description" -> raw.startsWith("Deskripsi skill '")
                 "make_plan" -> raw.startsWith("Rencana tercatat dari jalur tool")
                 "update_plan" -> raw.startsWith("Langkah ") && raw.contains("ditandai selesai")
                 "make_goal" -> raw.startsWith("Tujuan dibuat: #")
@@ -1976,6 +2043,12 @@ object Tools {
                         val oldVerVc302 = try { if (existingVc302 != null) MemoryDb.get(ctx).latestSkillVersion(existingVc302.id)?.versionNo ?: 0 else 0 } catch (e: Exception) { 0 }
                         if (existingVc302 != null && !LiveReadGateVc302.mayOverwrite(slug, TurnMetrics.currentTurnNo())) "create_skill DITOLAK (verify-before-write vc302): skill '$slug' sudah ada — baca dulu live state: export_skill/list_skills/read_skill_version untuk '$slug' di giliran ini, lalu ulangi create_skill. Tidak ada yang ditulis."
                         else {
+                            // vc311 B14 bagian 2: guard anti-truncate —
+                            // SESUDAH LiveReadGate, SEBELUM forgeUpsert.
+                            // Penolakan di sini = TIDAK ada tulis.
+                            val guardVc311 = createSkillTruncateGuardVc311(existingVc302?.instruction, ins)
+                            if (guardVc311 != null) guardVc311
+                            else {
                             val res = MemoryDb.get(ctx).forgeUpsert(slug, ins, dsc)
                             if (res.first <= 0) "Gagal menyimpan skill '$slug'."
                             else {
@@ -1989,6 +2062,63 @@ object Tools {
                                 val sizeNoteVc302 = if (res.second) " (verify-before-write vc302: live lama $oldLenVc302 char tersimpan sebagai v$oldVerVc302; baru ${ins.length} char → v$newVerVc302)" else " (verify-before-write vc302: skill baru; ${ins.length} char → v$newVerVc302)"
                                 if (res.second) "Skill '$slug' DIPERBARUI (id #${res.first}) — status aktifnya TIDAK diubah (bila sebelumnya nonaktif, tetap nonaktif). Ekspor ke .md bila perlu via export_skill." + (if (wasActiveVc228) " Perubahan skill AKTIF ini disetujui lewat dialog REVIEW (diff ditampilkan sebelum eksekusi)." else "") + " " + SkillJudge.summaryLine(judgeVc293) + sizeNoteVc302
                                 else "Skill '$slug' tersimpan (id #${res.first}) dalam keadaan NONAKTIF. Agen TIDAK akan memakainya sampai user mengaktifkannya di Settings > Skill Agen. Ekspor ke .md bila perlu via export_skill. " + SkillJudge.summaryLine(judgeVc293) + sizeNoteVc302
+                            }
+                            }
+                        }
+                    }
+                }
+                // vc311 B14 BAGIAN 1: edit DESKRIPSI SAJA — JANGAN pakai
+                // create_skill untuk ini (create_skill menimpa SELURUH
+                // instruction; 3x kejadian instruction terpotong/15 char
+                // menimpa isi live ~7500 char, mis. skill telegram-gui
+                // v8/v13). Tool ini TIDAK menerima argumen instruction
+                // sama sekali (ditolak eksplisit di bawah): instruction
+                // baru = instruction live yang dibaca updateSkillMeta
+                // dari DB (kolom instruction TIDAK ditulis — ContentValues
+                // hanya name+descr), jadi byte-identik dijamin oleh
+                // konstruksi, bukan serialisasi ulang. TIDAK kena
+                // LiveReadGateVc302 (verify-before-write): gate itu
+                // melindungi instruction dari overwrite tanpa baca live —
+                // di sini tidak ada overwrite instruction yang bisa
+                // kehilangan data; tulis ini beraudit (snapshot pra/pasca
+                // source='meta' dalam satu transaksi) + eval hangus bila
+                // berubah, jadi bisa dipulihkan lewat
+                // restore_skill_version. Jalur UI Settings (meta-edit)
+                // memanggil updateSkillMeta yang sama tanpa gate —
+                // profil risiko sama.
+                "update_skill_description" -> {
+                    val rawName = args.optString("name").trim(); val dsc = args.optString("description").trim()
+                    val slug = slugifySkillName(rawName)
+                    if (rawName.isBlank() || slug.isBlank()) "update_skill_description ditolak: name kosong atau tidak menghasilkan slug yang valid (pakai huruf/angka, mis. 'rapikan-screenshot')."
+                    else if (slug in SYSTEM_SKILL_SLUGS) "update_skill_description ditolak: '$slug' adalah nama sistem yang dilindungi — skill builtin/sistem tidak boleh diubah deskripsinya lewat forge."
+                    else if (dsc.isBlank()) "update_skill_description ditolak: description wajib diisi — tulis pemicu singkat: kapan skill ini dipakai."
+                    else if (args.has("instruction")) "update_skill_description ditolak: tool ini HANYA mengubah description — argumen 'instruction' TIDAK diterima dan TIDAK akan disimpan. Instruction skill tidak disentuh tool ini; untuk mengubah instruction pakai create_skill nama sama (dengan isi LENGKAP, bukan potongan)."
+                    else if (slug.length > 80) "update_skill_description ditolak: nama slug ${slug.length} karakter, maks 80."
+                    else {
+                        val mdb = MemoryDb.get(ctx)
+                        val sk = mdb.skillByName(slug) ?: mdb.skills().firstOrNull { it.name.equals(rawName, ignoreCase = true) }
+                        if (sk == null) "Skill '$rawName' tidak ditemukan — update_skill_description hanya mengubah deskripsi skill yang SUDAH ada; buat skill baru lewat create_skill (dengan instruction lengkap)."
+                        else {
+                            val oldInstrVc311 = sk.instruction
+                            val oldEvalVc311 = sk.evalJson
+                            val oldVerVc311 = try { mdb.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                            val unchangedVc311 = sk.descr == dsc
+                            // namaSama = nama tersimpan (bukan slug input):
+                            // updateSkillMeta membandingkan nama+descr untuk
+                            // putusan hangus/pertahankan eval — nama harus
+                            // identik supaya hanya perubahan deskripsi yang
+                            // dihitung.
+                            mdb.updateSkillMeta(sk.id, sk.name, dsc)
+                            val afterVc311 = try { mdb.skillByName(sk.name) } catch (e: Exception) { null }
+                            if (afterVc311 == null || afterVc311.descr != dsc || afterVc311.instruction != oldInstrVc311) "Gagal menyimpan deskripsi baru skill '${sk.name}' — deskripsi dan instruction lama tetap utuh."
+                            else {
+                                val newVerVc311 = try { mdb.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                                val evalNoteVc311 = if (unchangedVc311) "evaluasi dipertahankan (deskripsi sama persis, tidak ada yang berubah)"
+                                else if (oldEvalVc311.isBlank()) "tidak ada benchmark lama yang dihanguskan (skill ini belum punya eval)"
+                                else "benchmark/evaluasi lama DIHANGUSKAN (deskripsi berubah — evaluasi wajib diulang)"
+                                val verNoteVc311 = if (unchangedVc311) "versi tetap v$oldVerVc311 (tidak ada versi baru — deskripsi sama)" else "versi v$oldVerVc311 → v$newVerVc311"
+                                val changeNoteVc311 = if (unchangedVc311) "Deskripsi skill '${sk.name}' TIDAK berubah (deskripsi baru sama dengan yang tersimpan)." else "Deskripsi skill '${sk.name}' diubah (id #${sk.id})."
+                                "$changeNoteVc311 Instruction TIDAK disentuh (${afterVc311.instruction.length} char, byte-identik dengan sebelum simpan); $verNoteVc311; $evalNoteVc311. Status aktif TIDAK diubah."
                             }
                         }
                     }
@@ -2591,7 +2721,19 @@ object Tools {
                     }
                 }
                 "web_fetch" -> webFetch(args.optString("url"))
-                "browser_open", "browser_read", "browser_tap", "browser_type", "browser_tabs", "browser_shot" -> AgentBrowser.run(name, args)
+                "browser_open", "browser_read", "browser_tap", "browser_type", "browser_tabs", "browser_shot", "browser_back", "browser_forward", "browser_reload", "browser_find", "browser_ua", "browser_downloads", "browser_console", "browser_network", "browser_shot_full", "browser_snapshot_full" -> AgentBrowser.run(name, args)
+                // vc314 Worker B — Concat (F1+F2 via API JSON-RPC; token dari
+                // SecureStore, gagal jujur tanpa fallback GUI — ConcatTools).
+                // vc315 Worker B — gelombang 2: 17 tool baru ikut jalur yang
+                // sama (ConcatTools.run). concat WRITE -> REVIEW bila gerbang
+                // hidup (turunan RISKY_TOOLS); BUKAN HIGH, tanpa pengecualian.
+                "concat_version", "concat_project_list", "concat_project_get", "concat_project_open",
+                "concat_project_create", "concat_project_close", "concat_project_save", "concat_project_set_video",
+                "concat_edit_apply", "concat_edit_undo", "concat_edit_redo",
+                "concat_media_probe", "concat_media_import",
+                "concat_catalogue_list", "concat_template_list", "concat_template_instantiate", "concat_template_save",
+                "concat_export_run", "concat_export_cancel", "concat_export_status",
+                "concat_preview_frame" -> ConcatTools.run(ctx, name, args)
                 "web_search" -> webSearch(args.optString("query"))
                 "search_youtube" -> searchYoutube(args.optString("query"), if (args.has("max_results")) args.optInt("max_results", 5) else args.optInt("limit", 5))
                 "http_request" -> httpRequest(args.optString("method", "GET"), args.optString("url"), args.optString("body", ""))
@@ -2646,62 +2788,62 @@ object Tools {
                 "gmail_unread" -> GmailLite.unread(ctx, args.optInt("limit", 10))
                 "gmail_search" -> GmailLite.search(ctx, args.optString("query"), args.optInt("limit", 10))
                 "gmail_send" -> GmailLite.send(ctx, args.optString("to"), args.optString("subject"), args.optString("body"))
-                "ask_operator" -> {
+                "ask_jhon" -> {
                     val task = args.optString("task").trim()
-                    if (task.isBlank()) "ask_operator butuh task."
+                    if (task.isBlank()) "ask_jhon butuh task."
                     else {
                         val ts = System.currentTimeMillis()
                         // vc258 Fase 2: antrean generik jadi jalur utama
-                        // (kanonis + cermin Operator); tulis legacy ~/operator-inbox/
-                        // tetap dilakukan supaya cron Operator yang memantau
-                        // ~/operator-inbox/ tetap melihat tugas baru (kompatibel
+                        // (kanonis + cermin Jhon); tulis legacy ~/jhon-inbox/
+                        // tetap dilakukan supaya cron Jhon yang memantau
+                        // ~/jhon-inbox/ tetap melihat tugas baru (kompatibel
                         // mundur — hapus tulis legacy bila cron sudah pindah
                         // ke antrean generik).
-                        val genericName = try { WorkerRegistry.enqueueOperatorTask(ctx, task) } catch (e: Exception) { "" }
-                        val doc = "# Tugas untuk Operator (dari Harness di HP)\nWaktu: ${fmt(ts)}\n\n$task\n"
+                        val genericName = try { WorkerRegistry.enqueueJhonTask(ctx, task) } catch (e: Exception) { "" }
+                        val doc = "# Tugas untuk Jhon (dari DeepSeek Harness di HP)\nWaktu: ${fmt(ts)}\n\n$task\n"
                         val b64 = android.util.Base64.encodeToString(doc.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-                        // E1.6 (varian pure): tulis legacy ~/operator-inbox/
+                        // E1.6 (varian pure): tulis legacy ~/jhon-inbox/
                         // dilewati — antrean generik satu-satunya jalur.
                         // Mainline tidak berubah: out tetap hasil runTerminal
                         // dan legacyOk tetap dihitung dari penanda
-                        // OPERATOR-INBOX-OK; cabang when di bawah tidak diubah.
-                        val out = if (Flavor.IS_PURE) "Tulis legacy dilewati (varian pure — antrean generik satu-satunya jalur)." else runTerminal(ctx, "mkdir -p ~/operator-inbox ~/operator-outbox && echo $b64 | base64 -d > ~/operator-inbox/task-$ts.md && echo OPERATOR-INBOX-OK", "termux")
-                        val legacyOk = !Flavor.IS_PURE && out.contains("OPERATOR-INBOX-OK")
+                        // JHON-INBOX-OK; cabang when di bawah tidak diubah.
+                        val out = if (Flavor.IS_PURE) "Tulis legacy dilewati (varian pure — antrean generik satu-satunya jalur)." else runTerminal(ctx, "mkdir -p ~/jhon-inbox ~/jhon-outbox && echo $b64 | base64 -d > ~/jhon-inbox/task-$ts.md && echo JHON-INBOX-OK", "termux")
+                        val legacyOk = !Flavor.IS_PURE && out.contains("JHON-INBOX-OK")
                         when {
-                            genericName.isNotBlank() && legacyOk -> "Tugas terkirim ke antrean Operator ($genericName) + kotak masuk lama (~/operator-inbox/task-$ts.md). Operator memeriksanya berkala (maks ~15 menit) — hasilnya nanti bisa diambil dengan tool check_operator. Beri tahu user estimasi ini dengan jujur."
-                            genericName.isNotBlank() -> "Tugas terkirim ke antrean Operator ($genericName). Tulis legacy ~/operator-inbox/ gagal ($out) — Operator tetap melihatnya lewat antrean generik."
-                            legacyOk -> "Tugas terkirim ke kotak masuk Operator (~/operator-inbox/task-$ts.md). Antrean generik gagal ditulis — hasilnya nanti bisa diambil dengan tool check_operator."
+                            genericName.isNotBlank() && legacyOk -> "Tugas terkirim ke antrean Jhon ($genericName) + kotak masuk lama (~/jhon-inbox/task-$ts.md). Jhon memeriksanya berkala (maks ~15 menit) — hasilnya nanti bisa diambil dengan tool check_jhon. Beri tahu user estimasi ini dengan jujur."
+                            genericName.isNotBlank() -> "Tugas terkirim ke antrean Jhon ($genericName). Tulis legacy ~/jhon-inbox/ gagal ($out) — Jhon tetap melihatnya lewat antrean generik."
+                            legacyOk -> "Tugas terkirim ke kotak masuk Jhon (~/jhon-inbox/task-$ts.md). Antrean generik gagal ditulis — hasilnya nanti bisa diambil dengan tool check_jhon."
                             else -> "Gagal menulis tugas (antrean generik + Termux): $out"
                         }
                     }
                 }
                 // vc258 Fase 2: baca hasil dari antrean generik dulu; bila
-                // kosong, fallback ke ~/operator-outbox/ lama (kompatibel mundur).
-                // vc262 AG-K1: check_operator kini menerima argumen opsional
+                // kosong, fallback ke ~/jhon-outbox/ lama (kompatibel mundur).
+                // vc262 AG-K1: check_jhon kini menerima argumen opsional
                 // task/nama tugas — hasil lama bisa dibaca per-nama, bukan
                 // hanya hasil terbaru. Hasil yang dibaca ditandai sudah
-                // dibaca (prefs operatorReadResults). Fallback legacy vc261
+                // dibaca (prefs jhonReadResults). Fallback legacy vc261
                 // dipertahankan (nama file dikutip, outbox kosong jujur).
-                "check_operator" -> {
+                "check_jhon" -> {
                     val selVc262 = args.optString("task").ifBlank { args.optString("name") }.trim()
                     val markReadVc262 = { name: String ->
                         try {
                             val p = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-                            val done = HashSet(p.getStringSet("operatorReadResults", emptySet()) ?: emptySet())
+                            val done = HashSet(p.getStringSet("jhonReadResults", emptySet()) ?: emptySet())
                             done.add(name)
-                            p.edit().putStringSet("operatorReadResults", done).apply()
+                            p.edit().putStringSet("jhonReadResults", done).apply()
                         } catch (e: Exception) {}
                     }
                     val generic = try {
-                        val results = WorkerRegistry.listOperatorResults(ctx)
+                        val results = WorkerRegistry.listJhonResults(ctx)
                         if (results.isEmpty()) "" else {
                             val picked = if (selVc262.isBlank()) results.last()
                             else results.firstOrNull { it.contains(selVc262, ignoreCase = true) } ?: ""
-                            if (picked.isBlank()) "Tugas Operator '" + selVc262 + "' tidak ditemukan. Hasil yang ada: " + results.joinToString(", ")
+                            if (picked.isBlank()) "Tugas Jhon '" + selVc262 + "' tidak ditemukan. Hasil yang ada: " + results.joinToString(", ")
                             else {
-                                val text = WorkerRegistry.readOperatorResult(ctx, picked)
+                                val text = WorkerRegistry.readJhonResult(ctx, picked)
                                 markReadVc262(picked)
-                                if (text.isBlank()) "" else "Hasil Operator (antrean generik, file " + picked + "):\n" + text.take(3000)
+                                if (text.isBlank()) "" else "Hasil Jhon (antrean generik, file " + picked + "):\n" + text.take(3000)
                             }
                         }
                     } catch (e: Exception) { "" }
@@ -2710,7 +2852,7 @@ object Tools {
                     // ber-spasi tidak lagi pecah word-splitting; outbox
                     // kosong dijawab jujur "tidak ada hasil", bukan teks
                     // error direktori sebagai "hasil".
-                    else runTerminal(ctx, "f=\$(ls -t ~/operator-outbox/ 2>/dev/null | head -1); if [ -z \"\$f\" ]; then echo 'Tidak ada hasil Operator di ~/operator-outbox/ (kotak keluar kosong).'; else echo \"FILE: \$f\"; cat ~/operator-outbox/\"\$f\" 2>/dev/null | head -c 3000; fi", "termux")
+                    else runTerminal(ctx, "f=\$(ls -t ~/jhon-outbox/ 2>/dev/null | head -1); if [ -z \"\$f\" ]; then echo 'Tidak ada hasil Jhon di ~/jhon-outbox/ (kotak keluar kosong).'; else echo \"FILE: \$f\"; cat ~/jhon-outbox/\"\$f\" 2>/dev/null | head -c 3000; fi", "termux")
                 }
                 // vc258 Fase 2: preview hasil worker (cap, tanpa unduh penuh).
                 // vc261 N-m14: hasil worker = DATA TIDAK TEPERCAYA
@@ -2798,6 +2940,13 @@ object Tools {
                 }
                 "use_skill" -> {
                     val nm = args.optString("name").trim()
+                    // vc313: dokumen skill browser (lazy-loaded) — bukan skill
+                    // Forge di DB; manifest-nya ada di katalog (PROSE_BROWSER_VC313),
+                    // detail dimuat on-demand lewat nama ini (tanpa tool baru).
+                    if (nm.equals("browser-vc313", ignoreCase = true)) {
+                        try { EventDb.get(ctx).add("skill", ctx.packageName, "Skill 'browser-vc313' dimuat lewat use_skill") } catch (e: Exception) {}
+                        "PROSEDUR SKILL 'browser-vc313' — ikuti langkah-langkah ini untuk menyelesaikan tugas yang sedang berjalan:\n" + ToolRegistry.browserSkillDetail()
+                    } else {
                     val all = try { MemoryDb.get(ctx).skills() } catch (e: Exception) { emptyList() }
                     val sk = all.firstOrNull { it.name.equals(nm, ignoreCase = true) }
                     if (sk == null) "Skill '$nm' tidak ditemukan. Skill tersedia: " + if (all.isEmpty()) "(belum ada — buat dengan create_skill)" else all.joinToString(", ") { it.name }
@@ -2805,6 +2954,7 @@ object Tools {
                     else {
                         try { EventDb.get(ctx).add("skill", ctx.packageName, "Skill '${sk.name}' dimuat lewat use_skill") } catch (e: Exception) {}
                         "PROSEDUR SKILL '${sk.name}' — ikuti langkah-langkah ini untuk menyelesaikan tugas yang sedang berjalan:\n${sk.instruction}"
+                    }
                     }
                 }
                 "run_team" -> {
@@ -2832,7 +2982,7 @@ object Tools {
                                 else -> -1
                             }
                             if (slot > 0) used.add(slot)
-                            lanes.add(TeamRun.Lane(prof?.id ?: "asisten", prof?.name ?: "Asisten", slot, t))
+                            lanes.add(TeamRun.Lane(prof?.id ?: "senz", prof?.name ?: "Senz", slot, t))
                         }
                     }
                     if (lanes.isEmpty()) "run_team butuh args.tasks — array 1-4 objek {agent, task, slot?}."
@@ -3034,7 +3184,7 @@ object Tools {
                                 k !in OcCoord.RULE_DEFAULTS.keys ->
                                     "coord_rule DITOLAK: kunci tidak dikenal '$k'. Kunci sah: ${OcCoord.RULE_DEFAULTS.keys.joinToString(", ")}"
                                 k == "path_mode" && v.lowercase() !in listOf("resmi", "mandiri") ->
-                                    "coord_rule DITOLAK: path_mode hanya boleh 'resmi' (serve 4097, cadangan otomatis 4096) atau 'mandiri' (serve milik harness 4100). Nilai '$v' tidak sah — 'cadangan' BUKAN mode tersendiri, 4096 adalah cadangan di dalam mode resmi. Sampaikan ini apa adanya ke user."
+                                    "coord_rule DITOLAK: path_mode hanya boleh 'resmi' (serve 4097, cadangan otomatis 4096) atau 'mandiri' (serve milik harness 4099). Nilai '$v' tidak sah — 'cadangan' BUKAN mode tersendiri, 4096 adalah cadangan di dalam mode resmi. Sampaikan ini apa adanya ke user."
                                 k == "auto_approve" && v.lowercase() in listOf("on", "true", "yes", "aktif", "enable", "enabled") ->
                                     "coord_rule DITOLAK: auto_approve BUKAN saklar on/off — isinya DAFTAR POLA judul izin (pisah koma) yang otomatis disetujui. Untuk menyetujui SEMUA izin otomatis pakai nilai '*' (sampaikan risiko pilihan ini ke user). Untuk pola tertentu contoh: 'read,glob,grep'. Nilai kosong = selalu tanya user."
                                 k in numericRanges -> {
@@ -3054,7 +3204,7 @@ object Tools {
                         else -> {
                             val sb = StringBuilder("Aturan koordinasi OpenCode milik harness saat ini:\n")
                             for ((k, v) in db.allCoordRules()) sb.append("- $k = $v\n")
-                            sb.append("\nMakna: path_mode=resmi (serve 4097, cadangan otomatis 4096) | mandiri (serve milik harness 4100) — TIDAK ada mode 'cadangan'; auto_approve=daftar pola judul izin (pisah koma) yang otomatis disetujui, '*' = SEMUA izin otomatis disetujui (berisiko, hanya atas perintah eksplisit user), kosong=selalu tanya user, dan auto_approve BUKAN saklar on/off; session_ctx_limit=batas token konteks sebelum sesi dirotasi; chain_max=maks tugas per rantai; chain_delay_sec=jeda antar tugas rantai; chain_batt_min=baterai minimum untuk melanjutkan rantai; quiet_hours=jam hening rantai (mis. 23-07, kosong=nonaktif); task_timeout_min & perm_timeout_min=batas tunggu tugas/izin.")
+                            sb.append("\nMakna: path_mode=resmi (serve 4097, cadangan otomatis 4096) | mandiri (serve milik harness 4099) — TIDAK ada mode 'cadangan'; auto_approve=daftar pola judul izin (pisah koma) yang otomatis disetujui, '*' = SEMUA izin otomatis disetujui (berisiko, hanya atas perintah eksplisit user), kosong=selalu tanya user, dan auto_approve BUKAN saklar on/off; session_ctx_limit=batas token konteks sebelum sesi dirotasi; chain_max=maks tugas per rantai; chain_delay_sec=jeda antar tugas rantai; chain_batt_min=baterai minimum untuk melanjutkan rantai; quiet_hours=jam hening rantai (mis. 23-07, kosong=nonaktif); task_timeout_min & perm_timeout_min=batas tunggu tugas/izin.")
                             sb.toString().trim()
                         }
                     }
@@ -3725,11 +3875,11 @@ object Tools {
         val entry = args.optString("entry", "index.html").trim().ifBlank { "index.html" }
         val titleArg = args.optString("title").trim()
         val mode = args.optString("mode", "auto").trim().lowercase().ifBlank { "auto" }
-        if (dirRaw.isBlank()) return "artifact_bundle butuh argumen 'dir' (folder proyek di /sdcard, mis. /sdcard/Harness/artifacts/kalkulator)."
+        if (dirRaw.isBlank()) return "artifact_bundle butuh argumen 'dir' (folder proyek di /sdcard, mis. /sdcard/S&Harness/artifacts/kalkulator)."
         if (mode !in setOf("auto", "inline", "vite", "worker")) return "artifact_bundle: mode harus auto|inline|vite|worker — diterima: '$mode'."
         val dir = File(dirRaw)
         if (!dir.exists() || !dir.isDirectory) return "artifact_bundle: folder tidak ada / bukan folder: $dirRaw — tulis komponen dulu lewat write_file ke folder /sdcard, lalu bundle."
-        if (dirRaw.startsWith("/data/data/com.termux")) return "artifact_bundle: folder di home Termux tidak bisa dibaca app — pindahkan proyek ke /sdcard (mis. /sdcard/Harness/artifacts/<nama>)."
+        if (dirRaw.startsWith("/data/data/com.termux")) return "artifact_bundle: folder di home Termux tidak bisa dibaca app — pindahkan proyek ke /sdcard (mis. /sdcard/S&Harness/artifacts/<nama>)."
         val entryFile = File(dir, entry)
         if (!entryFile.exists()) return "artifact_bundle: entry tidak ada: ${entryFile.path} — argumen 'entry' default index.html."
         val hasPkg = File(dir, "package.json").exists()
@@ -4092,13 +4242,13 @@ object Tools {
         return javax.crypto.spec.SecretKeySpec(f.generateSecret(spec).encoded, "AES")
     }
 
-    /** backup: ekspor memori -> (enkripsi bila frasa sandi diatur) -> ~/operator-sync di Termux.
+    /** backup: ekspor memori -> (enkripsi bila frasa sandi diatur) -> ~/jhon-sync di Termux.
      *  restore: ambil file sinkron terakhir -> dekripsi -> impor fakta/skill/jadwal/aturan. */
     private fun syncMemory(ctx: Context, direction: String): String {
         val pass = SecureStore.get(ctx, "sync_passphrase") ?: ""
         if (direction == "restore") {
-            val raw = runTerminal(ctx, "cat ~/operator-sync/memory-latest.json 2>/dev/null", "termux")
-            if (raw.isBlank() || raw.contains("Gagal") || raw.contains("gagal")) return "File sinkron tidak ditemukan di Termux (~/operator-sync/memory-latest.json) atau Termux tidak merespons."
+            val raw = runTerminal(ctx, "cat ~/jhon-sync/memory-latest.json 2>/dev/null", "termux")
+            if (raw.isBlank() || raw.contains("Gagal") || raw.contains("gagal")) return "File sinkron tidak ditemukan di Termux (~/jhon-sync/memory-latest.json) atau Termux tidak merespons."
             return try {
                 var root = JSONObject(raw.trim())
                 var imported = 0
@@ -4148,8 +4298,8 @@ object Tools {
             encrypted = true
         } else { payload = plain; encrypted = false }
         val b64 = android.util.Base64.encodeToString(payload.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
-        val out = runTerminal(ctx, "mkdir -p ~/operator-sync && echo $b64 | base64 -d > ~/operator-sync/memory-latest.json && echo SYNC-OK", "termux")
-        return if (out.contains("SYNC-OK")) "Backup memori tersimpan ke Termux (~/operator-sync/memory-latest.json, ${payload.length} byte, ${if (encrypted) "TERENKRIPSI AES-256" else "TIDAK terenkripsi — atur frasa sandi di Setup 25 untuk enkripsi"})."
+        val out = runTerminal(ctx, "mkdir -p ~/jhon-sync && echo $b64 | base64 -d > ~/jhon-sync/memory-latest.json && echo SYNC-OK", "termux")
+        return if (out.contains("SYNC-OK")) "Backup memori tersimpan ke Termux (~/jhon-sync/memory-latest.json, ${payload.length} byte, ${if (encrypted) "TERENKRIPSI AES-256" else "TIDAK terenkripsi — atur frasa sandi di Setup 25 untuk enkripsi"})."
         else "Backup gagal: $out"
     }
 
@@ -4318,7 +4468,7 @@ object Tools {
         return "Perangkat: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (${android.os.Build.DEVICE})\n" +
             "Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT}), ABI ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "-"}\n" +
             "RAM total ${(mi.totalMem / 1048576)} MB, tersedia ${(mi.availMem / 1048576)} MB\n" +
-            "App: Harness v$ver (${ctx.packageName})\n" +
+            "App: DeepSeek Harness v$ver (${ctx.packageName})\n" +
             "Otak: DeepSeek via sesi web chat.deepseek.com (model deepseek-chat; DeepThink/Search mengikuti saklar di tab Chat)"
     }
 

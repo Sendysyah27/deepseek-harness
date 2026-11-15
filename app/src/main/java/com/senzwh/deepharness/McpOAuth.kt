@@ -137,7 +137,7 @@ object McpOAuth {
                     val kv = part.split("=", limit = 2)
                     if (kv.size == 2) params[kv[0]] = URLDecoder.decode(kv[1], "UTF-8")
                 }
-                val body = "<html><body><h2>Berhasil — kembali ke aplikasi Harness.</h2></body></html>"
+                val body = "<html><body><h2>Berhasil — kembali ke aplikasi S&Harness.</h2></body></html>"
                 val bodyBytes = body.toByteArray(Charsets.UTF_8)
                 val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bodyBytes.size}\r\nConnection: close\r\n\r\n"
                 try {

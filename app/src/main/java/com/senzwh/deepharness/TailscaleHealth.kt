@@ -2,7 +2,7 @@ package com.senzwh.deepharness
 
 import android.content.Context
 
-/** F3-Tailscale (v4.48.4): watchdog tailscaled proot + serve :4199.
+/** F3-Tailscale (v4.48.4): watchdog tailscaled proot + serve :4197.
  *  Cerminan ServeHealth (F3 v4.37.0) untuk komponen yang belum punya watchdog:
  *  17:42-17:44 2026-10-25 sesi proot berakhir ([proot exit=0]) -> proot
  *  --kill-on-exit membunuh tailscaled + opencode; yang punya watchdog (opencode,
@@ -25,7 +25,7 @@ object TailscaleHealth {
     const val TS_LOG = "/root/ts/tailscaled.log"
     const val TS_BIN = "/root/ts/tailscaled"
     const val TS_STATEDIR = "/root/ts/state"
-    const val SERVE_PORT = 4199
+    const val SERVE_PORT = 4197
 
     enum class Kind { DEAD, NEEDS_LOGIN, RUNNING, UNKNOWN, NO_PROOT }
 
@@ -112,11 +112,11 @@ object TailscaleHealth {
         return check(ctx)
     }
 
-    /** true bila serve status mengandung :4199. */
+    /** true bila serve status mengandung :4197. */
     fun serveOk(ctx: Context): Boolean {
         return try {
             val out = ProotSession.execServe(ctx, "tailscale --socket=" + SOCKET + " serve status 2>&1", 60)
-            out.contains(":4199")
+            out.contains(":4197")
         } catch (e: Exception) {
             false
         }
@@ -128,7 +128,7 @@ object TailscaleHealth {
     fun ensureServe(ctx: Context): Boolean {
         if (serveOk(ctx)) return true
         try {
-            ProotSession.execServe(ctx, "tailscale --socket=" + SOCKET + " serve --bg --tcp 4199 2>&1", 60)
+            ProotSession.execServe(ctx, "tailscale --socket=" + SOCKET + " serve --bg --tcp 4197 2>&1", 60)
         } catch (e: Exception) {
             return false
         }
@@ -143,7 +143,7 @@ object TailscaleHealth {
         val serveResult = if (d.kind == Kind.RUNNING) ensureServe(ctx) else null
         val fin = check(ctx)
         val final = if (fin.kind == Kind.RUNNING && serveResult != null) {
-            fin.copy(text = fin.text + if (serveResult) " • serve :4199 OK" else " • serve :4199 hilang")
+            fin.copy(text = fin.text + if (serveResult) " • serve :4197 OK" else " • serve :4197 hilang")
         } else fin
         noteStatus(ctx, final.text)
         return final

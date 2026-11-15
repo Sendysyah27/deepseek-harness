@@ -3,15 +3,15 @@ package com.senzwh.deepharness
 import android.content.Context
 import java.io.File
 
-/** F3 (v4.37.0): detektor + pembangkit serve proot :4199.
+/** F3 (v4.37.0): detektor + pembangkit serve proot :4197.
  *  Status SELALU gabungan health HTTP + PID pgrep — satu saja tidak cukup
  *  (aturan SKILL lama: health 200 tanpa PID = klaim kosong, PID tanpa health
  *  = proses zombie). Semua fungsi di sini MEMBLOKIR (ProotSession.execServe, sesi serve) —
  *  JANGAN pernah dipanggil dari main thread.
- *  TIDAK PERNAH menyentuh serve :4096/:4097 — hanya :4199 milik harness. */
+ *  TIDAK PERNAH menyentuh serve :4096/:4097 — hanya :4197 milik harness. */
 object ServeHealth {
-    const val PORT = 4199
-    const val LOG = "/root/opencode-serve-4199.log"
+    const val PORT = 4197
+    const val LOG = "/root/opencode-serve-4197.log"
 
     data class Status(val alive: Boolean, val pid: String?, val text: String, val timeout: Boolean = false)
 
@@ -30,7 +30,7 @@ object ServeHealth {
     fun check(ctx: Context): Status {
         if (!prootInstalled(ctx)) return Status(false, null, "proot belum terpasang (Setup 52)")
         val out = try {
-            ProotSession.execServe(ctx, "curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4199/global/health; echo; pgrep -af 'opencode serve.*--port 4199' | head -3", 60)
+            ProotSession.execServe(ctx, "curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4197/global/health; echo; pgrep -af 'opencode serve.*--port 4197' | head -3", 60)
         } catch (e: Exception) {
             serveTimeoutStreak = 0
             return Status(false, null, "cek gagal: ${e.message}")
@@ -67,10 +67,10 @@ object ServeHealth {
             // tetap dipertahankan untuk sisa orphan.
             try { ProotSession.killSession("serve") } catch (e: Exception) {}
             val cmd = "log=" + LOG + "; [ -f \$log ] && [ \$(stat -c%s \$log 2>/dev/null || echo 0) -gt 5242880 ] && mv \$log \$log.old; " +
-                "pkill -f 'opencode serve.*--port 4199' 2>/dev/null; sleep 1; " +
-                "cd /root && nohup opencode serve --hostname 127.0.0.1 --port 4199 > " + LOG + " 2>&1 & sleep 6; " +
-                "echo '--- health ---'; curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4199/global/health; echo; " +
-                "echo '--- pid ---'; pgrep -af 'opencode serve.*--port 4199' | head -3"
+                "pkill -f 'opencode serve.*--port 4197' 2>/dev/null; sleep 1; " +
+                "cd /root && nohup opencode serve --hostname 127.0.0.1 --port 4197 > " + LOG + " 2>&1 & sleep 6; " +
+                "echo '--- health ---'; curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4197/global/health; echo; " +
+                "echo '--- pid ---'; pgrep -af 'opencode serve.*--port 4197' | head -3"
             try {
                 ProotSession.execServe(ctx, cmd, 120)
             } catch (e: Exception) {
@@ -79,7 +79,7 @@ object ServeHealth {
             }
             val st = check(ctx)
             noteStatus(ctx, if (st.alive) "hidup • PID ${st.pid}" else "tidur (bangkit gagal)")
-            return if (st.alive) "Serve :4199 bangkit • PID ${st.pid} • health 200"
+            return if (st.alive) "Serve :4197 bangkit • PID ${st.pid} • health 200"
             else "bangkit gagal — serve tidak lolos verifikasi ganda"
         } finally {
             synchronized(this) { reviving = false }

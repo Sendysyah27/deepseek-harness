@@ -37,12 +37,12 @@ object WorkNotesVc301 {
     fun bgNotesKey(origin: String): String = "workNotesVc301_bg:" + origin
     fun groupNotesKey(): String = "workNotesVc301_group"
 
-    // VC303-P2-12 (CX-6, OPSI A — keputusan user di Gas vc303): baris
+    // VC303-P2-12 (CX-6, OPSI A — keputusan Sendy di Gas vc303): baris
     // membawa ringkasan hasil deterministik `evidence.take(120)` + total
     // char hasil (`totalChars`, dari lastFullLengthTL / resultTotal),
     // mis. `- forge_eval_save [R5808] [ok] <args120> :: <evidence120>
     // (8015 char)`. Ini MENGUBAH semantik tulis vc301 yang dikunci
-    // byte-identik di vc302 — dijalankan karena user memilih opsi ini
+    // byte-identik di vc302 — dijalankan karena Sendy memilih opsi ini
     // secara eksplisit (bukan patch diam-diam). Parameter baru punya
     // default, jadi pemanggil lama 4-argumen tetap jalan (baris lama
     // tanpa `::` bila evidence kosong / total 0).

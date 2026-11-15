@@ -23,7 +23,7 @@ object DocGen {
     data class PptSlide(val title: String, val bullets: List<String>)
 
     fun documentsDir(): File {
-        val d = File("/sdcard/Harness/documents")
+        val d = File("/sdcard/S&Harness/documents")
         try { d.mkdirs() } catch (e: Exception) { }
         return d
     }

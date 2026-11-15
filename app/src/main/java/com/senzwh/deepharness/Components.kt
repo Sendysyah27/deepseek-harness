@@ -42,7 +42,7 @@ class QsTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         qsTile?.let {
-            it.label = "Harness Asisten"
+            it.label = "Senz Asisten"
             it.state = Tile.STATE_ACTIVE
             it.updateTile()
         }

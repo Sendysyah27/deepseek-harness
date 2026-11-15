@@ -130,7 +130,7 @@ class HarnessService : Service() {
         nm.notify(7721, n)
     }
 
-    // vc263 (NT-M5): penjaga serve :4199 + mitmproxy dari service latar —
+    // vc263 (NT-M5): penjaga serve :4197 + mitmproxy dari service latar —
     // dulu notif serve-mati hanya jalan di serveF3Tick() saat onResume
     // (app dibuka), mitmproxy tanpa notif sama sekali. Cek tiap ±5 menit
     // (10 tick x 30 dtk, pola privGuardTick). Serve: check() saja (TANPA
@@ -157,7 +157,7 @@ class HarnessService : Service() {
                     if (android.os.Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel("harness_auto_heal") == null) nm.createNotificationChannel(android.app.NotificationChannel("harness_auto_heal", "Automation Perlu Perhatian", android.app.NotificationManager.IMPORTANCE_DEFAULT))
                     val pi = android.app.PendingIntent.getActivity(this, 73, Intent(this, MainActivity::class.java), android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE)
                     val nb = if (android.os.Build.VERSION.SDK_INT >= 26) android.app.Notification.Builder(this, "harness_auto_heal") else android.app.Notification.Builder(this)
-                    nm.notify(NotifIds.SERVE_DOWN, nb.setSmallIcon(android.R.drawable.ic_dialog_alert).setContentTitle("Serve :4199 tidur — perlu tindakan").setContentText("Serve mati selagi app tertutup. Buka app > Setup serve untuk menyalakan ulang serve.").setContentIntent(pi).setAutoCancel(true).build())
+                    nm.notify(NotifIds.SERVE_DOWN, nb.setSmallIcon(android.R.drawable.ic_dialog_alert).setContentTitle("Serve :4197 tidur — perlu tindakan").setContentText("Serve mati selagi app tertutup. Buka app > Setup serve untuk menyalakan ulang serve.").setContentIntent(pi).setAutoCancel(true).build())
                 }
             }
         } catch (e: Exception) {}
@@ -671,8 +671,8 @@ class HarnessService : Service() {
         val texts = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return false
         for (t in texts) {
             val low = t.lowercase()
-            if (low.contains("hai asisten") || low.contains("hei asisten") || low.contains("halo asisten") ||
-                low.contains("hai operator") || low.contains("ok asisten") || low.contains("oke asisten")) {
+            if (low.contains("hai senz") || low.contains("hei senz") || low.contains("halo senz") ||
+                low.contains("hai jhon") || low.contains("ok senz") || low.contains("oke senz")) {
                 try {
                     startActivity(Intent(this, MainActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -796,7 +796,7 @@ class HarnessService : Service() {
             val pi = PendingIntent.getActivity(this, 73, Intent(this, FloatingAgentActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val notif = Notification.Builder(this, "harness")
                 .setContentTitle("Panel asisten gagal dibuka langsung")
-                .setContentText("Ketuk untuk membuka panel — atau aktifkan izin MIUI 'pop-up saat berjalan di latar' untuk Harness.")
+                .setContentText("Ketuk untuk membuka panel — atau aktifkan izin MIUI 'pop-up saat berjalan di latar' untuk DeepSeek Harness.")
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
                 .setContentIntent(pi)
                 .setAutoCancel(true)
@@ -869,7 +869,7 @@ class HarnessService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notif = Notification.Builder(this, "harness")
-            .setContentTitle("Harness aktif")
+            .setContentTitle("DeepSeek Harness aktif")
             .setContentText("Asisten tinggal di HP ini: memantau konteks, pengingat, dan briefing (lokal).")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(openPi)

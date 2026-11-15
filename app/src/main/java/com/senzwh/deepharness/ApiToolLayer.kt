@@ -3,7 +3,7 @@ package com.senzwh.deepharness
 import org.json.JSONObject
 
 // vc282 — LAPISAN API INTERNAL (internal API layer) untuk otak DeepSeek WEB.
-// Perintah user 2026-11-09 21:06: otak web dibungkus antarmuka internal
+// Perintah Sendy 2026-11-09 21:06: otak web dibungkus antarmuka internal
 // yang kompatibel-OpenAI (chat completions + tools -> tool_calls terstruktur
 // -> eksekusi -> tool messages -> loop), sehingga dari sisi agen, web brain
 // diperlakukan PERSIS seperti model API lainnya. File ini MURNI (tanpa

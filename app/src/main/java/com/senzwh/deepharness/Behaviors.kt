@@ -11,7 +11,7 @@ object Behaviors {
     data class Pack(val id: String, val name: String, val desc: String, val block: String)
 
     val PACKS = listOf(
-        Pack("asisten", "Asisten (bawaan)", "Persona murni, tanpa tambahan gaya.", ""),
+        Pack("senz", "Senz (bawaan)", "Persona murni, tanpa tambahan gaya.", ""),
         Pack(
             "mandor", "Mandor Produksi", "Tegas, berbasis checkpoint & angka.",
             "PAK PERILAKU — MANDOR PRODUKSI:\n" +

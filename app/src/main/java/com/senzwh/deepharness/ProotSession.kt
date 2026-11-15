@@ -33,7 +33,7 @@ object ProotSession {
     // vc278 O18(b): deadline akuisisi cmdLock — satu exec panjang (900 dtk)
     // tidak boleh membuat exec berikutnya menggantung tanpa batas di
     // belakang lock. Lewat 60 dtk -> kembalikan pesan sibuk (endpoint
-    // :4200 sudah menjawab 503 lebih dulu via dispatch timeout 25 dtk
+    // :4198 sudah menjawab 503 lebih dulu via dispatch timeout 25 dtk
     // sejak vc260; deadline ini menolong jalur DALAM app — run_terminal
     // 1-1/latar — yang memanggil ProotSession langsung).
     const val CMD_LOCK_TIMEOUT_SEC = 60L
@@ -103,7 +103,7 @@ object ProotSession {
     //  pythonCommand, dan script.py tidak berubah. /sdcard di luar
     //  folder itu TIDAK TERLIHAT dari worker (ls /sdcard gagal /
     //  kosong). Sesi serve PERTAHANKAN bind /sdcard penuh (infra
-    //  tepercaya — opencode :4199 milik harness; lihat BUILD-VC281.md).
+    //  tepercaya — opencode :4197 milik harness; lihat BUILD-VC281.md).
     //  Batasan jujur (D2): dua worker RUNNING boleh berbagi satu sesi
     //  (K4: maks 5 worker, 4 sesi) — bind sesi = gabungan cermin mereka,
     //  jadi worker yang berbagi sesi bisa melihat folder cermin satu
