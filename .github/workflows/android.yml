@@ -7,6 +7,10 @@ name: Android vc317
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
+#
+# CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
+# GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
+# (/usr/lib/android-sdk + cmdline-tools), tanpa action tambahan.
 
 on:
   push:
@@ -28,15 +32,27 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Use preinstalled Android SDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-/usr/lib/android-sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          test -x "$SDK/cmdline-tools/latest/bin/sdkmanager" || { echo "::error::sdkmanager tidak ada di $SDK"; exit 1; }
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --version
 
       - name: Install Android packages (platform 34, build-tools 34, NDK 30)
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;30.0.16248370"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
+          # Lisensi sudah diterima di image runner; jangan pakai `yes |`
+          # (SIGPIPE + pipefail membunuh step bila sdkmanager cepat selesai).
+          printf 'y\ny\ny\n' | sdkmanager --licenses >/dev/null || true
+          sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --sdk_root="$ANDROID_HOME" "ndk;30.0.16248370" || sdkmanager --sdk_root="$ANDROID_HOME" "ndk"
+          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK: $NDK_DIR"
 
       - name: Install Rust 1.93.1 + aarch64-linux-android
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (v1), 2026-10-09
