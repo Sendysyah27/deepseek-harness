@@ -289,7 +289,20 @@ fun main(args: Array<String>) {
     val mergeDir = java.io.File(treeDir, "../merge")
 
     // ---- §1. Seam + VERSION ----
-    val rcSrc = src(treeDir, "harness/core/RustCore.kt")
+    // RustCore.kt TIDAK di bawah treeDir di semua layout: lokal
+    // (integrated) = treeDir/harness/core/RustCore.kt; CI =
+    // treeDir naik-3 (deepharness -> senzwh -> com -> java) lalu
+    // harness/core/RustCore.kt. Coba 4 tingkat (akar yang sama
+    // dengan P8 5.18 vc322 dan P9 12.7 vc323).
+    val rcSrc = listOf(
+        "harness/core/RustCore.kt",
+        "../harness/core/RustCore.kt",
+        "../../harness/core/RustCore.kt",
+        "../../../harness/core/RustCore.kt"
+    ).mapNotNull { rel ->
+        val f = java.io.File(treeDir, rel)
+        if (f.exists()) f.readText() else null
+    }.firstOrNull() ?: ""
     cek("1.1 RustCore.kt VERSION 6 + httpJson", rcSrc.contains("const val VERSION = 6") && rcSrc.contains("external fun httpJson(request: String): String?"))
     if (rust) {
         cek("1.2 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
