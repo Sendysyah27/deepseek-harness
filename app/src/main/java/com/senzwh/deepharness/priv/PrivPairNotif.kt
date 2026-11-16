@@ -20,7 +20,10 @@ object PrivPairNotif {
     // notif konfirmasi kedua BgBrain (BgBrain.kt notify 7704). ID baru 7708
     // tercatat di NotifIds.kt (registry terpusat, bebas tabrakan) dan ikut
     // daftar sapu BgBrain/HarnessService.
-    const val NOTIF_ID = NotifIds.PRIV_PAIR
+    // Slice 4 (vc317): `const val` -> `val` dengan getter — NotifIds
+    // kini Rust-backed (bukan konstanta compile-time), dan nilai ini
+    // dipakai hanya saat runtime (nm.notify), jadi bentuk `val` cukup.
+    val NOTIF_ID: Int get() = NotifIds.PRIV_PAIR
     const val ACTION_REPLY = "com.senzwh.deepharness.PRIV_PAIR_REPLY"
     const val KEY_CODE = "pair_code"
     private const val CHANNEL = "harness-alert"

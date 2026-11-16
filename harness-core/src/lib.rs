@@ -18,9 +18,16 @@
 // SETIAP modul non-glue membawa `#![forbid(unsafe_code)]` sendiri
 // (lihat ds_failure.rs); glue JNI satu-satunya modul tanpa forbid.
 
+pub mod behaviors;
+pub mod chat_theme;
 pub mod ds_failure;
+pub mod ds_safety_strip;
+pub mod mcp_helper;
+pub mod notif_ids;
 pub mod pow_solver;
 pub mod redact_secrets;
+pub mod session_background;
+pub mod system_bar_spec;
 
 mod jni_glue;
 

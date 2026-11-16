@@ -1,5 +1,7 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
+
 /**
  * J6 (dari bedah Jarves: agen didefinisikan sebagai DATA) — Pak Perilaku:
  * preset gaya kerja agen yang bisa diganti user tanpa mengubah kode. Blok pak
@@ -8,9 +10,18 @@ package com.senzwh.deepharness
  * menang HANYA untuk gaya bahasa (vc247: persona TIDAK PERNAH menang atas aturan tool; gerbang persetujuan nonaktif).
  */
 object Behaviors {
+    /**
+     * Saklar A/B slice 4 (vc317): bila core Rust tersedia, daftar pak +
+     * blok jalan di Rust; bila tidak, fallback ke implementasi Kotlin
+     * lama di bawah (PACKS_KOTLIN + blockKotlin — JANGAN dihapus).
+     */
+    var rustBehaviors: Boolean = true
+
     data class Pack(val id: String, val name: String, val desc: String, val block: String)
 
-    val PACKS = listOf(
+    val PACKS: List<Pack> by lazy { rustPacks() ?: PACKS_KOTLIN }
+
+    private val PACKS_KOTLIN = listOf(
         Pack("senz", "Senz (bawaan)", "Persona murni, tanpa tambahan gaya.", ""),
         Pack(
             "mandor", "Mandor Produksi", "Tegas, berbasis checkpoint & angka.",
@@ -57,6 +68,84 @@ object Behaviors {
 
     /** Blok siap tempel ke prompt (string kosong untuk pak bawaan). */
     fun block(id: String): String {
+        rustBlock(id)?.let { return it }
+        return blockKotlin(id)
+    }
+
+    // ---- Seam Rust (vc317) ----
+
+    private fun rustBlock(id: String): String? {
+        if (!rustBehaviors || !RustCore.available) return null
+        return try {
+            val json = RustCore.behaviorsJson(id)
+            if (!json.contains("\"ok\":true")) return null
+            val raw = Regex("\"block\":\"((?:\\\\.|[^\"\\\\])*)\"").find(json)?.groupValues?.getOrNull(1) ?: return null
+            jsonUnescape(raw)
+        } catch (e: Throwable) {
+            rustBehaviors = false
+            null
+        }
+    }
+
+    private fun rustPacks(): List<Pack>? {
+        if (!rustBehaviors || !RustCore.available) return null
+        return try {
+            val json = RustCore.behaviorsJson("senz")
+            if (!json.contains("\"ok\":true")) return null
+            val arrStart = json.indexOf("\"packs\":[")
+            if (arrStart < 0) return null
+            val packRe = Regex("\\{\"id\":\"((?:\\\\.|[^\"\\\\])*)\",\"name\":\"((?:\\\\.|[^\"\\\\])*)\",\"desc\":\"((?:\\\\.|[^\"\\\\])*)\",\"block\":\"((?:\\\\.|[^\"\\\\])*)\"\\}")
+            val packs = packRe.findAll(json.substring(arrStart)).map {
+                Pack(
+                    jsonUnescape(it.groupValues[1]),
+                    jsonUnescape(it.groupValues[2]),
+                    jsonUnescape(it.groupValues[3]),
+                    jsonUnescape(it.groupValues[4])
+                )
+            }.toList()
+            if (packs.size != 6) return null
+            packs
+        } catch (e: Throwable) {
+            rustBehaviors = false
+            null
+        }
+    }
+
+    /** Unescape satu string JSON (\" \\ \/ \n \r \t \b \f \uXXXX). */
+    private fun jsonUnescape(s: String): String {
+        if (!s.contains('\\')) return s
+        val sb = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c != '\\' || i + 1 >= s.length) {
+                sb.append(c)
+                i++
+                continue
+            }
+            when (val e = s[i + 1]) {
+                '"' -> sb.append('"')
+                '\\' -> sb.append('\\')
+                '/' -> sb.append('/')
+                'n' -> sb.append('\n')
+                'r' -> sb.append('\r')
+                't' -> sb.append('\t')
+                'b' -> sb.append('\b')
+                'f' -> sb.append('\u000C')
+                'u' -> {
+                    val hex = s.substring(i + 2, minOf(i + 6, s.length))
+                    sb.append(hex.toIntOrNull(16)?.toChar() ?: '?')
+                    i += 4
+                }
+                else -> sb.append(e)
+            }
+            i += 2
+        }
+        return sb.toString()
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun blockKotlin(id: String): String {
         val p = byId(id)
         return if (p.block.isBlank()) "" else p.block + "\n\n"
     }

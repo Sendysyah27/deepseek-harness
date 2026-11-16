@@ -4,11 +4,11 @@
 # path repo). Dijalankan dari root repo, satu section per pemanggilan
 # (workflow CI memanggil per section sebagai step terpisah supaya langkah
 # yang gagal terlihat di API tanpa perlu log):
-#   bash tests/run-suite-ci.sh 0|P1|P2|P3|N9|BR|IXL|R1|R2|C|D|ALL
+#   bash tests/run-suite-ci.sh 0|P1|P2|P3|P4|N9|BR|IXL|R1|R2|C|D|ALL
 # Section 0 = kompilasi tree (prasyarat semua section tes).
-# Suite (garis paritas vc316 + P2 slice 2 + P3 slice 3): P1 103 + P2 36
-# + P3 94 + N9 46 + BR 45 + IXL 72 + R1 64 + R2 69 = 529 cek; target
-# 528/529 — R2-4.1 assert STRING PERSIS usang
+# Suite (garis paritas vc316 + P2 slice 2 + P3 slice 3 + P4 slice 4):
+# P1 103 + P2 36 + P3 94 + P4 235 + N9 46 + BR 45 + IXL 72 + R1 64
+# + R2 69 = 764 cek; target 763/764 — R2-4.1 assert STRING PERSIS usang
 # warisan vc315 (dispatch vc314 direstruktur di vc315; perilaku sama),
 # ditoleransi eksplisit di run_r2 (bukan regresi).
 # Tiap section keluar 0 bila lulus, 1 bila gagal.
@@ -54,6 +54,12 @@ run_p3() {
   echo "== P3. TestRedactSecretsVc318 (paritas wrapper RedactSecrets, 94 cek) =="
   "$KOTLINC" -J-Xmx3g -jvm-target 17 "tests/TestRedactSecretsVc318.kt" -cp "$OUT/test-tree.jar:$CP" -include-runtime -d "$OUT/test-p3.jar" || return 1
   "$JAVA" -Xmx1g -cp "$OUT/test-p3.jar:$OUT/test-tree.jar:$CP" com.senzwh.deepharness.TestRedactSecretsVc318Kt "$TREE"
+}
+
+run_p4() {
+  echo "== P4. TestSmallModulesVc318 (paritas wrapper slice 4, 235 cek) =="
+  "$KOTLINC" -J-Xmx3g -jvm-target 17 "tests/TestSmallModulesVc318.kt" -cp "$OUT/test-tree.jar:$CP" -include-runtime -d "$OUT/test-p4.jar" || return 1
+  "$JAVA" -Xmx1g -cp "$OUT/test-p4.jar:$OUT/test-tree.jar:$CP" com.senzwh.deepharness.TestSmallModulesVc318Kt "$TREE"
 }
 
 run_n9() {
@@ -110,6 +116,11 @@ run_c() {
   git diff --name-only origin/main HEAD -- harness-core/src/pow_solver.rs | grep -q pow_solver.rs || { echo "GAGAL C: pow_solver.rs bukan file baru vs main"; return 1; }
   git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt | grep -q RedactSecrets.kt || { echo "GAGAL C: RedactSecrets.kt tidak berubah vs main"; return 1; }
   git diff --name-status origin/main HEAD -- harness-core/src/redact_secrets.rs | grep -q "^A" || { echo "GAGAL C: redact_secrets.rs bukan file baru vs main"; return 1; }
+  for _f in NotifIds SystemBarSpecVc309 DsSafetyStrip McpHelper SessionBackgroundVc304 Behaviors ChatThemeVc306; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main"; return 1; }; done
+  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/priv/PrivPairNotif.kt | grep -q PrivPairNotif.kt || { echo "GAGAL C: priv/PrivPairNotif.kt tidak berubah vs main"; return 1; }
+  for _r in notif_ids system_bar_spec ds_safety_strip mcp_helper session_background behaviors chat_theme; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main"; return 1; }; done
+  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/Flavor.kt | grep -q Flavor.kt && { echo "GAGAL C: Flavor.kt berubah vs main (slice 4 DIKECUALIKAN/deferred)"; return 1; }
+  echo "LULUS C (slice 4): 7 file Kotlin + PrivPairNotif berubah, 7 modul Rust baru, Flavor.kt tidak berubah"
   echo "LULUS C"
   return 0
 }
@@ -125,6 +136,7 @@ run_d() {
   if grep -q "private fun classifyKotlin" "$TREE/DsFailure.kt" && grep -q "private fun classifyFailureKotlin" "$TREE/DsFailure.kt" && grep -q "var rustDsFailure" "$TREE/DsFailure.kt"; then echo "LULUS D6: fallback Kotlin DsFailure dipertahankan"; else echo "GAGAL D6: fallback Kotlin DsFailure hilang"; fail=1; fi
   if grep -q "private fun sha3_256Kotlin" "$TREE/PowSolver.kt" && grep -q "private fun dsHashV1Kotlin" "$TREE/PowSolver.kt" && grep -q "private fun solveDeepSeekKotlin" "$TREE/PowSolver.kt" && grep -q "private fun solveFastKotlin" "$TREE/PowSolver.kt" && grep -q "private fun solveFmtKotlin" "$TREE/PowSolver.kt" && grep -q "private fun solveKotlin" "$TREE/PowSolver.kt" && grep -q "var rustPowSolver" "$TREE/PowSolver.kt" && grep -q "const val VERSION = 2" "$TREE_CORE/RustCore.kt"; then echo "LULUS D7: fallback Kotlin PowSolver dipertahankan + RustCore.VERSION=2"; else echo "GAGAL D7: fallback Kotlin PowSolver hilang / VERSION bukan 2"; fail=1; fi
   if grep -q "private fun redactKotlin" "$TREE/RedactSecrets.kt" && grep -q "private fun countMatchesKotlin" "$TREE/RedactSecrets.kt" && grep -q "var rustRedactSecrets" "$TREE/RedactSecrets.kt" && grep -q "external fun redactSecrets(input: String): String?" "$TREE_CORE/RustCore.kt" && grep -q "const val VERSION = 2" "$TREE_CORE/RustCore.kt"; then echo "LULUS D8: fallback Kotlin RedactSecrets dipertahankan + RustCore.VERSION=2 + external fun redactSecrets"; else echo "GAGAL D8: fallback Kotlin RedactSecrets hilang / VERSION bukan 2 / seam redactSecrets hilang"; fail=1; fi
+  if grep -q "private fun bgResultIdKotlin" "$TREE/NotifIds.kt" && grep -q "var rustNotifIds" "$TREE/NotifIds.kt" && grep -q "private fun specKotlin" "$TREE/SystemBarSpecVc309.kt" && grep -q "private fun stripKotlin" "$TREE/DsSafetyStrip.kt" && grep -q "private const val SCRIPT_B64_KOTLIN" "$TREE/McpHelper.kt" && grep -q "private fun renderAllowedKotlin" "$TREE/SessionBackgroundVc304.kt" && grep -q "private val PACKS_KOTLIN" "$TREE/Behaviors.kt" && grep -q "private fun blockKotlin" "$TREE/Behaviors.kt" && grep -q "private fun contrastRatioKotlin" "$TREE/ChatThemeVc306.kt" && grep -q "external fun notifIdsJson(origin: String, key: String, workerId: String): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun systemBarSpecJson(isDark: Boolean): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun dsSafetyStripJson(text: String): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun mcpHelperJson(): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun sessionBackgroundJson(turnSessionId: Long, currentSessionId: Long, turnActive: Boolean): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun behaviorsJson(id: String): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun chatThemeJson(fg: Int, bg: Int): String" "$TREE_CORE/RustCore.kt" && grep -q "val NOTIF_ID: Int get() = NotifIds.PRIV_PAIR" "$TREE/priv/PrivPairNotif.kt" && ! grep -q "const val NOTIF_ID" "$TREE/priv/PrivPairNotif.kt" && ! grep -q "RustCore" "$TREE/Flavor.kt"; then echo "LULUS D9: fallback Kotlin slice 4 dipertahankan (7 file *Kotlin + 7 external fun + PrivPairNotif getter + Flavor.kt tanpa Rust)"; else echo "GAGAL D9: fallback/seam slice 4 hilang / PrivPairNotif masih const / Flavor.kt tersentuh Rust"; fail=1; fi
   return $fail
 }
 
@@ -134,6 +146,7 @@ case "$SECTION" in
   P1) run_p1;;
   P2) run_p2;;
   P3) run_p3;;
+  P4) run_p4;;
   N9) run_n9;;
   BR) run_br;;
   IXL) run_ixl;;
@@ -147,6 +160,7 @@ case "$SECTION" in
     run_p1 || FAIL=1
     run_p2 || FAIL=1
     run_p3 || FAIL=1
+    run_p4 || FAIL=1
     run_n9 || FAIL=1
     run_br || FAIL=1
     run_ixl || FAIL=1
@@ -157,5 +171,5 @@ case "$SECTION" in
     echo "OVERALL FAIL=$FAIL"
     exit $FAIL
     ;;
-  *) echo "section tidak dikenal: $SECTION (0|P1|P2|P3|N9|BR|IXL|R1|R2|C|D|ALL)"; exit 2;;
+  *) echo "section tidak dikenal: $SECTION (0|P1|P2|P3|P4|N9|BR|IXL|R1|R2|C|D|ALL)"; exit 2;;
 esac

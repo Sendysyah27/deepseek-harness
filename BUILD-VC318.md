@@ -339,3 +339,165 @@ Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S3.md §4):
   kredensial bekerja sama seperti sebelumnya, hanya mesinnya pindah
   ke Rust); T1–T6 slice 2 tetap berlaku apa adanya, dengan catatan
   slice 3 di kepala file. Tidak ada T-baru.
+
+## 9. Slice 4: modul kecil → Rust (vc318 / 4.48.9.152) — SLICE TERAKHIR batch vc318
+
+**Tanggal:** 16 Nov 2026 · **Integrator:** subagent slice 4 (koordinator: Jhon)
+· **Status:** (diisi setelah langkah 7–9).
+
+Versi TETAP 318/4.48.9.152; `RUST_CORE_VERSION` TETAP 2 (slice 2+3+4
+semua ke 2 — JANGAN naikkan). Branch tetap `vc317-rust`. Main TIDAK
+disentuh. Patch set: `vc317-work/work-s4/` (PATCH-S4.md, cargo-verified
+128/128 standalone — basis slice 0+1).
+
+### 9.1 Isi slice 4 (porting murni — perilaku TIDAK diubah)
+
+Merge TIGA ARAH (bukan timpa — file work-s4 diturunkan dari basis slice
+0+1, sedangkan live sudah berisi slice 2 + slice 3; menimpa akan
+menghilangkan fungsi PoW + redactSecrets). Hanya perubahan S4 yang diambil:
+
+| # | File | Sifat |
+|---|---|---|
+| 1 | `harness-core/src/notif_ids.rs` — BARU, 200 baris | 17 konstanta + `all()` + 5 alokator + `checkDuplicates()` + replika `String.hashCode()` Java (unit UTF-16, wrapping i32) |
+| 2 | `harness-core/src/system_bar_spec.rs` — BARU, 61 baris | `Spec{status_color, nav_color, light_icons}` + `spec(is_dark)` (nilai dari `chat_theme`) |
+| 3 | `harness-core/src/ds_safety_strip.rs` — BARU, 193 baris | `strip()` — 4 regex + `trim()` ala Kotlin (lihat koreksi §9.4.2) |
+| 4 | `harness-core/src/mcp_helper.rs` — BARU, 55 baris | `SCRIPT_B64` (2.352 karakter, verbatim dari Kotlin) |
+| 5 | `harness-core/src/session_background.rs` — BARU, 66 baris | `render_allowed` / `should_park_decision` / `background_notice()` |
+| 6 | `harness-core/src/behaviors.rs` — BARU, 192 baris | `Pack` + `PACKS` (6 pak) + `by_id` + `block` |
+| 7 | `harness-core/src/chat_theme.rs` — BARU, 177 baris | 27 warna + 11 angka + `contrast_ratio` / `is_aa_ok` (WCAG 2.1) |
+| 8 | `harness-core/src/lib.rs` | +7 baris: `pub mod` 7 modul baru (`ds_failure`/`pow_solver`/`redact_secrets` dipertahankan) |
+| 9 | `harness-core/src/jni_glue.rs` (356 → 578 baris) | +7 fungsi bulk JSON + `behavior_pack_json`; capabilities += 7 nama + 7 modul; SEMUA fungsi lama dipertahankan (classifyFailureJson + 8 PoW + redactSecrets + helpers `guarded_string_nullable`/`guarded_bytes`/`jbytes_to_rust`/`pow_result_json`); VERSION TETAP 2 |
+| 10 | `harness-core/Cargo.toml` + `Cargo.lock` | **TIDAK BERUBAH** — `regex = "1"` sudah ditambahkan slice 3; lock live byte-identik lock s4 (43 paket) |
+| 11 | `app/src/main/java/harness/core/RustCore.kt` (65 → 74 baris) | +7 deklarasi `external fun` (bulk JSON); VERSION TETAP 2 + 8 fn PoW + redactSecrets dipertahankan |
+| 12 | 7 wrapper Kotlin (lihat §9.1b) | API publik TETAP; implementasi lama → privat `*Kotlin`, seam Rust + fallback + saklar `rust<X>` |
+| 13 | `app/src/main/java/com/senzwh/deepharness/priv/PrivPairNotif.kt` | SATU baris konsekuensial: `const val NOTIF_ID = NotifIds.PRIV_PAIR` → `val NOTIF_ID: Int get() = NotifIds.PRIV_PAIR` (nilai hanya dipakai runtime di `nm.notify`) |
+| — | `Flavor.kt` | **DIKECUALIKAN (deferred)** — TIDAK diport, TIDAK disentuh (langkah 0d `build.py` me-rewrite `Flavor.kt` saat build Pure) |
+
+### 9.1b Tujuh wrapper Kotlin
+
+| File | Perubahan |
+|---|---|
+| `NotifIds.kt` | `const val` (17) → `val` getter Rust-backed (di-cache sekali via bulk JSON); 5 alokator via Rust + fallback `*Kotlin` privat; `all()`/`checkDuplicates()` dari getter |
+| `SystemBarSpecVc309.kt` | `spec()` via Rust + fallback `specKotlin` privat |
+| `DsSafetyStrip.kt` | `strip()` via Rust + fallback `stripKotlin` privat (regex Kotlin dipertahankan) |
+| `McpHelper.kt` | `const val SCRIPT_B64` → `val` getter (Rust, di-cache sekali) + `SCRIPT_B64_KOTLIN` privat (literal utuh dipertahankan) |
+| `SessionBackgroundVc304.kt` | 3 fungsi via Rust + fallback `*Kotlin` privat |
+| `Behaviors.kt` | `PACKS` lazy (Rust, validasi 6 pak, else `PACKS_KOTLIN`); `block()` via Rust + fallback `blockKotlin` privat; `byId` atas `PACKS` |
+| `ChatThemeVc306.kt` | 38 `val` → getter Rust-backed (di-cache sekali); `contrastRatio()` via Rust + fallback `contrastRatioKotlin` privat; `isAaOk` tetap memanggil `contrastRatio` |
+
+Simbol JNI baru (7, satu fungsi JSON bulk per modul): `notifIdsJson`,
+`systemBarSpecJson`, `dsSafetyStripJson`, `mcpHelperJson`,
+`sessionBackgroundJson`, `behaviorsJson`, `chatThemeJson` — semua
+`catch_unwind` (pola `guarded_string` slice 1); JSON
+`{"ok":true, ...}` atau `{"ok":false,"error":"rust core error"}`.
+Total simbol JNI kini 21 (4 basis + 8 PoW + 1 redact + 7 slice 4);
+`external fun` di `RustCore.kt` kini 20.
+
+Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S4.md §4):
+- `String.hashCode()` Java: iterasi unit UTF-16 + `wrapping_mul(31)` +
+  `wrapping_add` (emoji = surrogate pair: `"\u{1F600}emoji"` →
+  `-1233692477`; `"test"` → `3556498`).
+- Regex Java → `regex` crate: tanpa flag `(?-u)` (ditolak crate);
+  `\s`/`\w` diganti kelas ASCII eksplisit; `\b` sesudah `ds_safety`
+  diganti `(?:>|[^A-Za-z0-9_][^>]*>)`. Dampak: `Safety: café` →
+  `caf` termakan + `é` tersisa (sama seperti Kotlin);
+  `<ds_safetyé>` dikenali sebagai tag; `<ds_safetyfoo>` bukan tag.
+- Konstanta di-cache sekali (`by lazy`) — akses pertama bisa di main
+  thread (satu panggilan JNI kecil, dicatat).
+
+### 9.2 Verifikasi basis (langkah 0 — semua LULUS)
+
+- (a) `diff -rq --exclude=target harness-core/ vc317-work/branch-stage/harness-core/`
+  → IDENTIK (sebelum patch); live == vc318 pasca-slice-3
+  (`redact_secrets` ada, VERSION 2).
+- (b) Live 7 file target Kotlin + `RustCore.kt` + `PrivPairNotif.kt`
+  vs `vc317-work/merge/` → IDENTIK (asli vc316) sebelum ditimpa wrapper.
+- (c) Diff S4 vs basis slice 0+1: tepat file di §9.1; `Cargo.lock` s4
+  vs live byte-identik; `Cargo.toml` hanya beda komentar (regex sudah
+  ada di live) → keduanya TIDAK diubah.
+- (d) `grep`: satu-satunya pemakai posisi `const` atas `NotifIds.*` di
+  tree = `PrivPairNotif.kt:23`; `McpHelper.SCRIPT_B64` hanya dipakai
+  runtime (konkatenasi di `Tools.kt`).
+
+### 9.3 Angka tes
+
+#### cargo test (live tree)
+- Perintah: `cargo test --offline --manifest-path harness-core/Cargo.toml`
+- **174/174 lulus, 0 gagal** (103 slice 1 + 36 slice 2 + 10 slice 3
+  + 25 baru slice 4).
+
+#### Suite JVM lokal (VM, `vc317-work/work-impl/run-tests-vc318-s4-coord.sh`)
+- **763/764** — P1 103/103 + P2 36/36 + P3 94/94 + **P4 235/235 (BARU:
+  paritas wrapper slice 4)** + N9 46/46 + BR 45/45 + IXL 72/72 (varian
+  CI-adapt) + R1 64/64 + R2 68/69 + C (tepat 11 file .kt berubah + 0 baru;
+  Flavor.kt TIDAK berubah) + D1–D9 (D9 BARU: fallback slice 4
+  dipertahankan).
+- Satu-satunya gagal = **R2-4.1** (assert STRING PERSIS usang warisan
+  vc315 — SAMA seperti vc317/vc318-slice-2/slice-3, ditoleransi eksplisit;
+  bukan regresi).
+- Tes P4 baru: `vc317-work/work-s4/TestSmallModulesVc318.kt` (235 cek:
+  17 konstanta NotifIds + all()/duplikat + 6 vektor hashCode + 34 cek
+  alokator + SystemBarSpec 11 + DsSafetyStrip 29 + McpHelper 5 +
+  SessionBackground 11 + Behaviors 32 + ChatTheme 57 (27 warna + 11
+  angka + 3 desimal + alias + 7 kontras + 8 isAaOk) + seam/fallback 27).
+  Juga masuk CI (`tests/TestSmallModulesVc318.kt` + step P4 di workflow
+  + D9 di `run-suite-ci.sh`).
+- Log: `vc317-work/work-impl/run-tests-vc318-s4-coord.log`.
+
+### 9.4 Deviasi / temuan selama integrasi (jujur)
+
+1. **Wrapper `ChatThemeVc306.kt` dari patch set TIDAK BISA DIKOMPILASI
+   (bug patch set, bukan kode):** 5 baris ikon ditulis
+   `val iconXs: Int get() = themeConst("iconXs", 16 // komentar)` —
+   komentar `//` menelan kurung tutup `)` sehingga kotlinc gagal
+   76 error (`expecting ')'` + `unresolved reference: iconLg` dkk.
+   di `MainActivity.kt`). PATCH-S4 §5 mengakui Kotlin tidak dikompilasi
+   di slice ini. Perbaikan integrator (ronde 1): komentar dipindah ke
+   atas barisnya (teks komentar dipertahankan, nilai tidak berubah),
+   di ketiga salinan (live + `work-impl/integrated` + `work-s4/
+   integrated`). Re-run suite: kompilasi lolos.
+2. **Klaim PATCH-S4 §4.3 tentang `trim()` Kotlin SALAH — dan tes P4
+   menangkap divergensi Rust-nya (ronde 2, temuan terpenting slice
+   ini):** klaim awal: "`trim()` Kotlin hanya buang char kode ≤ U+0020
+   (NBSP TIDAK dibuang)". Probe JVM (kotlinc 1.9.20 + JDK 21,
+   `/tmp/nbsp-probe/`, 16 Nov 2026) MEMBUKTIKAN sebaliknya:
+   `"\u00A0teks\u00A0".trim()` == `"teks"`; no-arg `trim()` ==
+   `trim { it.isWhitespace() }` (Java `Character.isWhitespace`),
+   BUKAN `trim { it <= ' ' }` (NBSP + EM SPACE U+2003 dipertahankan
+   yang kedua; FS U+001C dibuang keduanya; NBSP tengah dipertahankan).
+   Akibatnya `kotlin_trim` Rust lama (`<= 0x20`) MENYIMPANG dari
+   Kotlin asli untuk teks ber-NBSP di tepi — begitu pula
+   `str::trim()` Rust (Unicode White_Space tidak mencakup U+00A0 /
+   U+001C–U+001F). Perbaikan integrator: `kotlin_trim` kini memakai
+   himpunan Java `Character.isWhitespace` eksplisit (0x09–0x0D, 0x20,
+   0x1C–0x1F, 0x85, 0xA0, 0x1680, 0x2000–0x200A, 0x2028, 0x2029,
+   0x202F, 0x205F, 0x3000) + tes Rust `kotlin_trim_keeps_nbsp`
+   diganti `kotlin_trim_matches_kotlin_is_whitespace` (NBSP/EM/FS
+   tepi dibuang, NBSP tengah dipertahankan, `strip` ujung-ke-ujung).
+   Ini BUKAN perubahan perilaku — ini MENGEMBALIKAN perilaku ke
+   Kotlin asli (porting murni); yang diperbaiki adalah klaim patch
+   set yang salah. Cargo tetap 174/174; P4 235/235 (cek NBSP
+   diperbaiki + 1 cek NBSP tengah baru). Perbaikan yang sama
+   diterapkan ke salinan `work-s4/harness-core/src/ds_safety_strip.rs`
+   supaya patch set tidak tertinggal dalam keadaan salah.
+3. **Hitungan PATCH-S4 §1/§4 sedikit meleset (kosmetik):** warna
+   ChatTheme = 27 (bukan 26) + angka = 11 (bukan 12); total 38 nama
+   di `themeNames` tetap cocok. Tes P4 memakai 27 + 11.
+4. **Live tree TIDAK punya `tests/` / `.github/` di root** (keduanya
+   hanya ada di `branch-stage/` = cermin push). Wire P4 CI dilakukan
+   langsung di `branch-stage/tests/run-suite-ci.sh` +
+   `branch-stage/.github/workflows/android.yml` (pola yang sama seperti
+   slice 2/3).
+
+### 9.5 Push branch vc317-rust
+
+(diisi setelah langkah 6)
+
+### 9.6 CI + APK slice 4
+
+(diisi setelah langkah 7–9)
+
+## PENUTUP BATCH vc318 — (diisi setelah APK VM slice 4 terverifikasi)
+
+APK VM kanonis batch vc318 = `vc317-work/apk-vc318-s4-vm/` (slice
+terakhir, berisi semua slice 2+3+4).

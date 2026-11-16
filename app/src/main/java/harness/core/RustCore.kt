@@ -43,6 +43,15 @@ object RustCore {
      */
     external fun redactSecrets(input: String): String?
 
+    // ---- Slice 4: modul kecil (bulk JSON) ----
+    external fun notifIdsJson(origin: String, key: String, workerId: String): String
+    external fun systemBarSpecJson(isDark: Boolean): String
+    external fun dsSafetyStripJson(text: String): String
+    external fun mcpHelperJson(): String
+    external fun sessionBackgroundJson(turnSessionId: Long, currentSessionId: Long, turnActive: Boolean): String
+    external fun behaviorsJson(id: String): String
+    external fun chatThemeJson(fg: Int, bg: Int): String
+
     // ---- Slice 2: PowSolver (PoW DeepSeekHashV1) ----
     /** SHA3-256 sebagai 64 digit hex lowercase; "" / bukan-hex = gagal. */
     external fun powSha3Hex(input: String): String
