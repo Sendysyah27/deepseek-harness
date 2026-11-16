@@ -35,6 +35,12 @@ name: Android vc317
 # (rust 88 + kotlin 50 fallback); suite 1472/1473 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION 5->6; DsApiClient TIDAK disentuh (split-nya slice 11);
 # transport Gmail IMAP/SMTP + openEventStream + listener loopback tetap Kotlin.
+# Slice 9 vc325: server :4198 via workerEndpointJson — WorkerEndpoint/
+# WorkerEndpointLogic (parse_route + HMAC + framing + idempotency) via seam
+# worker_endpoint.rs (sha2, tanpa tokio/dep baru); P11 302 cek
+# (rust 151 + kotlin 151 fallback); suite 1774/1775 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 6->7; loop accept/dispatch/token/kuota tetap Kotlin;
+# WorkerLogic/WorkerQueue/WorkerJanitorLogic/WorkerRegistry TIDAK disentuh.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -139,6 +145,9 @@ jobs:
 
       - name: Suite P10 HTTP vc324 (138 cek, rust 88 + kotlin 50)
         run: bash tests/run-suite-ci.sh P10
+
+      - name: Suite P11 Server :4198 vc325 (302 cek, rust 151 + kotlin 151)
+        run: bash tests/run-suite-ci.sh P11
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

@@ -37,6 +37,7 @@ pub mod sse;
 pub mod system_bar_spec;
 pub mod tool_registry;
 pub mod tool_registry_data;
+pub mod worker_endpoint;
 
 mod jni_glue;
 

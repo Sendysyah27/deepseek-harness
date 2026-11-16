@@ -25,6 +25,7 @@ use crate::skill_trigger;
 use crate::sqlite;
 use crate::system_bar_spec;
 use crate::tool_registry;
+use crate::worker_endpoint;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
@@ -41,7 +42,10 @@ use std::sync::Once;
 /// +3 fungsi bulk JSON `toolRegistryJson`/`agentPromptJson`/`skillTriggerJson`.
 /// v5 = slice 7 (sqlite): +1 fungsi `sqliteJson` (rusqlite generik).
 /// v6 = slice 8 (http): +1 fungsi `httpJson` (ureq + logika murni HTTP).
-pub const RUST_CORE_VERSION: jint = 6;
+/// v7 = slice 9 (worker_endpoint): +1 fungsi `workerEndpointJson`
+/// (routing/auth/HMAC/framing/idempotensi server :4198 — TANPA tokio;
+/// loop server hidup tetap Kotlin, BUILD-VC325.md §2.2).
+pub const RUST_CORE_VERSION: jint = 7;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -187,14 +191,16 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "concatApiJson",
                 "toolRegistryJson", "agentPromptJson", "skillTriggerJson",
                 "sqliteJson",
-                "httpJson"],
+                "httpJson",
+                "workerEndpointJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
                 "concat_api_client",
                 "tool_registry", "agent_prompt", "skill_trigger",
                 "sqlite", "sqlite_schema",
-                "http", "sse"]
+                "http", "sse",
+                "worker_endpoint"]
         })
         .to_string())
     })
@@ -852,5 +858,25 @@ pub extern "C" fn Java_harness_core_RustCore_sqliteJson(
     guarded_string_nullable(env, |env| {
         let req = jstring_to_rust(env, &request);
         sqlite::sqlite_json(&req).ok()
+    })
+}
+
+// Slice 9: server :4198 — `{"op":"parse_route"|"path_matches_other_method"|
+// "parse_query"|"bearer_token"|"is_authorized"|"is_safe_name"|
+// "slice_preview"|"preview_chars"|"hmac_sha256_hex"|"sign_queue_text"|
+// "has_queue_signature"|"verify_queue_text"|"worker_scoped"|
+// "parse_headers"|"build_response"|"idempotency_key",...}`.
+// Respons `{"ok":true,...}` / `{"ok":false,...}`; `null` = Rust gagal
+// (panic/error di boundary) -> pemanggil Kotlin WAJIB fallback ke
+// implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_workerEndpointJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        worker_endpoint::worker_endpoint_json(&req).ok()
     })
 }

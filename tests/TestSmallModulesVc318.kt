@@ -23,7 +23,7 @@
 //     desimal independen + alias darkCodeBg) + rasio kontras (hitam-putih
 //     21.0, sama 1.0, simetris, 4 pasangan tema) + isAaOk lolos/gagal.
 // 10. Seam + fallback dipertahankan: 7 saklar default true,
-//     RustCore.VERSION == 6, 7 external fun di RustCore.kt, fallback
+//     RustCore.VERSION == 7, 7 external fun di RustCore.kt, fallback
 //     *Kotlin dipertahankan per file, .so absen di JVM ->
 //     RustCore.available false (jalur fallback teruji),
 //     PrivPairNotif.NOTIF_ID getter (bukan const) + nilai 7708,
@@ -397,7 +397,7 @@ fun main(args: Array<String>) {
     check("10. rustSessionBackgroundVc304 default true", SessionBackgroundVc304.rustSessionBackgroundVc304)
     check("10. rustBehaviors default true", Behaviors.rustBehaviors)
     check("10. rustChatTheme default true", ChatThemeVc306.rustChatTheme)
-    check("10. RustCore.VERSION == 6", RustCore.VERSION == 6, "VERSION=${RustCore.VERSION}")
+    check("10. RustCore.VERSION == 7", RustCore.VERSION == 7, "VERSION=${RustCore.VERSION}")
     check("10. RustCore: external fun notifIdsJson", rustCoreSrc.contains("external fun notifIdsJson(origin: String, key: String, workerId: String): String"))
     check("10. RustCore: external fun systemBarSpecJson", rustCoreSrc.contains("external fun systemBarSpecJson(isDark: Boolean): String"))
     check("10. RustCore: external fun dsSafetyStripJson", rustCoreSrc.contains("external fun dsSafetyStripJson(text: String): String"))

@@ -507,7 +507,14 @@ object WorkerEndpoint {
             prev2 = prev
             prev = c
         }
+        // Slice 9 (vc325): parse teks header lewat seam Rust; baca
+        // byte-per-byte dari stream tetap Kotlin (I/O stream).
         val text = headerBytes.toString(Charsets.UTF_8)
+        WorkerEndpointSeam.parseHeaders(text)?.let { return Pair(it.reqLine, it.headers) }
+        return parseHeadersKotlin(text)
+    }
+
+    private fun parseHeadersKotlin(text: String): Pair<String, Map<String, String>>? {
         val lines = text.split("\r\n")
         val reqLine = lines.firstOrNull() ?: return null
         val headers = HashMap<String, String>()
@@ -602,6 +609,11 @@ object WorkerEndpoint {
      *  diturunkan dari isi permintaan supaya retry sesudah 503 yang
      *  tidak membawa header pun tetap ter-dedup. */
     private fun idempotencyKey(route: WorkerEndpointLogic.Route, headers: Map<String, String>, body: String): String? {
+        WorkerEndpointSeam.idempotencyKey(route, headers, body)?.let { return it.key }
+        return idempotencyKeyKotlin(route, headers, body)
+    }
+
+    private fun idempotencyKeyKotlin(route: WorkerEndpointLogic.Route, headers: Map<String, String>, body: String): String? {
         val hdr = headers["idempotency-key"]?.trim()
         if (!hdr.isNullOrBlank()) return "hdr:" + hdr.take(128)
         return when (route.action) {
@@ -949,11 +961,18 @@ object WorkerEndpoint {
 
     private fun sendJson(sock: Socket, code: Int, obj: JSONObject, retryAfterSec: Int? = null) {
         val body = obj.toString().toByteArray(Charsets.UTF_8)
-        val retryHead = if (retryAfterSec != null) "Retry-After: $retryAfterSec\r\n" else ""
-        val head = "HTTP/1.1 $code ${reason(code)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n$retryHead\r\n"
+        // Slice 9 (vc325): head respons dibangun seam Rust; tulis
+        // byte ke socket tetap Kotlin (I/O stream).
+        val head = WorkerEndpointSeam.buildResponseHead(code, body.size, retryAfterSec)
+            ?: buildResponseHeadKotlin(code, body.size, retryAfterSec)
         val os = sock.getOutputStream()
         os.write(head.toByteArray(Charsets.UTF_8))
         os.write(body)
         os.flush()
+    }
+
+    private fun buildResponseHeadKotlin(code: Int, bodyBytes: Int, retryAfterSec: Int? = null): String {
+        val retryHead = if (retryAfterSec != null) "Retry-After: $retryAfterSec\r\n" else ""
+        return "HTTP/1.1 $code ${reason(code)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: $bodyBytes\r\nConnection: close\r\n$retryHead\r\n"
     }
 }

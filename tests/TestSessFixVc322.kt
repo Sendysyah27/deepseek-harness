@@ -243,7 +243,7 @@ fun main(args: Array<String>) {
     // adalah .../com/senzwh lalu .../com, bukan .../java — 5.18 gagal
     // 2x di CI karena jalur ini.)
     val rcSrc = listOf(File(tree, "harness/core/RustCore.kt"), File(tree.parentFile, "harness/core/RustCore.kt"), File(tree.parentFile?.parentFile, "harness/core/RustCore.kt"), File(tree.parentFile?.parentFile?.parentFile, "harness/core/RustCore.kt")).firstOrNull { it.exists() }?.readText().orEmpty()
-    check("5.18 RUST_CORE_VERSION 6 (slice 8 vc324 menambah httpJson)", "const val VERSION = 6" in rcSrc)
+    check("5.18 RUST_CORE_VERSION 7 (slice 9 vc325 menambah workerEndpointJson)", "const val VERSION = 7" in rcSrc)
 
     println("== §6. Sesi pendek + jalur lain tidak berubah ==")
     check("6.1 anggaran riwayat vc321 tetap (60/60000 normal, 30/30000 panjang)",

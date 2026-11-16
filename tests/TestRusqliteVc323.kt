@@ -114,7 +114,7 @@ fun main(args: Array<String>) {
     println("== P9 TestRusqliteVc323 mode=$mode tree=$treeDir tmp=$tmpDir ==")
 
     // ---------- §1 seam + VERSION ----------
-    cek("1.1 RustCore.VERSION == 6", RustCore.VERSION == 6)
+    cek("1.1 RustCore.VERSION == 7", RustCore.VERSION == 7)
     cek("1.2 RustCore.available == rustMode", RustCore.available == rustMode)
     if (rustMode) {
         val caps = try {
@@ -131,7 +131,7 @@ fun main(args: Array<String>) {
         } == true)
     } else {
         cek("1.3 kotlin: capabilities tak dipakai (so absen)", true)
-        cek("1.4 kotlin: VERSION tetap 6", RustCore.VERSION == 6)
+        cek("1.4 kotlin: VERSION tetap 7", RustCore.VERSION == 7)
     }
 
     // ---------- §10 (kotlin) fallback SqliteSeam tanpa .so ----------
@@ -414,7 +414,7 @@ fun main(args: Array<String>) {
         "../../harness/core/RustCore.kt",
         "../../../harness/core/RustCore.kt"
     ).map { File(treeDir, it) }.firstOrNull { it.exists() }?.readText().orEmpty()
-    cek("12.7 RustCore.kt VERSION 6 + sqliteJson", rcText.contains("const val VERSION = 6") && rcText.contains("external fun sqliteJson"))
+    cek("12.7 RustCore.kt VERSION 7 + sqliteJson", rcText.contains("const val VERSION = 7") && rcText.contains("external fun sqliteJson"))
     // Identitas SQL: SQL wrapper == SQL di tes (diwakili string kunci).
     cek("12.8 SQL EventDb identik (latest)", ev.contains("SELECT ts,type,pkg,text FROM events ORDER BY id DESC LIMIT ?"))
     cek("12.9 SQL ArtifactStore identik (meta select)", ar.contains("(SELECT COUNT(*) FROM artifact_versions v WHERE v.artifact_id = a.id)"))

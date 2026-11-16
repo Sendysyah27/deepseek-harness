@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 6
+    const val VERSION = 7
 
     val available: Boolean
 
@@ -132,4 +132,18 @@ object RustCore {
      * fallback ke implementasi Kotlin lama.
      */
     external fun httpJson(request: String): String?
+
+    // ---- Slice 9: Server :4198 (WorkerEndpoint + WorkerEndpointLogic) ----
+    /**
+     * Logika murni endpoint worker :4198. Request JSON `{"op":...}`:
+     * `parse_route`, `path_matches_other_method`, `parse_query`,
+     * `bearer_token`, `is_authorized`, `is_safe_name`, `slice_preview`,
+     * `preview_chars`, `hmac_sha256_hex`, `sign_queue_text`,
+     * `has_queue_signature`, `verify_queue_text`, `worker_scoped`,
+     * `parse_headers`, `build_response`, `idempotency_key`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama.
+     */
+    external fun workerEndpointJson(request: String): String?
 }
