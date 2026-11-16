@@ -381,4 +381,56 @@ byte-identik server itu.
 
 ## §8. Push + CI + APK
 
-(TODO.)
+- **Push branch `vc317-rust`: commit
+  `938cd51f084ae39056d6dcc0e7dbebc4e8c3814e`** (488 file,
+  via `gh.py push-tree`; HEAD remote sebelumnya `4a8cd9e7`
+  tidak bergerak sebelum push). Delta vs remote diverifikasi
+  blob SHA 20/20 (4 baru + 16 berubah) + 0 file di luar delta.
+  Main TIDAK disentuh.
+- **CI run 43897736135 — SUCCESS** (completed):
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43897736135
+  (1 job `build`; push 16 Nov 15:34 UTC, selesai ~15:44 UTC).
+  Suite CI menjalankan P1–P11 + C + D (termasuk P11 302 cek
+  + D15) + build kedua APK.
+- **Artifact CI** (`vc317-work/apk-vc325-ci/`,
+  `harness-vc317-apks.zip` 29.098.116 byte):
+  - Main `DeepSeekHarness-v4.48.9.159.apk` 14.670.956 byte,
+    MD5 `202271c62ea094aa8f8fd7b273a81f6c`,
+    SHA256 `52c0b044556c251b10194d4ab361a7185488073a9eef8b174432928ca1c9b54a`.
+  - Pure `Harness-v4.48.9.159-pure.apk` 14.621.804 byte,
+    MD5 `b88dc45423f8694a439a3cf9b5bc8f43`,
+    SHA256 `8876281b74dd10110291452e56417cc620833fc8fcfabd0396f26ba74e792c8b`.
+  - Keduanya: apksigner Verifies, v2+v3 true, 1 signer,
+    aapt2 325/4.48.9.159, `libharness_core.so` 4.180.208 byte
+    di `lib/arm64-v8a`, simbol `workerEndpointJson` ADA,
+    `hsurr:` 0, arm64-v8a saja.
+  - Sidik jari CI (kunci runner, BEDA — ekspektasi, bukan
+    gagal): Main `d80cf8ee3aad977ed70df8ee3635b94629e0add287c1e787db02b4ba78b2427d`,
+    Pure `ac73930c2200d5130d875f1568bc15273e7f3e282cfa4f8692a918881c32e6d2`.
+- **Build VM** (`vc317-work/apk-vc325-vm/`, JH `~/jdk-21-sys`,
+  langkah Rust rust-lld + CC 0r; clang NDK hidup 21.0.0 —
+  TIDAK perlu restore dari zip cache):
+  - Main `DeepSeekHarness-v4.48.9.159.apk` 14.851.180 byte,
+    MD5 `ad2087e884dd4a286c01cc08e2576155`,
+    SHA256 `d057b34758dc083dc9805024a79782585493f7962ea7c47b57d704dd9549863d`,
+    **sidik jari `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    — GERBANG COCOK (sama vc316, bisa menimpa)**.
+  - Pure `Harness-v4.48.9.159-pure.apk` 14.802.028 byte,
+    MD5 `74a9f6262af628c86c45bd708c7b1f47`,
+    SHA256 `5a78c1d0e9eeca6efe0a268bc54037d2c6768c1865fd1ed85402fbfaba6f95e8`,
+    **sidik jari `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    — GERBANG COCOK (sama vc316, bisa menimpa)**.
+  - Keduanya: apksigner Verifies, v2+v3 true, 1 signer,
+    aapt2 325/4.48.9.159, `libharness_core.so` 4.753.664 byte
+    di `lib/arm64-v8a`, simbol `workerEndpointJson` ADA,
+    `hsurr:` 0, arm64-v8a saja.
+  - Catatan: `.so` VM (4.753.664 byte) lebih besar dari `.so`
+    CI (4.180.208 byte) — toolchain runner CI ≠ VM (rustc/
+    LLVM berbeda); bukan masalah: sidik jari VM COCOK dengan
+    vc316 (gerbang), simbol + perilaku terverifikasi sama.
+- **TES perangkat**: `vc317-work/TES-VC325-SIAP-TEMPEL.txt`
+  (bahasa bayi; T1–T6 vc322 tetap berlaku + T7–T9 baru
+  server :4198 via panel Worker). Tes token/kuota detail
+  via curl = tugas Jhon (token tidak terlihat di layar).
+- **Doc-sync**: BUILD §8 + TES di-push sebagai commit
+  lanjutan (lihat riwayat branch).

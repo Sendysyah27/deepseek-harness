@@ -1,0 +1,81 @@
+TES-VC325-SIAP-TEMPEL — Slice 9: Server :4198 via Rust (vc325, 4.48.9.159)
+============================================================================
+
+CATATAN PENTING — BACA DULU:
+Versi ini TIDAK mengubah apa pun yang kelihatan di layar. Yang berubah
+hanya "mesin di dalam" server kecil di HP sendiri (port 4198) yang
+melayani para worker: dulu mesin lama (Kotlin), sekarang mesin baru
+(Rust) — tapi caranya, isinya, dan hasilnya SAMA PERSIS. Kalau ada
+yang beda di layar, itu BUG — laporkan.
+
+Server 4198 itu apa (bahasa bayi)? HP kamu jadi "server mini" buat
+para worker (agen-agen kecil yang kerja di latar). Mereka daftar,
+dijalankan, dihentikan, dan dicek lewat pintu HTTP di alamat
+127.0.0.1:4198 — hanya dari dalam HP sendiri, tidak bisa diakses
+dari luar. Pintu itu dikunci token (kata sandi rahasia); token salah
+= ditolak (401).
+
+Jadi: T1–T6 dari TES-VC322 TETAP BERLAKU semua (tes sesi DeepSeek:
+N perintah di 1 sesi "Utama" → target tetap 1 sesi baru di web
+DeepSeek). Di bawah ini hanya T TAMBAHAN untuk versi ini.
+
+--------------------------------------------------------------------------------
+T7 — SERVER 4198 HIDUP + 1 WORKER BISA DIJALANKAN (tes utama vc325)
+--------------------------------------------------------------------------------
+Tujuan: memastikan server mini tetap hidup dan worker tetap bisa
+dijalankan sesudah mesinnya diganti.
+
+Langkah:
+  1. Buka app Harness (versi vc325).
+     LULUS bila: app terbuka normal, tidak force-close.
+  2. Buka panel Worker (Setup 67 / panel Worker di app).
+     LULUS bila: status server 4198 tertulis HIDUP / berjalan
+     (bukan "mati" / "tidak jalan").
+  3. Jalankan 1 worker dari panel (spawn) seperti biasa.
+     LULUS bila: worker muncul di daftar dengan status berjalan,
+     dan log-nya keluar normal (tidak kosong, tidak ada kartu merah).
+  4. Tunggu 5 menit (watchdog mengecek tiap 5 menit).
+     LULUS bila: server MASIH hidup dan worker MASIH berjalan.
+
+GAGAL bila: status server "mati" padahal service standby jalan /
+worker tidak mau jalan / worker langsung mati / log kosong / app
+crash. Catat di langkah mana + screenshot, kabari Jhon.
+JANGAN lanjut pakai versi ini untuk kerja penting sebelum Jhon
+bilang aman.
+
+--------------------------------------------------------------------------------
+T8 — WORKER BISA DIHENTIKAN + STATUS PANEL JUJUR
+--------------------------------------------------------------------------------
+  1. Hentikan worker yang tadi dijalankan (stop dari panel).
+     LULUS bila: worker hilang dari daftar berjalan / statusnya
+     berubah jadi berhenti, dan panel tidak lagi menampilkan
+     worker itu sebagai "berjalan".
+  2. Matikan service standby app, lalu nyalakan lagi.
+     LULUS bila: server 4198 ikut mati saat service mati, lalu
+     hidup lagi saat service nyala (status panel berubah sesuai
+     kenyataan — tidak "hidup" padahal mati).
+
+GAGAL bila: worker yang sudah dihentikan masih tampil "berjalan" /
+server tampil "hidup" padahal sudah dimatikan / sebaliknya.
+
+--------------------------------------------------------------------------------
+T9 — CHAT + FITUR LAIN TETAP NORMAL (pastikan tidak ada yang ikut rusak)
+--------------------------------------------------------------------------------
+  1. Buka chat "Utama", kirim 1 perintah biasa.
+     LULUS bila: jawaban masuk normal seperti biasa.
+  2. Kalau kamu pakai Gmail / tool MCP, pakai 1x seperti biasa.
+     LULUS bila: hasilnya normal (lihat T9–T11 TES-VC324).
+     Kalau tidak pakai, T9 bagian 2 boleh dilewati — tulis
+     "T9 dilewati (tidak pakai Gmail/MCP)".
+
+--------------------------------------------------------------------------------
+CATATAN UNTUK JHON (bukan untuk Sendy):
+Tes token/kuota detail (curl ke 127.0.0.1:4198: token benar → 200,
+token salah/tanpa token → 401, spawn melebihi kuota → ditolak,
+idempotency key sama → tidak spawn ganda) dilakukan Jhon dari
+Termux, karena token TIDAK terlihat di layar dan TIDAK BOLEH
+ditulis di chat. Kalau T7–T9 di atas LULUS dan T1–T6 vc322 tetap
+LULUS, vc325 AMAN untuk dipakai harian.
+
+Selesai. Kalau T7 (+T8) LULUS, T9 LULUS/dilewati beralasan, dan
+T1–T6 vc322 tetap LULUS, vc325 AMAN.
