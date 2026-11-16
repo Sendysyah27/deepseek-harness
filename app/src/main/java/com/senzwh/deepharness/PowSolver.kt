@@ -1,5 +1,7 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
+
 /**
  * Solver Proof-of-Work DeepSeekHashV1: SHA3-256 murni Kotlin (Keccak-f[1600]),
  * tanpa dependensi platform — untuk mode API internal DeepSeek (eksperimen).
@@ -7,6 +9,16 @@ package com.senzwh.deepharness
  * Implementasi Keccak mengikuti struktur publik tiny_sha3 (M.-J. Saarinen).
  */
 object PowSolver {
+
+    /**
+     * Saklar A/B slice 2 (vc317): bila core Rust tersedia (.so ke-load
+     * + versi seam cocok), solve + hash jalan di Rust; bila tidak,
+     * fallback ke implementasi Kotlin lama di bawah (*Kotlin — JANGAN
+     * dihapus). Sekali Rust melempar, saklar dimatikan untuk sisa proses.
+     * Rust TIDAK dipanggil di main thread (pemanggil sudah di worker
+     * thread: DsApiClient/SlotClient solve di latar).
+     */
+    var rustPowSolver: Boolean = true
 
     private val RC = longArrayOf(
         0x0000000000000001L, 0x0000000000008082L, (0x800000000000808auL).toLong(),
@@ -52,11 +64,11 @@ object PowSolver {
     }
 
     /** SHA3-256 (rate 136 byte, suffix 0x06, pad10*1). */
-    fun sha3_256(input: ByteArray): ByteArray = keccak256(input, 0)
+    private fun sha3_256Kotlin(input: ByteArray): ByteArray = keccak256(input, 0)
 
     /** DeepSeekHashV1 ASLI (dari reverse-engineering WASM resmi): SHA3-256 tetapi
      *  Keccak-f[1600] MELOMPATI round 0 — hanya rounds 1..23. */
-    fun dsHashV1(input: ByteArray): ByteArray = keccak256(input, 1)
+    private fun dsHashV1Kotlin(input: ByteArray): ByteArray = keccak256(input, 1)
 
     private fun keccak256(input: ByteArray, fromRound: Int): ByteArray {
         val rate = 136
@@ -93,15 +105,15 @@ object PowSolver {
         }
     }
 
-    fun sha3Hex(input: String): String {
-        val digest = sha3_256(input.toByteArray(Charsets.UTF_8))
+    private fun sha3HexKotlin(input: String): String {
+        val digest = sha3_256Kotlin(input.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder()
         for (b in digest) sb.append(String.format("%02x", b))
         return sb.toString()
     }
 
-    fun dsHashV1Hex(input: String): String {
-        val digest = dsHashV1(input.toByteArray(Charsets.UTF_8))
+    private fun dsHashV1HexKotlin(input: String): String {
+        val digest = dsHashV1Kotlin(input.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder()
         for (b in digest) sb.append(String.format("%02x", b))
         return sb.toString()
@@ -120,7 +132,7 @@ object PowSolver {
     /** Skema PoW DeepSeek ASLI: server memilih answer di [0, difficulty) dan menerbitkan
      *  challenge = DeepSeekHashV1(salt + "_" + expire_at + "_" + answer).
      *  Kita cari nonce n di rentang yang sama sampai hash-nya PERSIS sama dengan challenge. */
-    fun solveDeepSeek(challengeHex: String, salt: String, expireAt: Long, difficulty: Long): PowResult? {
+    private fun solveDeepSeekKotlin(challengeHex: String, salt: String, expireAt: Long, difficulty: Long): PowResult? {
         val start = System.currentTimeMillis()
         val target = hexToBytes(challengeHex)
         val prefix = (salt + "_" + expireAt.toString() + "_").toByteArray(Charsets.UTF_8)
@@ -130,7 +142,7 @@ object PowSolver {
             val input = ByteArray(prefix.size + nonceBytes.size)
             System.arraycopy(prefix, 0, input, 0, prefix.size)
             System.arraycopy(nonceBytes, 0, input, prefix.size, nonceBytes.size)
-            val digest = dsHashV1(input)
+            val digest = dsHashV1Kotlin(input)
             if (digest.contentEquals(target)) {
                 val sb = StringBuilder()
                 for (b in digest) sb.append(String.format("%02x", b))
@@ -145,13 +157,13 @@ object PowSolver {
 
     /** Versi cepat untuk difficulty asli DeepSeek (puluhan ribu+): tanpa hex/BigInteger per percobaan,
      *  bandingkan byte digest langsung ke target 32-byte. Kondisi: digest < target (unsigned). */
-    fun solveFast(challenge: String, salt: String, difficulty: Long, maxTries: Long = 50_000_000): PowResult? =
-        solveFmt(challenge, salt, difficulty, "A", maxTries)
+    private fun solveFastKotlin(challenge: String, salt: String, difficulty: Long, maxTries: Long = 50_000_000): PowResult? =
+        solveFmtKotlin(challenge, salt, difficulty, "A", maxTries)
 
     /** Varian format string PoW (n = nonce, e = expire_at):
      *  A = c+s+n (referensi) | B = s+c+n | C = c_s_n | D = c+s+e+n | E = c_s_e_n
      *  F = n+c+s | G = c+n+s | H = s+n+c */
-    fun solveFmt(challenge: String, salt: String, difficulty: Long, format: String, expireAt: Long = 0, maxTries: Long = 3_000_000): PowResult? {
+    private fun solveFmtKotlin(challenge: String, salt: String, difficulty: Long, format: String, expireAt: Long = 0, maxTries: Long = 3_000_000): PowResult? {
         val start = System.currentTimeMillis()
         val targetBI = java.math.BigInteger.ONE.shiftLeft(256)
             .divide(java.math.BigInteger.valueOf(difficulty + 1))
@@ -179,7 +191,7 @@ object PowSolver {
             System.arraycopy(prefix, 0, input, 0, prefix.size)
             System.arraycopy(nonceBytes, 0, input, prefix.size, nonceBytes.size)
             System.arraycopy(suffix, 0, input, prefix.size + nonceBytes.size, suffix.size)
-            val digest = sha3_256(input)
+            val digest = sha3_256Kotlin(input)
             var cmp = 0
             for (i in 0 until 32) {
                 val a = digest[i].toInt() and 0xFF
@@ -199,13 +211,13 @@ object PowSolver {
     /** Cari nonce: int(hash) < (2^256)/(difficulty+1). Perbandingan via byte:
      *  hash (32 byte big-endian dari hex) dibandingkan ke target yang dihitung
      *  sebagai threshold byte array sederhana: pakai BigInteger biar eksak. */
-    fun solve(challenge: String, salt: String, difficulty: Long, maxTries: Long = 5_000_000): PowResult? {
+    private fun solveKotlin(challenge: String, salt: String, difficulty: Long, maxTries: Long = 5_000_000): PowResult? {
         val start = System.currentTimeMillis()
         val target = java.math.BigInteger.ONE.shiftLeft(256)
             .divide(java.math.BigInteger.valueOf(difficulty + 1))
         var nonce = 0L
         while (nonce < maxTries) {
-            val hex = sha3Hex(challenge + salt + nonce.toString())
+            val hex = sha3HexKotlin(challenge + salt + nonce.toString())
             val v = java.math.BigInteger(hex, 16)
             if (v < target) {
                 return PowResult(nonce, hex, nonce + 1, System.currentTimeMillis() - start)
@@ -213,5 +225,150 @@ object PowSolver {
             nonce++
         }
         return null
+    }
+
+    // ---- Seam Rust (vc317, slice 2) ----
+
+    /** Panggil Rust bila tersedia; null = fallback ke Kotlin.
+     *  Sekali Rust melempar, saklar `rustPowSolver` dimatikan. */
+    private inline fun <T> rustCall(block: () -> T): T? {
+        if (!rustPowSolver || !RustCore.available) return null
+        return try {
+            block()
+        } catch (t: Throwable) {
+            rustPowSolver = false
+            null
+        }
+    }
+
+    /** Validasi string hex hasil Rust: tepat 64 digit hex lowercase.
+     *  Panic Rust mengembalikan JSON error lewat seam — bentuk itu
+     *  gagal validasi -> fallback Kotlin. */
+    private fun validHashHex(hex: String?): Boolean =
+        hex != null && hex.length == 64 && hex.all { it in '0'..'9' || it in 'a'..'f' }
+
+    private val rustNonceRe = Regex("\"nonce\":(-?\\d+)")
+    private val rustHashRe = Regex("\"hash_hex\":\"([0-9a-f]{64})\"")
+    private val rustTriesRe = Regex("\"tries\":(-?\\d+)")
+    private val rustElapsedRe = Regex("\"elapsed_ms\":(-?\\d+)")
+
+    /** Parse JSON solve dari Rust. null = bukan hasil Rust yang valid
+     *  (ok:false / bentuk tak dikenal) -> fallback Kotlin. `found:false`
+     *  DITANGANI pemanggil (return null = tak ketemu, definitif). */
+    private fun parseRustPowResult(json: String): PowResult? {
+        if (!json.contains("\"ok\":true")) return null
+        if (!json.contains("\"found\":true")) return null
+        val nonce = rustNonceRe.find(json)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return null
+        val hashHex = rustHashRe.find(json)?.groupValues?.getOrNull(1) ?: return null
+        val tries = rustTriesRe.find(json)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return null
+        val elapsed = rustElapsedRe.find(json)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: return null
+        return PowResult(nonce, hashHex, tries, elapsed)
+    }
+
+    /** Satu jalur solve Rust: tiga keadaan (bukan nullable — `null` saja
+     *  tidak bisa membedakan "tak ketemu" dari "fallback"). */
+    private sealed class RustSolve {
+        object Fallback : RustSolve()
+        object NotFound : RustSolve()
+        class Found(val result: PowResult) : RustSolve()
+    }
+
+    /** Parse JSON solve dari Rust. `found:false` -> NotFound (definitif,
+     *  sama seperti `null` Kotlin lama); `ok:false` / bentuk tak dikenal
+     *  -> Fallback (pakai Kotlin lama). */
+    private fun rustSolveResult(json: String?): RustSolve {
+        if (json == null || !json.contains("\"ok\":true")) return RustSolve.Fallback
+        if (json.contains("\"found\":false")) return RustSolve.NotFound
+        val r = parseRustPowResult(json) ?: return RustSolve.Fallback
+        return RustSolve.Found(r)
+    }
+
+    /** SHA3-256 (rate 136 byte, suffix 0x06, pad10*1). */
+    fun sha3_256(input: ByteArray): ByteArray {
+        rustCall { RustCore.powSha3Bytes(input) }?.let { out ->
+            if (out.size == 32) return out
+        }
+        return sha3_256Kotlin(input)
+    }
+
+    /** DeepSeekHashV1 ASLI (dari reverse-engineering WASM resmi): SHA3-256 tetapi
+     *  Keccak-f[1600] MELOMPATI round 0 — hanya rounds 1..23. */
+    fun dsHashV1(input: ByteArray): ByteArray {
+        rustCall { RustCore.powDsHashV1Bytes(input) }?.let { out ->
+            if (out.size == 32) return out
+        }
+        return dsHashV1Kotlin(input)
+    }
+
+    fun sha3Hex(input: String): String {
+        rustCall { RustCore.powSha3Hex(input) }?.let { hex ->
+            if (validHashHex(hex)) return hex
+        }
+        return sha3HexKotlin(input)
+    }
+
+    fun dsHashV1Hex(input: String): String {
+        rustCall { RustCore.powDsHashV1Hex(input) }?.let { hex ->
+            if (validHashHex(hex)) return hex
+        }
+        return dsHashV1HexKotlin(input)
+    }
+
+    /** Skema PoW DeepSeek ASLI: server memilih answer di [0, difficulty) dan menerbitkan
+     *  challenge = DeepSeekHashV1(salt + "_" + expire_at + "_" + answer).
+     *  Kita cari nonce n di rentang yang sama sampai hash-nya PERSIS sama dengan challenge. */
+    fun solveDeepSeek(challengeHex: String, salt: String, expireAt: Long, difficulty: Long): PowResult? {
+        rustCall { RustCore.powSolveDeepSeekJson(challengeHex, salt, expireAt, difficulty) }?.let { json ->
+            when (val r = rustSolveResult(json)) {
+                is RustSolve.Found -> return r.result
+                RustSolve.NotFound -> return null
+                RustSolve.Fallback -> { /* jatuh ke fallback Kotlin */ }
+            }
+        }
+        return solveDeepSeekKotlin(challengeHex, salt, expireAt, difficulty)
+    }
+
+    /** Versi cepat untuk difficulty asli DeepSeek (puluhan ribu+): tanpa hex/BigInteger per percobaan,
+     *  bandingkan byte digest langsung ke target 32-byte. Kondisi: digest < target (unsigned).
+     *  CATATAN: `maxTries` diteruskan ke Rust apa adanya — quirk Kotlin
+     *  (maxTries solveFast masuk ke expireAt, batas efektif 3 jt)
+     *  direplikasi di Rust (`pow_solver::solve_fast`), jadi kedua jalur sama. */
+    fun solveFast(challenge: String, salt: String, difficulty: Long, maxTries: Long = 50_000_000): PowResult? {
+        rustCall { RustCore.powSolveFastJson(challenge, salt, difficulty, maxTries) }?.let { json ->
+            when (val r = rustSolveResult(json)) {
+                is RustSolve.Found -> return r.result
+                RustSolve.NotFound -> return null
+                RustSolve.Fallback -> { /* jatuh ke fallback Kotlin */ }
+            }
+        }
+        return solveFastKotlin(challenge, salt, difficulty, maxTries)
+    }
+
+    /** Varian format string PoW (n = nonce, e = expire_at):
+     *  A = c+s+n (referensi) | B = s+c+n | C = c_s_n | D = c+s+e+n | E = c_s_e_n
+     *  F = n+c+s | G = c+n+s | H = s+n+c */
+    fun solveFmt(challenge: String, salt: String, difficulty: Long, format: String, expireAt: Long = 0, maxTries: Long = 3_000_000): PowResult? {
+        rustCall { RustCore.powSolveFmtJson(challenge, salt, difficulty, format, expireAt, maxTries) }?.let { json ->
+            when (val r = rustSolveResult(json)) {
+                is RustSolve.Found -> return r.result
+                RustSolve.NotFound -> return null
+                RustSolve.Fallback -> { /* jatuh ke fallback Kotlin */ }
+            }
+        }
+        return solveFmtKotlin(challenge, salt, difficulty, format, expireAt, maxTries)
+    }
+
+    /** Cari nonce: int(hash) < (2^256)/(difficulty+1). Perbandingan via byte:
+     *  hash (32 byte big-endian dari hex) dibandingkan ke target yang dihitung
+     *  sebagai threshold byte array sederhana: pakai BigInteger biar eksak. */
+    fun solve(challenge: String, salt: String, difficulty: Long, maxTries: Long = 5_000_000): PowResult? {
+        rustCall { RustCore.powSolveJson(challenge, salt, difficulty, maxTries) }?.let { json ->
+            when (val r = rustSolveResult(json)) {
+                is RustSolve.Found -> return r.result
+                RustSolve.NotFound -> return null
+                RustSolve.Fallback -> { /* jatuh ke fallback Kotlin */ }
+            }
+        }
+        return solveKotlin(challenge, salt, difficulty, maxTries)
     }
 }

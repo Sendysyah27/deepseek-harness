@@ -3,7 +3,7 @@ name: Android vc317
 # CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
 # Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
 # (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
-# Job: cargo test -> suite JVM 398/399 (R2-4.1 = assert usang warisan vc315,
+# Job: cargo test -> suite JVM 434/435 (R2-4.1 = assert usang warisan vc315,
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
@@ -84,6 +84,9 @@ jobs:
 
       - name: Suite P1 DsFailure (103 cek)
         run: bash tests/run-suite-ci.sh P1
+
+      - name: Suite P2 PowSolver parity (36 cek)
+        run: bash tests/run-suite-ci.sh P2
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

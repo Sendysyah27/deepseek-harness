@@ -224,8 +224,8 @@ def prepare_flavor_src(flavor):
         sys.exit(1)
     print("  residual 0f: 0 baris (allowlist: DeepSeek/deepseek berdiri sendiri + Harness)")
     return src
-VERSION_CODE = 317
-VERSION_NAME = "4.48.9.151"
+VERSION_CODE = 318
+VERSION_NAME = "4.48.9.152"
 ORT_JAR = f"{PROJ}/vendor/ort/classes.jar"
 ORT_JNI = f"{PROJ}/vendor/ort/jni/arm64-v8a"
 BC_JAR = f"{PROJ}/vendor/bc/bcprov.jar"

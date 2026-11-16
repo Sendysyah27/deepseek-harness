@@ -19,6 +19,7 @@
 // (lihat ds_failure.rs); glue JNI satu-satunya modul tanpa forbid.
 
 pub mod ds_failure;
+pub mod pow_solver;
 
 mod jni_glue;
 
