@@ -10,7 +10,7 @@
 // `java.net.Socket` JVM (terbukti eksperimen JNI 16 Nov 2026: Rust connect
 // dari dalam proses JVM ke ServerSocket Java di 7420 -> diterima). Yang
 // diuji: framing/auth/timeout/MAX_LINE/event-skip/error mapping + 21 method
-// + seam VERSION 4 + saklar fallback. Satu tes timeout diam = ~15 dtk asli.
+// + seam VERSION 5 + saklar fallback. Satu tes timeout diam = ~15 dtk asli.
 //
 // MODE "kotlin" — jalur fallback Kotlin lama (`*Kotlin`): transport
 // dalam-memori (salinan harness R1, tanpa TCP) + `rustConcatApiClient =
@@ -484,7 +484,7 @@ fun rustTests(treeDir: String, previewTmp: File) {
     val savedPreviewDir = ConcatApi.previewDir
 
     // -- Seam --
-    check("R1. RustCore.VERSION == 4 (seam vc319)", RustCore.VERSION == 4, "VERSION=${RustCore.VERSION}")
+    check("R1. RustCore.VERSION == 5 (seam vc319)", RustCore.VERSION == 5, "VERSION=${RustCore.VERSION}")
     check("R2. RustCore.available == true (.so host termuat)", RustCore.available, "available=false — jalankan dengan -Djava.library.path=<harness-core/target/debug>")
     val caps = try { RustCore.rustCoreCapabilities() } catch (t: Throwable) { "" }
     check(

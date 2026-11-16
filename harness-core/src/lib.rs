@@ -30,6 +30,8 @@ pub mod pow_solver;
 pub mod redact_secrets;
 pub mod session_background;
 pub mod skill_trigger;
+pub mod sqlite;
+pub mod sqlite_schema;
 pub mod system_bar_spec;
 pub mod tool_registry;
 pub mod tool_registry_data;

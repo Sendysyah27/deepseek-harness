@@ -1,0 +1,44 @@
+TES-VC323-SIAP-TEMPEL — Slice 7: SQLite via rusqlite (vc323, 4.48.9.157)
+============================================================================
+
+CATATAN PENTING — BACA DULU:
+Versi ini TIDAK mengubah apa pun yang kelihatan di layar. Yang berubah
+hanya "mesin di dalam" yang menyimpan data (catatan, riwayat, skills):
+dulu mesin lama (Kotlin), sekarang mesin baru (Rust rusqlite) — tapi
+isinya, caranya, dan hasilnya SAMA PERSIS. Kalau ada yang beda di
+layar, itu BUG — laporkan.
+
+Jadi: T1–T6 dari TES-VC322 TETAP BERLAKU semua (tes sesi DeepSeek:
+N perintah di 1 sesi "Utama" → target tetap 1 sesi baru di web
+DeepSeek). Di bawah ini hanya T TAMBAHAN untuk versi ini.
+
+--------------------------------------------------------------------------------
+T7 — DATA LAMA TETAP ADA + APP TIDAK CRASH (tes utama vc323)
+--------------------------------------------------------------------------------
+Tujuan: memastikan mesin baru membaca data lama dengan benar.
+
+Langkah:
+  1. Buka app Harness (versi vc323).
+  2. LULUS bila: app terbuka normal, tidak force-close.
+  3. Buka chat "Utama". LULUS bila: riwayat chat lama MASIH ADA
+     (pesan-pesan sebelumnya tidak hilang).
+  4. Kirim 1 perintah biasa, misal: "cek skill lists".
+     LULUS bila: jawaban masuk normal, tidak ada kartu merah,
+     tidak ada force-close.
+  5. Tutup app, buka lagi. LULUS bila: riwayat + jawaban tadi
+     MASIH ADA (tidak hilang sesudah restart).
+
+GAGAL bila: salah satu langkah di atas tidak terjadi — misal app
+crash saat dibuka, riwayat hilang, atau jawaban tidak masuk.
+Kalau GAGAL, catat di langkah mana + screenshot, lalu kabari Jhon.
+JANGAN lanjut pakai versi ini untuk kerja penting sebelum Jhon bilang aman.
+
+--------------------------------------------------------------------------------
+T8 — SKILLS + DATA LAIN TETAP ADA (opsional, 1 menit)
+--------------------------------------------------------------------------------
+  1. Buka daftar skill (perintah "cek skill lists" bila belum).
+     LULUS bila: daftar skill tampil seperti biasa.
+  2. Cek 1 hal yang kamu simpan sebelumnya (misal catatan / pengingat).
+     LULUS bila: masih ada isinya.
+
+Selesai. Kalau T7 (+T8) LULUS dan T1–T6 vc322 tetap LULUS, vc323 AMAN.

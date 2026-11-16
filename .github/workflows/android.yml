@@ -3,7 +3,7 @@ name: Android vc317
 # CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
 # Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
 # (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
-# Job: cargo test -> suite JVM 1200/1201 (R2-4.1 = assert usang warisan vc315,
+# Job: cargo test -> suite JVM 1334/1335 (R2-4.1 = assert usang warisan vc315,
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
@@ -23,6 +23,11 @@ name: Android vc317
 # server DeepSeek — giliran 1-1 lanjutan dikirim DELTA (bukan prompt penuh)
 # + penghitung sesi + primed-flag; P8 73 cek; suite 1200/1201 (R2-4.1
 # ditoleransi); RUST_CORE_VERSION tetap 4.
+# Slice 7 vc323: SQLite via rusqlite — EventDb/ArtifactStore/
+# ParkedApprovalStoreVc305/GraphDb via seam sqliteJson generik
+# (sqlite.rs + sqlite_schema.rs, rusqlite 0.32 bundled); P9 134 cek
+# (rust 107 + kotlin 27 fallback); suite 1334/1335 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 4->5; MemoryDb wrapper TIDAK di-port (sisa kerja).
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -121,6 +126,9 @@ jobs:
 
       - name: Suite P8 SessFix vc322 (73 cek)
         run: bash tests/run-suite-ci.sh P8
+
+      - name: Suite P9 Rusqlite vc323 (134 cek, rust 107 + kotlin 27)
+        run: bash tests/run-suite-ci.sh P9
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

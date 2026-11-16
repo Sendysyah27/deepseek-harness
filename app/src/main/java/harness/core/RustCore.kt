@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 4
+    const val VERSION = 5
 
     val available: Boolean
 
@@ -108,4 +108,15 @@ object RustCore {
     external fun powSolveFastJson(challenge: String, salt: String, difficulty: Long, maxTries: Long): String
     external fun powSolveFmtJson(challenge: String, salt: String, difficulty: Long, format: String, expireAt: Long, maxTries: Long): String
     external fun powSolveJson(challenge: String, salt: String, difficulty: Long, maxTries: Long): String
+
+    // ---- Slice 7: SQLite via rusqlite (seam generik, satu fungsi) ----
+    /**
+     * Operasi SQLite generik. Request JSON:
+     * `{"op":"ensure"|"query"|"exec"|"tx","db":<path absolut .db>,
+     * "key":"events"|"artifacts"|"parked"|"graph"|"memory",...}`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama.
+     */
+    external fun sqliteJson(request: String): String?
 }

@@ -21,6 +21,7 @@ use crate::pow_solver;
 use crate::redact_secrets;
 use crate::session_background;
 use crate::skill_trigger;
+use crate::sqlite;
 use crate::system_bar_spec;
 use crate::tool_registry;
 use jni::objects::{JByteArray, JClass, JString};
@@ -37,7 +38,8 @@ use std::sync::Once;
 /// v3 = slice 5 (concat_api_client): +1 fungsi `concatApiJson`.
 /// v4 = slice 6 (tool_registry/agent_prompt/skill_trigger):
 /// +3 fungsi bulk JSON `toolRegistryJson`/`agentPromptJson`/`skillTriggerJson`.
-pub const RUST_CORE_VERSION: jint = 4;
+/// v5 = slice 7 (sqlite): +1 fungsi `sqliteJson` (rusqlite generik).
+pub const RUST_CORE_VERSION: jint = 5;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -181,12 +183,14 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "notifIdsJson", "systemBarSpecJson", "dsSafetyStripJson", "mcpHelperJson",
                 "sessionBackgroundJson", "behaviorsJson", "chatThemeJson",
                 "concatApiJson",
-                "toolRegistryJson", "agentPromptJson", "skillTriggerJson"],
+                "toolRegistryJson", "agentPromptJson", "skillTriggerJson",
+                "sqliteJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
                 "concat_api_client",
-                "tool_registry", "agent_prompt", "skill_trigger"]
+                "tool_registry", "agent_prompt", "skill_trigger",
+                "sqlite", "sqlite_schema"]
         })
         .to_string())
     })
@@ -807,5 +811,23 @@ pub extern "C" fn Java_harness_core_RustCore_skillTriggerJson(
             _ => return Err("unknown op".to_string()),
         };
         Ok(serde_json::json!({"ok": true, "value": value}).to_string())
+    })
+}
+
+// ------------------------------------------------------- Slice 7: SQLite --
+//
+// Satu fungsi JNI generik untuk semua DB (rusqlite). Request JSON:
+// `{"op":"ensure"|"query"|"exec"|"tx","db":<path>,"key":<kunci>,...}`.
+// Respons `{"ok":true,...}`; `null` = Rust gagal (panic/error di
+// boundary) -> pemanggil Kotlin WAJIB fallback ke implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_sqliteJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        sqlite::sqlite_json(&req).ok()
     })
 }

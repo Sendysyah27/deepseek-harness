@@ -1,0 +1,320 @@
+# BUILD-VC323 — Slice 7: SQLite via `rusqlite` (vc323, 4.48.9.157)
+
+Dokumen kerja integrator slice 7 (keputusan Sendy 13:28 — fix room-lane
+dikerjakan dulu sebagai vc321; slice 7 rusqlite direncanakan vc322,
+DI-PAUSE 16 Nov 16:05 untuk fix bocor sesi vc322, lanjut sebagai vc323).
+Pola dokumen mengikuti BUILD-VC321.md.
+
+## §1. Keputusan versi
+
+- **vc323, VERSION_CODE 323, VERSION_NAME 4.48.9.157**, branch `vc317-rust`
+  (remote main tetap vc309 — JANGAN disentuh).
+- `RUST_CORE_VERSION` 4→**5**, `RustCore.VERSION` 4→**5** — slice ini
+  menambah SATU fungsi JNI baru (`sqliteJson`).
+- ARM64-only. `Flavor.kt` TIDAK disentuh.
+- Porting MURNI: skema + SQL + migrasi 1:1 (SQL yang sama persis);
+  quirk DIREPLIKASI (dikunci tes), bukan diperbaiki.
+- Keystore VM lama dipertahankan; gerbang sidik jari vc316 berlaku:
+  Main `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`,
+  Pure `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`.
+
+## §2. Desain seam + inventaris skema (diukur dulu, sebelum patch)
+
+### §2.1 Keputusan desain seam
+
+Diputuskan SETELAH membaca ke-5 file target penuh (bukan asumsi):
+
+- **Satu modul Rust generik `sqlite` + satu modul `sqlite_schema`**,
+  BUKAN satu modul per DB. Alasan: ke-5 DB memakai pola akses yang
+  sama (open file → exec/query/tx ber-parameter); yang berbeda hanya
+  DDL skema + langkah migrasi. Satu engine generik + tabel skema per
+  DB = satu tempat untuk membuktikan rusqlite sekali (EventDb) lalu
+  dipakai ulang 4 DB lain tanpa menduplikasi mesin. Per-DB yang
+  spesifik (mis. backfill graph v2→v3, rebuild facts vc285) hidup
+  sebagai fungsi kecil di `sqlite_schema.rs`, bukan modul sendiri.
+- **Seam: SATU fungsi JNI `sqliteJson(request: String): String`**,
+  JSON in/out (pola slice 5/6). Request:
+  `{"op":"ensure"|"query"|"exec"|"tx","db":"<path absolut .db>","key":"events"|"artifacts"|"parked"|"graph"|"memory",...}`.
+  Respons `{"ok":true,...}` atau `{"ok":false,"error":"..."}`.
+  Alasan: satu boundary JNI (satu `catch_unwind`) untuk semua operasi
+  DB; SQL tetap ditulis di sisi Kotlin (string yang sama persis dengan
+  Kotlin lama) sehingga porting tiap metode = ganti primitif Cursor
+  dengan panggilan seam, bukan tulis ulang logika. Nilai baris:
+  Integer→JSON number, Real→JSON number, Text→string, Blob→
+  `{"$b64":"..."}` (base64), NULL→null. Parameter: number/string/
+  null/bool(→1/0)/`{"$b64":...}`.
+- **Path `.db` dilewat sebagai String dari Kotlin** (lewat
+  `ctx.getDatabasePath(nama).absolutePath`); Rust TIDAK PERNAH
+  menerima `Context`.
+- **Koneksi dibuka-tutup per operasi** (bukan satu koneksi persisten).
+  Alasan: disiplin writer yang ada adalah SATU writer dalam satu
+  waktu (`@Synchronized` di hampir semua metode tulis + singleton
+  per DB); koneksi per panggilan + file lock SQLite + `busy_timeout`
+  5000 ms + `PRAGMA journal_mode=WAL` (diset tiap open; persisten di
+  file) menjaga disiplin itu antar proses (MainActivity +
+  HarnessService + BgBrain bisa bersamaan; SlotBrowser TIDAK menyentuh
+  `.db`). Tanpa state Rust jangka panjang → tanpa registry handle,
+  tanpa `close()` yang bisa lupa (peta §3.3: jangan pointer mentah).
+- **`ensure` mereplikasi `SQLiteOpenHelper`**: baca
+  `PRAGMA user_version`; 0 → jalankan DDL `onCreate` (ketat: gagal =
+  error); < target → jalankan langkah `onUpgrade` + langkah lazy
+  `onOpen` (longgar per-pernyataan, seperti `try{}` Kotlin), lalu
+  set `user_version` = target. Wrapper Kotlin memanggil `ensure`
+  sekali per instance (flag volatile); bila Rust tidak tersedia,
+  `SQLiteOpenHelper` lama yang bekerja seperti biasa (fallback).
+- **Fallback + saklar per DB**: tiap wrapper menyimpan
+  `var rust<Event|Artifact|Parked|Graph> = RustCore.available`
+  (default ikut `available`); public fun mencoba seam Rust dulu,
+  bila `null`/error → matikan saklar + jalankan implementasi Kotlin
+  lama (`*Kotlin`, privat, body ASLI yang diganti nama). API publik
+  TETAP PERSIS (nama + parameter + nilai kembali + perilaku
+  try/catch yang menelan error).
+- **Kelas wrapper TETAP `extends SQLiteOpenHelper`** (fallback butuh
+  `onCreate`/`onUpgrade` asli + pemanggil luar masih memakai
+  `.readableDatabase`/`.writableDatabase` langsung: MainActivity:987/
+  1030 + FloatingAgentActivity:378/387 + RedactMigration:79-108 atas
+  MemoryDb; TriageDigest:82 atas EventDb — TIDAK diubah).
+- **Dependensi baru**: `rusqlite 0.32` fitur `bundled` (kompilasi
+  amalgamasi SQLite C; FTS5 ikut teruji — lihat §2.3) + `base64
+  0.22` (encoding BLOB). `Cargo.lock` di-merge kunci (nama, versi)
+  seperti pelajaran slice 3.
+- `#![forbid(unsafe_code)]` di `sqlite.rs` + `sqlite_schema.rs`;
+  TANPA `unwrap()`/`expect()` di jalur input luar (request JSON,
+  path, SQL, parameter dari Kotlin).
+
+### §2.2 Inventaris skema (dari baca penuh file target)
+
+| DB | File | Versi | Tabel | onCreate / onUpgrade |
+|---|---|---|---|---|
+| events | `EventDb.kt` 98 baris | v1 | `events` + `idx_events_ts` | onCreate: 1 tabel + 1 indeks. onUpgrade: kosong. |
+| artifacts | `ArtifactStore.kt` 271 baris | v1 | `artifacts`, `artifact_versions` + `idx_artifacts_owner` | onCreate: 2 tabel + 1 indeks. onUpgrade: `onCreate(db)` ulang. |
+| parked | `ParkedApprovalStoreVc305.kt` 395 baris | v1 | `parked_approvals` + `idx_parked_status`, `idx_parked_notif` | onCreate: 1 tabel + 2 indeks. onUpgrade: kosong. |
+| graph | `GraphDb.kt` 1003 baris | v3 | `nodes`, `edges`, `episodes`, FTS5 `fts_fact` + 4 indeks | onCreate: 3 tabel + 4 indeks + FTS5 (try{}). onUpgrade: v1→v2 ADD tag/confidence + UPDATE tag; v2→v3 ADD 7 kolom edge + `aliases_json` + episodes + FTS5 + **backfill** fact_text/recorded_at/valid_at per edge dari label ujung + insert fts_fact; lalu `onCreate(db)`. |
+| memory | `MemoryDb.kt` 3202 baris | v7 | `facts`, `history`, `reminders` + v2 schedules/rules/skills/geofences/finance + v3 sessions (+kolom `session` di history + seed `sessions(1,'Utama')`) + v4 embeddings (BLOB) + v5 goals/goal_steps + v6 oc_tasks/coord_rules + v7 workers (`WorkerRegistry.CREATE_SQL`) + lazy: deleted_archive, fact_edges, dream_flags, lessons, fact_candidates, joblog, group_msgs, skill_versions, skill_export_ledger, eval_runs + indeks perf | onCreate: facts/history/reminders + createV2..V7 + createPerfIndexes. onUpgrade: bertahap per versi (V2..V7). onOpen (TIAP buka): ensureFactProvenanceVc285 (rebuild facts lama `k TEXT PRIMARY KEY` → `facts_vc285` PK id, transaksional, idempotent via PRAGMA table_info) + ensureVc294Schema + fact_edges/dream_flags + createPerfIndexes + ensureWave2Columns + ensureWorkerTable. Plus lazy per-metode (ensureOcDirColumn, joblog, group_msgs, skill_versions, eval_runs, kolom history.work, …). |
+
+### §2.3 Syarat keras peta §2.3 — bukti
+
+1. **Satu writer**: `@Synchronized` dipertahankan di semua metode
+   tulis wrapper (disiplin in-process sama); antar proses:
+   SQLite file lock + `busy_timeout(5000)` + `journal_mode=WAL`
+   di tiap koneksi Rust. Bukti: tes konkurensi P8 §5 (dua writer
+   bergantian via seam, 0 hilang/korup) + tes Rust `concurrent_writers`.
+2. **Migrasi diuji pada SALINAN `.db` produksi**: tidak ada `.db`
+   produksi di VM. Metode: fixture `.db` realistis dibangun dengan
+   skema Kotlin LAMA (v6 memory / v2 graph / v1 lainnya — DDL
+   disalin verbatim dari sumber Kotlin) + baris representatif,
+   lalu migrasi Rust dijalankan dan hasilnya dibandingkan dengan
+   migrasi Kotlin — perbandingan dilakukan sebagai **identitas
+   string SQL** (tes P8 §6: tiap pernyataan DDL Kotlin di sumber
+   `.kt` harus ada verbatim di `sqlite_schema.rs`) + **hasil
+   akhir** (skema + isi sesudah migrasi Rust sama dengan yang
+   dijanjikan komentar/migrasi Kotlin: baris utuh, kolom baru ada,
+   `user_version` = target). Migrasi Kotlin sendiri tidak bisa
+   dijalankan di JVM (kelas `android.database.sqlite` di
+   `android.jar` adalah stub yang melempar) — keterbatasan ini
+   dicatat jujur, bukan ditutupi.
+3. **ContentValues → binding rusqlite**: mekanis — tiap `put`
+   menjadi parameter `?` + `params` JSON di seam (bukti: tiap
+   metode tulis wrapper memakai `SqliteSeam.exec/tx`, tanpa
+   `ContentValues` di jalur Rust).
+
+### §2.4 Keputusan cakupan — MemoryDb
+
+MemoryDb (3202 baris, ~195 fun, 242 situs SQL, migrasi lazy
+berlapis vc285/vc289/vc294 + lazy per-metode + BLOB embedding +
+`onOpen` tiap buka) TIDAK diport ke wrapper Kotlin dalam ronde
+ini. Yang DIKERJAKAN untuk MemoryDb di vc323: DDL + migrasi
+v6→v7 + lazy `onOpen` direplikasi di `sqlite_schema.rs`
+(kunci `memory`) dan dibuktikan tes Rust + P8 atas fixture v6
+— jadi fondasi port wrapper-nya sudah teruji; port 195 metode
+menjadi pekerjaan mekanis lanjutan (satu rilis berikut), bukan
+riset ulang. Wrapper `MemoryDb.kt` TIDAK berubah di vc323
+(selain nol — file tidak masuk diff C). Keputusan ini sesuai
+brief koordinator (mendaratkan EventDb→GraphDb sebagai vc323 +
+laporkan MemoryDb sebagai sisa adalah hasil jujur yang diterima).
+
+## §3. Basis verifikasi (langkah 0 — semua LULUS sebelum patch)
+
+- (a) Live 5 file target vs `vc317-work/merge/` IDENTIK (asli vc316):
+  EventDb, ArtifactStore, ParkedApprovalStoreVc305, GraphDb,
+  MemoryDb — semua `diff -q` IDENTIK.
+- (b) `diff -rq --exclude=target harness-core/
+  vc317-work/branch-stage/harness-core/` IDENTIK (exit 0).
+- (c) Live tree = vc321 pasca-fix (build.py 321/4.48.9.155,
+  `RUST_CORE_VERSION` 4, 24 simbol JNI, suite 1127/1128 hanya
+  R2-4.1, cargo 271/271 — klaim koordinator, diverifikasi ulang
+  di §6/§7).
+- (d) Ke-5 file dibaca penuh; skema/migrasi dicatat di §2.2.
+
+## §4. Isi patch
+
+Rust (crate `harness-core`, `RUST_CORE_VERSION` 4→5):
+
+- `src/sqlite.rs` (BARU, `#![forbid(unsafe_code)]`): engine generik —
+  `sqlite_json(request)`; op `ensure`/`query`/`exec`/`tx`; koneksi
+  dibuka-tutup per operasi; `busy_timeout(5000)` + `PRAGMA
+  journal_mode=WAL` tiap open; nilai baris Integer/Real/Text/Blob
+  (`{"$b64":...}`)/NULL; parameter number/string/null/bool(→1/0)/
+  `{"$b64":...}`; TANPA `unwrap()`/`expect()` di jalur input luar.
+- `src/sqlite_schema.rs` (BARU, `#![forbid(unsafe_code)]`): DDL +
+  migrasi per kunci `events`/`artifacts`/`parked`/`graph`/`memory`
+  (identitas string SQL dengan sumber Kotlin — dikunci P9 §6).
+- `src/lib.rs`: +`pub mod sqlite;` +`pub mod sqlite_schema;`.
+- `src/jni_glue.rs`: `RUST_CORE_VERSION` 4→5; capabilities +`"sqliteJson"`;
+  JNI `Java_harness_core_RustCore_sqliteJson` (satu `catch_unwind`).
+- `Cargo.toml`: +`rusqlite = { version = "0.32", features = ["bundled"] }`
+  +`base64 = "0.22"`. `Cargo.lock`: merge kunci (nama, versi) —
+  rusqlite 0.32.1, libsqlite3-sys 0.30.1, base64 0.22.1, 62 paket,
+  0 duplikat nama+versi.
+
+Kotlin (5 file + 1 baru; porting murni, API publik TETAP PERSIS):
+
+- `EventDb.kt` — ditulis ulang (seam Rust + 7 `*Kotlin` privat + saklar
+  `rustEventDb`).
+- `ArtifactStore.kt` — 8 metode → `*Kotlin` + metode Rust baru + saklar
+  `rustArtifactStore`.
+- `ParkedApprovalStoreVc305.kt` — 6 metode → `*Kotlin` + metode Rust
+  baru + saklar `rustParkedApproval`.
+- `GraphDb.kt` — 29 metode leaf → `*Kotlin` + metode Rust baru + saklar
+  `rustGraphDb`.
+- `RustCore.kt` — `VERSION` 4→5 + `external fun sqliteJson(request:
+  String): String?`.
+- `SqliteSeam.kt` (BARU) — helper seam; memakai `java.util.Base64`
+  (bukan `android.util.Base64` — stub JVM, pelajaran ronde 1).
+- `MemoryDb.kt` TIDAK berubah (keputusan §2.4). `Flavor.kt` TIDAK
+  disentuh. Fix vc322 (delta 1-1 + counter/primed) DIPERTAHANKAN
+  utuh — file fix (DsApiClient, SlotClient, MainActivity, TurnMetrics,
+  AgentPrompt + TestSessFixVc322.kt) TIDAK disentuh slice 7;
+  rebase di atas vc322 TANPA konflik (disjoint, dibuktikan diff
+  snapshot-vs-live: hanya delta slice 7).
+
+## §5. Tes paritas baru — P9 TestRusqliteVc323
+
+File: `branch-stage/tests/TestRusqliteVc323.kt` (134 cek: rust 107 +
+kotlin 27). Dinamai P9 di vc323 — P8 sudah dipakai fix sesi vc322
+(sebelumnya P8 di runner slice 7 saat pause; rename vc322→vc323 +
+P8→P9 dicatat di file tes itu sendiri).
+
+- §1 seam + VERSION: `RustCore.VERSION == 5`, `sqliteJson` ada,
+  request/response JSON, error → `{"ok":false,...}`.
+- §2 `ensure` per DB (events v1, artifacts v1, parked v1, graph v3,
+  memory v7) + `user_version` = target.
+- §3 CRUD per DB (insert/query/update/delete, parameter binding).
+- §4 tx atomik (commit + rollback).
+- §5 konkurensi dua writer bergantian via seam (0 hilang/korup) +
+  tes Rust `concurrent_writers`.
+- §6 identitas SQL/DDL: tiap pernyataan DDL Kotlin di sumber `.kt`
+  ada verbatim di `sqlite_schema.rs`; migrasi fixture graph v2→v3 +
+  memory v6→v7 (skema + isi akhir sama dengan janji migrasi Kotlin;
+  migrasi Kotlin sendiri tidak bisa jalan di JVM — kelas
+  `android.database.sqlite` di `android.jar` adalah stub yang
+  melempar; dicatat jujur, bukan ditutupi).
+- §7 claim atomik/decide set-once H-K1 (ParkedApproval).
+- §8 FTS5 (`fts_fact` graph) + BLOB (embedding memory).
+- §9 fallback SqliteSeam tanpa `.so` (mode kotlin).
+- §10 `java.util.Base64` (bukan android — crash stub JVM ronde 1).
+- §11 struktur sumber: 4 wrapper `*Kotlin` + 4 saklar rust +
+  `sqliteJson` + VERSION 5 + MemoryDb tanpa Rust.
+- §12 `RUST_CORE_VERSION` 5 di `jni_glue.rs` + simbol JNI baru.
+
+CATATAN: wrapper TIDAK diinstansiasi di JVM (Context stub) — P9
+menguji seam + identitas sumber; wrapper end-to-end di perangkat
+(TES-VC323).
+
+## §6. Angka tes
+
+- **cargo test: 287/287 lulus, 0 failed** (271 lama + 16 baru slice 7;
+  dijalankan terpisah sebelum suite + di langkah 0a runner).
+- **Suite lokal penuh ronde 2: 1334/1335** — satu-satunya gagal R2-4.1
+  (assert STRING usang warisan vc315, DITOLERANSI seperti slice
+  sebelumnya; bukan regresi).
+  - P1 103/103, P2 36/36, P3 94/94, P4 235/235, N9 46/46,
+    BR 45/45, IXL 72/72, R1 64/64, R2 68/69 (4.1),
+    P5 157/157 (kotlin 55 + rust 102),
+    P6 155/155 (kotlin 75 + rust 80),
+    P7 52/52, **P8 73/73 (fix sesi vc322, in-suite)**,
+    **P9 134/134 (baru vc323: rust 107 + kotlin 27)**.
+  - C LULUS: tepat 24 file .kt berubah vs baseline vc316 + 1 baru
+    (20 vc322 + 4 wrapper slice 7 + SqliteSeam.kt; MemoryDb +
+    Flavor.kt + DsFailure.kt tidak berubah).
+  - D1–D13 LULUS (D13 baru: fix sesi vc322 dipertahankan +
+    fallback slice 7 dipertahankan + RUST_CORE_VERSION 5).
+  - Log ronde 2: `vc317-work/work-impl/run-tests-vc323-coord.log`
+    (16 Nov 11:20 UTC / 18:20 WIB, 116.874 byte; `OVERALL FAIL=1`
+    hanya dari R2-4.1). Log LEBIH BARU dari runner
+    (10:54 UTC) — segar.
+  - Total = 1201 (vc322) + 134 (P9) = 1335 cek; 1334 lulus.
+- Ronde 1 (log sama, tertimpa ronde 2): TERHENTI di P5b mode rust —
+  proses suite mati diam-diam tanpa jejak di log (bukan kegagalan
+  tes; P1–P5a sudah lulus semua: P1 103 + P2 36 + P3 94 + P4 235 +
+  N9 46 + BR 45 + IXL 72 + R1 64 + R2 68/69 + P5a 55/55; dmesg
+  tanpa OOM). Diduga service restart runtime yang membunuh process
+  tree (restart terjadi di tengah ronde 1). Ronde 2 = re-run penuh
+  (maks 2 ronde — ronde 2 adalah re-run penuh terakhir); P8 73/73
+  lulus IN-SUITE di ronde 2 (tidak perlu standalone seperti vc322).
+
+## §7. Deviasi / temuan jujur
+
+1. **Resume dari snapshot (bukan dari live).** Patch slice 7
+   diparkir koordinator ke `vc317-work/work-s7/snapshot-patch/` (16
+   file + MANIFEST.md). Restore: 16/16 md5 COCOK; 13 file disalin
+   ke live + branch-stage (md5 salinan = MANIFEST); live sebelum
+   restore bersih vc322 (marker slice 7 = 0, VERSION 4).
+2. **Rebase TANPA konflik.** Fix vc322 menyentuh DsApiClient,
+   SlotClient, MainActivity, TurnMetrics, AgentPrompt +
+   TestSessFixVc322.kt; slice 7 menyentuh EventDb, ArtifactStore,
+   ParkedApprovalStoreVc305, GraphDb, RustCore, SqliteSeam + crate.
+   DISJOINT — dibuktikan diff snapshot-vs-live (hanya delta slice 7:
+   RustCore VERSION 4→5 + sqliteJson; jni_glue RUST_CORE_VERSION
+   4→5 + sqliteJson; lib.rs +2 mod; Cargo.toml +rusqlite/base64;
+   Cargo.lock +paket baru). MemoryDb.kt IDENTIK dengan merge/.
+3. **Renumbering vc322→vc323.** Bump 323/4.48.9.157 di live build.py
+   DAN branch-stage build.py (hanya baris VERSION; isi keduanya
+   memang berbeda, tidak saling ditimpa). Rename:
+   BUILD-VC322-slice7-rusqlite-DRAFT.md → BUILD-VC323.md;
+   TestRusqliteVc322.kt → TestRusqliteVc323.kt (+ P8→P9, karena P8
+   sudah dipakai fix sesi vc322); runner run-tests-vc322-coord.sh →
+   run-tests-vc323-coord.sh (+ seksi P9); CI run-suite-ci.sh +
+   android.yml (step P9). TestSessFixVc322.kt TIDAK di-rename.
+4. **Assert VERSION 4→5 diterapkan kembali di 9 file tes**
+   (8 warisan slice 7 + 1 baru): work-s2/TestPowSolverVc318.kt,
+   work-s3/TestRedactSecretsVc318.kt,
+   work-s4/TestSmallModulesVc318.kt, branch-stage/tests/
+   TestPowSolverVc318.kt, TestRedactSecretsVc318.kt,
+   TestSmallModulesVc318.kt, TestConcatApiVc319.kt (R1),
+   TestToolRegistryAgentPromptVc320.kt (7.1 + 7.3 capabilities
+   version 5) — masing-masing diverifikasi per baris, bukan ganti
+   global. Tambahan di luar daftar 8: TestSessFixVc322.kt cek 5.18
+   (`"const val VERSION = 4" in rcSrc`) — SATU-SATUNYA perubahan di
+   file itu; premis "tidak ada JNI baru" sudah tidak berlaku di
+   vc323 (sqliteJson baru), jadi ekspektasi diubah ke 5 + label
+   diperbarui. Perilaku fix sesi TIDAK berubah.
+5. **C dihitung dari diff AKTUAL** (bukan asumsi): 24 berubah + 1
+   baru (20 vc322 + 4 wrapper slice 7 + SqliteSeam.kt baru).
+   Fix vc322 tidak menambah file baru vs merge/ (5 file fix sudah
+   berbeda sejak vc321/slice 6).
+6. **D13 ditulis ulang** (bukan ditambah): fix sesi vc322
+   dipertahankan + fallback slice 7 dipertahankan + RUST_CORE_VERSION
+   5. D12 diperbarui ke 5. D7/D8/D10/D11 diperbarui ke 5 (lokal +
+   CI). CI run_c ditambah cek slice 7 (4 wrapper berubah +
+   SqliteSeam.kt/sqlite.rs/sqlite_schema.rs baru vs main).
+7. **Ronde 1 suite mati diam-diam di P5b** (lihat §6) — bukan
+   kegagalan tes; ronde 2 penuh lulus target. `work-impl/integrated/`
+   di-sync ulang dari live tree saat ini (4 wrapper + RustCore +
+   SqliteSeam.kt baru); sesudahnya diff integrated vs live kosong
+   kecuali build.py/harness ekstra yang memang bukan tree .kt.
+8. **Keputusan §2.4 TIDAK berubah:** `MemoryDb.kt` tetap tidak
+   di-port wrapper-nya; DDL + migrasi v6→v7 + lazy onOpen sudah
+   direplikasi di `sqlite_schema.rs` dan dibuktikan tes Rust + P9
+   atas fixture v6.
+
+## §8. Push + CI + APK
+
+_(diisi sesudah push/CI/APK)_
+
+## §9. Tes perangkat (TES-VC323-SIAP-TEMPEL)
+
+Lihat `vc317-work/TES-VC323-SIAP-TEMPEL.txt` — perilaku user-visible
+IDENTIK (porting murni + fallback): T1–T6 vc322 tetap berlaku
+(sesi fix), ditambah T-baru minimal: buka app + kirim 1 perintah +
+pastikan data lama (riwayat/skills) tetap ada dan tidak crash.

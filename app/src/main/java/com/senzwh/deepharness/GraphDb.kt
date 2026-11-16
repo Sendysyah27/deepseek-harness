@@ -3,12 +3,38 @@ package com.senzwh.deepharness
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import harness.core.RustCore
 
 // v4.48.9.21 (vc187): Memory Graph — peta di atas memori yang sudah ada.
 // Transkrip, fakta, digest, skill TIDAK diganti. Tiap node menunjuk ke
 // sumber mentahnya (provenance), jadi dari ringkasan bisa drill ke pesan asli.
 // v4.48.9.32 (vc198 Fase 1): graph.db v3 — episodes, kolom temporal edge, FTS5 fts_fact, expire lunak.
 class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicationContext, "graph.db", null, 3) {
+
+    // ---- Slice 7: seam rusqlite (vc322) ----
+    @Volatile
+    var rustGraphDb: Boolean = true
+    private val dbPath: String =
+        ctx.applicationContext.getDatabasePath("graph.db").absolutePath
+    @Volatile
+    private var ensuredRust = false
+
+    private fun ensureRust(): Boolean {
+        if (!rustGraphDb || !RustCore.available) return false
+        if (ensuredRust) return true
+        val ok = try {
+            SqliteSeam.ensure(dbPath, "graph")
+        } catch (t: Throwable) {
+            false
+        }
+        if (!ok) {
+            rustGraphDb = false
+            return false
+        }
+        ensuredRust = true
+        return true
+    }
+
 
     data class Node(val id: Long, val type: String, val label: String, val source: String)
     data class Edge(val from: Long, val to: Long, val rel: String, val id: Long = -1, val tag: String = "EXTRACTED", val confidence: Double = 1.0)
@@ -78,7 +104,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         onCreate(db)
     }
 
-    fun getOrCreateNode(type: String, label: String, source: String): Long {
+    private fun getOrCreateNodeKotlin(type: String, label: String, source: String): Long {
         val clean = label.trim().take(200)
         if (clean.isBlank()) return -1
         // vc240 m14 (sisa): pencarian label case-insensitive (LOWER),
@@ -110,7 +136,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return w.insert("nodes", null, values)
     }
 
-    fun nodeById(id: Long): Node? {
+    private fun nodeByIdKotlin(id: Long): Node? {
         val db = readableDatabase
         val cur = db.rawQuery("SELECT id, type, label, source FROM nodes WHERE id = ?", arrayOf(id.toString()))
         val out = if (cur.moveToFirst()) Node(cur.getLong(0), cur.getString(1) ?: "", cur.getString(2) ?: "", cur.getString(3) ?: "") else null
@@ -121,7 +147,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc198 Fase 1: fact_text + recorded_at/valid_at diisi saat insert;
     // episode_id menautkan edge ke episode sumbernya (provenance).
     // FTS disinkron manual (bukan external-content + trigger).
-    fun addEdge(fromId: Long, toId: Long, rel: String, tag: String = "EXTRACTED", confidence: Double = 1.0, factText: String = "", episodeId: Long = -1): Long {
+    private fun addEdgeKotlin(fromId: Long, toId: Long, rel: String, tag: String = "EXTRACTED", confidence: Double = 1.0, factText: String = "", episodeId: Long = -1): Long {
         if (fromId <= 0 || toId <= 0 || fromId == toId) return -1L
         val db = readableDatabase
         val cur = db.rawQuery("SELECT id FROM edges WHERE from_id = ? AND to_id = ? AND rel = ? LIMIT 1", arrayOf(fromId.toString(), toId.toString(), rel))
@@ -172,7 +198,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         try { writableDatabase.delete("fts_fact", "fact_text = ?", arrayOf(factText)) } catch (e: Exception) {}
     }
 
-    fun searchNodes(query: String, limit: Int = 20): List<Node> {
+    private fun searchNodesKotlin(query: String, limit: Int = 20): List<Node> {
         val out = ArrayList<Node>()
         val q = query.trim()
         if (q.isBlank()) return out
@@ -192,7 +218,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return out
     }
 
-    fun neighbors(id: Long, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<Triple<Node, String, Node>> {
+    private fun neighborsKotlin(id: Long, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<Triple<Node, String, Node>> {
         val out = ArrayList<Triple<Node, String, Node>>()
         val db = readableDatabase
         // vc198 Fase 1: hanya edge aktif (invalid_at IS NULL).
@@ -211,7 +237,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return out
     }
 
-    fun countNodes(): Int {
+    private fun countNodesKotlin(): Int {
         val db = readableDatabase
         val cur = db.rawQuery("SELECT COUNT(*) FROM nodes", null)
         val n = if (cur.moveToFirst()) cur.getInt(0) else 0
@@ -219,7 +245,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return n
     }
 
-    fun countEdges(): Int {
+    private fun countEdgesKotlin(): Int {
         val db = readableDatabase
         val cur = db.rawQuery("SELECT COUNT(*) FROM edges", null)
         val n = if (cur.moveToFirst()) cur.getInt(0) else 0
@@ -228,7 +254,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     }
 
     // v4.48.9.21: jalur antar dua node (BFS, maks 4 hop). Label dicari fuzzy.
-    fun path(fromLabel: String, toLabel: String, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<String> {
+    private fun pathKotlin(fromLabel: String, toLabel: String, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<String> {
         val from = searchNodes(fromLabel, 1).firstOrNull() ?: return emptyList()
         val to = searchNodes(toLabel, 1).firstOrNull() ?: return emptyList()
         if (from.id == to.id) return listOf(from.label)
@@ -313,7 +339,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // efektif) agar mapData bisa memuat graph secara ber-LIMIT tanpa
     // mengubah pemanggil lain yang butuh kelengkapan (PETA/konsolidasi
     // lewat jalur lain tetap memakai default).
-    fun allNodes(limit: Int = Int.MAX_VALUE): List<Node> {
+    private fun allNodesKotlin(limit: Int = Int.MAX_VALUE): List<Node> {
         val out = ArrayList<Node>()
         val db = readableDatabase
         val cur = db.rawQuery("SELECT id, type, label, source FROM nodes ORDER BY id LIMIT ?", arrayOf(limit.toString()))
@@ -324,7 +350,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return out
     }
 
-    fun allEdges(limit: Int = Int.MAX_VALUE): List<EdgeFull> {
+    private fun allEdgesKotlin(limit: Int = Int.MAX_VALUE): List<EdgeFull> {
         val out = ArrayList<EdgeFull>()
         val db = readableDatabase
         try {
@@ -490,7 +516,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return sb.toString()
     }
 
-    fun confirmAmbiguous(edgeId: Long) {
+    private fun confirmAmbiguousKotlin(edgeId: Long) {
         val db = writableDatabase
         val values = android.content.ContentValues().apply { put("tag", "EXTRACTED"); put("confidence", 1.0) }
         try { db.update("edges", values, "id = ?", arrayOf(edgeId.toString())) } catch (e: Exception) {}
@@ -503,7 +529,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // hapusan edge dari UI memakai expireEdge (soft-expire, arsip lunak,
     // sama seperti memory_forget). Tidak ada konfirmasi kedua karena ini
     // bukan aksi user dan edge-nya belum pernah tampil sebagai fakta aktif.
-    fun deleteEdge(edgeId: Long) {
+    private fun deleteEdgeKotlin(edgeId: Long) {
         var ft = ""
         try {
             val cur = readableDatabase.rawQuery("SELECT fact_text FROM edges WHERE id = ?", arrayOf(edgeId.toString()))
@@ -520,7 +546,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc240 m5: teks episode dicap 500 char — episode hanya dipakai
     // sebagai label sumber di retrieval, bukan dibaca kembali; teks
     // lengkap sudah ada di history (2000 char per pesan).
-    fun getOrCreateEpisode(sessionId: String, role: String, text: String, source: String): Long {
+    private fun getOrCreateEpisodeKotlin(sessionId: String, role: String, text: String, source: String): Long {
         val clean = text.take(500)
         try {
             val db = readableDatabase
@@ -542,7 +568,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // Episode bersifat append-only (dedup exact session+teks), sehingga
     // hitungan mark tidak pernah mundur; minOf di pemanggil menjaga bila
     // tabel menyusut.
-    fun countEpisodes(sessionId: String): Int {
+    private fun countEpisodesKotlin(sessionId: String): Int {
         return try {
             val cur = readableDatabase.rawQuery("SELECT COUNT(*) FROM episodes WHERE session_id = ?", arrayOf(sessionId))
             val n = if (cur.moveToFirst()) cur.getInt(0) else 0
@@ -550,7 +576,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         } catch (e: Exception) { 0 }
     }
 
-    fun episodesForSession(sessionId: String, offset: Int, limit: Int): List<EpisodeRow> {
+    private fun episodesForSessionKotlin(sessionId: String, offset: Int, limit: Int): List<EpisodeRow> {
         val out = ArrayList<EpisodeRow>()
         try {
             val cur = readableDatabase.rawQuery("SELECT id, role, text, source FROM episodes WHERE session_id = ? ORDER BY id ASC LIMIT ? OFFSET ?", arrayOf(sessionId, limit.toString(), offset.toString()))
@@ -563,7 +589,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc237 M13: hapus episode satu session_id yang lebih tua dari cutoff
     // (dipakai archiveOldHistory untuk chat1-1 supaya episode tidak
     // menggantung tanpa baris history sumbernya).
-    fun deleteEpisodesBefore(sessionId: String, beforeTs: Long): Int {
+    private fun deleteEpisodesBeforeKotlin(sessionId: String, beforeTs: Long): Int {
         return try { writableDatabase.delete("episodes", "session_id=? AND ts<?", arrayOf(sessionId, beforeTs.toString())) } catch (e: Exception) { 0 }
     }
 
@@ -572,14 +598,14 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc240 m8: "Aktifkan lagi" untuk edge ter-expire di PETA —
     // membalik expireEdge (invalid_at dan expired_at kembali NULL) agar
     // "arsip" tidak berarti nonaktif permanen tanpa jalan pulih.
-    fun unexpireEdge(edgeId: Long) {
+    private fun unexpireEdgeKotlin(edgeId: Long) {
         try {
             val cv = android.content.ContentValues().apply { putNull("invalid_at"); putNull("expired_at") }
             writableDatabase.update("edges", cv, "id = ?", arrayOf(edgeId.toString()))
         } catch (e: Exception) {}
     }
 
-    fun expireEdge(edgeId: Long) {
+    private fun expireEdgeKotlin(edgeId: Long) {
         try {
             val nowExp = System.currentTimeMillis()
             val cv = android.content.ContentValues().apply { put("invalid_at", nowExp); put("expired_at", nowExp) }
@@ -597,7 +623,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // Relasi banyak-nilai yang memang paralel (mis. satu subjek menyukai
     // banyak objek) tetap berisiko ikut ter-expire bila memakai relasi
     // yang sama — pemanggil memory_add hanya untuk fakta eksplisit manual.
-    fun supersedeConflictingEdges(fromId: Long, toId: Long, rel: String): Int {
+    private fun supersedeConflictingEdgesKotlin(fromId: Long, toId: Long, rel: String): Int {
         var n = 0
         try {
             val cur = readableDatabase.rawQuery("SELECT id, to_id FROM edges WHERE from_id = ? AND rel = ? AND invalid_at IS NULL", arrayOf(fromId.toString(), rel))
@@ -613,7 +639,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
 
     // vc198 Fase 1: cari fakta via FTS5. Melempar bila FTS tidak tersedia
     // atau tanpa hasil — pemanggil fallback ke LIKE (searchNodes).
-    fun searchFacts(query: String, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<EdgeFull> {
+    private fun searchFactsKotlin(query: String, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<EdgeFull> {
         val tokens = query.split(Regex("[^A-Za-z0-9_]+")).filter { it.length >= 2 }.distinct()
         if (tokens.isEmpty()) return emptyList()
         val matchQ = tokens.joinToString(" OR ") { it + "*" }
@@ -639,7 +665,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         return out
     }
     // vc198 Fase 2: cari edge berdasarkan id (untuk lookup kontradiksi).
-    fun edgeById(edgeId: Long): EdgeFull? {
+    private fun edgeByIdKotlin(edgeId: Long): EdgeFull? {
         return try {
             val cur = readableDatabase.rawQuery("SELECT id, from_id, to_id, rel, tag, confidence, fact_text, valid_at, invalid_at, recorded_at, expired_at, episode_id FROM edges WHERE id = ? LIMIT 1", arrayOf(edgeId.toString()))
             val out = if (cur.moveToFirst()) EdgeFull(cur.getLong(0), cur.getLong(1), cur.getLong(2), cur.getString(3) ?: "", cur.getString(4) ?: "EXTRACTED", cur.getDouble(5), cur.getString(6) ?: "", if (cur.isNull(7)) 0L else cur.getLong(7), if (cur.isNull(8)) null else cur.getLong(8), if (cur.isNull(9)) 0L else cur.getLong(9), if (cur.isNull(10)) null else cur.getLong(10), if (cur.isNull(11)) -1L else cur.getLong(11)) else null
@@ -649,7 +675,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     }
 
     // vc198 Fase 2: ubah tag edge. confidence null = tidak diubah.
-    fun setEdgeTag(edgeId: Long, tag: String, confidence: Double? = null) {
+    private fun setEdgeTagKotlin(edgeId: Long, tag: String, confidence: Double? = null) {
         try {
             val cv = android.content.ContentValues().apply {
                 put("tag", tag)
@@ -661,7 +687,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
 
     // vc198 Fase 2: edge aktif yang menyentuh salah satu label (untuk
     // daftar kontradiksi di prompt verifier). JOIN label, cap 30.
-    fun activeEdgesTouching(labels: Set<String>): List<EdgeFull> {
+    private fun activeEdgesTouchingKotlin(labels: Set<String>): List<EdgeFull> {
         if (labels.isEmpty()) return emptyList()
         val labs = labels.take(24)
         val ph = labs.joinToString(",") { "?" }
@@ -709,7 +735,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     }
     // vc198 Fase 3: cari node berdasar label persis (untuk deteksi node
     // baru sebelum getOrCreateNode, dipakai koleksi kandidat resolusi).
-    fun nodeByLabel(label: String): Node? {
+    private fun nodeByLabelKotlin(label: String): Node? {
         val clean = label.trim().take(200)
         if (clean.isBlank()) return null
         return try {
@@ -745,7 +771,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         }.take(10)
     }
 
-    fun addAlias(nodeId: Long, alias: String) {
+    private fun addAliasKotlin(nodeId: Long, alias: String) {
         val clean = alias.trim().take(200)
         if (clean.isBlank() || nodeId <= 0) return
         try {
@@ -761,7 +787,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         } catch (e: Exception) {}
     }
 
-    fun episodeSource(episodeId: Long): String {
+    private fun episodeSourceKotlin(episodeId: Long): String {
         if (episodeId <= 0) return "graph"
         return try {
             val cur = readableDatabase.rawQuery("SELECT source FROM episodes WHERE id = ? LIMIT 1", arrayOf(episodeId.toString()))
@@ -774,7 +800,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc198 Fase 3: edge keluar aktif satu node (dengan id + fact_text +
     // temporal), untuk traversal 2 hop [MEMORI]. neighbors() 1 hop tool
     // TIDAK diubah.
-    fun outEdges(id: Long, limit: Int = 20): List<EdgeFull> {
+    private fun outEdgesKotlin(id: Long, limit: Int = 20): List<EdgeFull> {
         val out = ArrayList<EdgeFull>()
         try {
             val cur = readableDatabase.rawQuery("SELECT id, from_id, to_id, rel, tag, confidence, fact_text, valid_at, invalid_at, recorded_at, expired_at, episode_id FROM edges WHERE from_id = ? AND invalid_at IS NULL LIMIT ?", arrayOf(id.toString(), limit.toString()))
@@ -841,7 +867,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // vc234 K5: klaim kekuatan dihapus — urutan di sini murni id DESC
     // (terbaru), tanpa ORDER BY confidence/weight. Tag + confidence
     // ikut dibaca agar memoryBlock bisa menampilkannya.
-    fun latestFactsVc230(limit: Int = 10): List<Fact> {
+    private fun latestFactsVc230Kotlin(limit: Int = 10): List<Fact> {
         val out = ArrayList<Fact>()
         try {
             val cur = readableDatabase.rawQuery("SELECT fact_text, recorded_at, tag, confidence FROM edges WHERE invalid_at IS NULL AND fact_text IS NOT NULL AND fact_text != '' ORDER BY id DESC LIMIT ?", arrayOf(limit.toString()))
@@ -922,7 +948,7 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
     // tidak ganda. Alias tetap ditambahkan seperti sebelumnya, dan
     // fact_text dihitung ulang dari label kanonis agar traversal dan
     // PETA tidak lagi menampilkan node duplikat sebagai entitas terpisah.
-    fun rewireNodeEdges(oldId: Long, canonId: Long) {
+    private fun rewireNodeEdgesKotlin(oldId: Long, canonId: Long) {
         if (oldId <= 0 || canonId <= 0 || oldId == canonId) return
         try {
             val db = readableDatabase
@@ -991,6 +1017,702 @@ class GraphDb private constructor(ctx: Context) : SQLiteOpenHelper(ctx.applicati
         }
         return sb.toString()
     }
+    // ---- Slice 7: jalur Rust (seam rusqlite); gagal -> *Kotlin ----
+    private fun nodeFromRow(row: List<Any?>): Node = Node(
+        SqliteSeam.rowLong(row, 0), SqliteSeam.rowStr(row, 1),
+        SqliteSeam.rowStr(row, 2), SqliteSeam.rowStr(row, 3)
+    )
+
+    private fun edgeFullFromRow(row: List<Any?>): EdgeFull = EdgeFull(
+        SqliteSeam.rowLong(row, 0), SqliteSeam.rowLong(row, 1),
+        SqliteSeam.rowLong(row, 2), SqliteSeam.rowStr(row, 3),
+        SqliteSeam.rowStr(row, 4).ifBlank { "EXTRACTED" },
+        SqliteSeam.rowDouble(row, 5), SqliteSeam.rowStr(row, 6),
+        SqliteSeam.rowLongOrNull(row, 7) ?: 0L,
+        SqliteSeam.rowLongOrNull(row, 8),
+        SqliteSeam.rowLongOrNull(row, 9) ?: 0L,
+        SqliteSeam.rowLongOrNull(row, 10),
+        SqliteSeam.rowLongOrNull(row, 11) ?: -1L
+    )
+
+    private val EDGE_SELECT = "SELECT id, from_id, to_id, rel, tag, confidence, fact_text, " +
+        "valid_at, invalid_at, recorded_at, expired_at, episode_id FROM edges"
+
+    fun getOrCreateNode(type: String, label: String, source: String): Long {
+        if (ensureRust()) {
+            val clean = label.trim().take(200)
+            if (clean.isBlank()) return -1
+            val q1 = SqliteSeam.query(
+                dbPath,
+                "SELECT id FROM nodes WHERE LOWER(label) = LOWER(?) LIMIT 1", listOf(clean)
+            )
+            if (q1 == null) {
+                rustGraphDb = false
+                return getOrCreateNodeKotlin(type, label, source)
+            }
+            if (q1.isNotEmpty()) return SqliteSeam.rowLong(q1[0], 0)
+            val esc = clean.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            val q2 = SqliteSeam.query(
+                dbPath,
+                "SELECT id FROM nodes WHERE aliases_json LIKE ? ESCAPE '\\' LIMIT 1",
+                listOf("%\"" + esc + "\"%")
+            )
+            if (q2 == null) {
+                rustGraphDb = false
+                return getOrCreateNodeKotlin(type, label, source)
+            }
+            if (q2.isNotEmpty()) return SqliteSeam.rowLong(q2[0], 0)
+            val ins = SqliteSeam.exec(
+                dbPath,
+                "INSERT INTO nodes(type, label, source) VALUES(?,?,?)",
+                listOf(type, clean, source)
+            )
+            if (ins != null) return ins.lastId
+            rustGraphDb = false
+        }
+        return getOrCreateNodeKotlin(type, label, source)
+    }
+
+    fun nodeById(id: Long): Node? {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, type, label, source FROM nodes WHERE id = ?", listOf(id.toString())
+            )
+            if (rows != null) {
+                return if (rows.isEmpty()) null else nodeFromRow(rows[0])
+            }
+            rustGraphDb = false
+        }
+        return nodeByIdKotlin(id)
+    }
+
+    fun addEdge(fromId: Long, toId: Long, rel: String, tag: String = "EXTRACTED", confidence: Double = 1.0, factText: String = "", episodeId: Long = -1): Long {
+        if (ensureRust()) {
+            if (fromId <= 0 || toId <= 0 || fromId == toId) return -1L
+            val q = SqliteSeam.query(
+                dbPath,
+                "SELECT id FROM edges WHERE from_id = ? AND to_id = ? AND rel = ? LIMIT 1",
+                listOf(fromId.toString(), toId.toString(), rel)
+            )
+            if (q == null) {
+                rustGraphDb = false
+                return addEdgeKotlin(fromId, toId, rel, tag, confidence, factText, episodeId)
+            }
+            if (q.isNotEmpty()) return -2L
+            var ft = factText
+            if (ft.isBlank()) {
+                val fl = nodeById(fromId)?.label ?: ""
+                val tl = nodeById(toId)?.label ?: ""
+                ft = fl + " " + rel + " " + tl
+            }
+            val nowEdge = System.currentTimeMillis()
+            // INSERT ... + FTS sync dalam satu transaksi (padanan insert +
+            // syncFtsInsert Kotlin; bila tx gagal -> fallback Kotlin yang
+            // menjalankan jalur fallback minimalnya).
+            val steps = ArrayList<Pair<String, List<Any?>>>()
+            if (episodeId > 0) {
+                steps.add(
+                    "INSERT INTO edges(from_id, to_id, rel, tag, confidence, fact_text, recorded_at, valid_at, episode_id) VALUES(?,?,?,?,?,?,?,?,?)" to
+                        listOf(fromId, toId, rel, tag, confidence, ft, nowEdge, nowEdge, episodeId)
+                )
+            } else {
+                steps.add(
+                    "INSERT INTO edges(from_id, to_id, rel, tag, confidence, fact_text, recorded_at, valid_at) VALUES(?,?,?,?,?,?,?,?)" to
+                        listOf(fromId, toId, rel, tag, confidence, ft, nowEdge, nowEdge)
+                )
+            }
+            if (ft.isNotBlank()) {
+                steps.add(
+                    "INSERT INTO fts_fact(fact_text) VALUES(?)" to listOf(ft)
+                )
+            }
+            val res = SqliteSeam.tx(dbPath, steps)
+            if (res != null && res.isNotEmpty()) return res[0].lastId
+            rustGraphDb = false
+        }
+        return addEdgeKotlin(fromId, toId, rel, tag, confidence, factText, episodeId)
+    }
+
+    fun searchNodes(query: String, limit: Int = 20): List<Node> {
+        if (ensureRust()) {
+            val q = query.trim()
+            if (q.isBlank()) return ArrayList()
+            val esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, type, label, source FROM nodes WHERE label LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?",
+                listOf(esc + "%", limit.toString())
+            )
+            if (rows != null) return rows.map { nodeFromRow(it) }
+            rustGraphDb = false
+        }
+        return searchNodesKotlin(query, limit)
+    }
+
+    fun neighbors(id: Long, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<Triple<Node, String, Node>> {
+        if (ensureRust()) {
+            val rangeOnNb = sinceMs > 0L || untilMs != Long.MAX_VALUE
+            val rows = if (!rangeOnNb) {
+                SqliteSeam.query(
+                    dbPath,
+                    "SELECT e.to_id, e.rel FROM edges e WHERE e.from_id = ? AND e.invalid_at IS NULL LIMIT ?",
+                    listOf(id.toString(), limit.toString())
+                )
+            } else {
+                SqliteSeam.query(
+                    dbPath,
+                    "SELECT e.to_id, e.rel FROM edges e WHERE e.from_id = ? AND e.invalid_at IS NULL AND e.recorded_at > 0 AND e.recorded_at >= ? AND e.recorded_at <= ? LIMIT ?",
+                    listOf(id.toString(), sinceMs.toString(), untilMs.toString(), limit.toString())
+                )
+            }
+            if (rows != null) {
+                val out = ArrayList<Triple<Node, String, Node>>()
+                for (r in rows) {
+                    val to = nodeById(SqliteSeam.rowLong(r, 0)) ?: continue
+                    val from = nodeById(id) ?: continue
+                    out.add(Triple(from, SqliteSeam.rowStr(r, 1), to))
+                }
+                return out
+            }
+            rustGraphDb = false
+        }
+        return neighborsKotlin(id, limit, sinceMs, untilMs)
+    }
+
+    private fun countRust(sql: String): Int? {
+        val rows = SqliteSeam.query(dbPath, sql, emptyList())
+        if (rows != null && rows.isNotEmpty()) return SqliteSeam.rowInt(rows[0], 0)
+        return null
+    }
+
+    fun countNodes(): Int {
+        if (ensureRust()) {
+            val n = countRust("SELECT COUNT(*) FROM nodes")
+            if (n != null) return n
+            rustGraphDb = false
+        }
+        return countNodesKotlin()
+    }
+
+    fun countEdges(): Int {
+        if (ensureRust()) {
+            val n = countRust("SELECT COUNT(*) FROM edges")
+            if (n != null) return n
+            rustGraphDb = false
+        }
+        return countEdgesKotlin()
+    }
+
+    fun path(fromLabel: String, toLabel: String, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<String> {
+        if (ensureRust()) {
+            val from = searchNodes(fromLabel, 1).firstOrNull() ?: return emptyList()
+            val to = searchNodes(toLabel, 1).firstOrNull() ?: return emptyList()
+            if (from.id == to.id) return listOf(from.label)
+            val rangeOnPath = sinceMs > 0L || untilMs != Long.MAX_VALUE
+            val seen = HashSet<Long>(); seen.add(from.id)
+            val prev = HashMap<Long, Pair<Long, String>>()
+            val depthMap = HashMap<Long, Int>(); depthMap[from.id] = 0
+            val queue = ArrayList<Long>(); queue.add(from.id)
+            var head = 0; var found = false
+            while (head < queue.size && !found && seen.size <= 2000) {
+                val curId = queue[head++]
+                val d = depthMap[curId] ?: 0
+                if (d >= 4) continue
+                val rows = if (!rangeOnPath) {
+                    SqliteSeam.query(
+                        dbPath,
+                        "SELECT to_id, rel FROM edges WHERE from_id = ? AND invalid_at IS NULL ORDER BY id LIMIT 200",
+                        listOf(curId.toString())
+                    )
+                } else {
+                    SqliteSeam.query(
+                        dbPath,
+                        "SELECT to_id, rel FROM edges WHERE from_id = ? AND invalid_at IS NULL AND recorded_at > 0 AND recorded_at >= ? AND recorded_at <= ? ORDER BY id LIMIT 200",
+                        listOf(curId.toString(), sinceMs.toString(), untilMs.toString())
+                    )
+                }
+                if (rows == null) {
+                    rustGraphDb = false
+                    return pathKotlin(fromLabel, toLabel, sinceMs, untilMs)
+                }
+                for (r in rows) {
+                    val nb = SqliteSeam.rowLong(r, 0)
+                    val rel = SqliteSeam.rowStr(r, 1)
+                    if (seen.add(nb)) {
+                        prev[nb] = Pair(curId, rel)
+                        depthMap[nb] = d + 1
+                        if (nb == to.id) { found = true; break }
+                        queue.add(nb)
+                    }
+                }
+            }
+            if (!found) return emptyList()
+            val labels = HashMap<Long, String>()
+            fun lab(id: Long): String {
+                if (!labels.containsKey(id)) labels[id] = nodeById(id)?.label ?: ("#" + id)
+                return labels[id] ?: ("#" + id)
+            }
+            val steps = ArrayList<String>()
+            var curId = to.id
+            while (curId != from.id) {
+                val p = prev[curId] ?: break
+                steps.add(0, lab(p.first) + " --" + p.second + "--> " + lab(curId))
+                curId = p.first
+            }
+            return steps
+        }
+        return pathKotlin(fromLabel, toLabel, sinceMs, untilMs)
+    }
+
+    fun allNodes(limit: Int = Int.MAX_VALUE): List<Node> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, type, label, source FROM nodes ORDER BY id LIMIT ?",
+                listOf(limit.toString())
+            )
+            if (rows != null) return rows.map { nodeFromRow(it) }
+            rustGraphDb = false
+        }
+        return allNodesKotlin(limit)
+    }
+
+    fun allEdges(limit: Int = Int.MAX_VALUE): List<EdgeFull> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath, "$EDGE_SELECT ORDER BY id LIMIT ?", listOf(limit.toString())
+            )
+            if (rows != null) return rows.map { edgeFullFromRow(it) }
+            // Fallback kolom (DB v1 tanpa kolom temporal) — padanan catch
+            // Kotlin: SELECT 4 kolom saja.
+            val rows4 = SqliteSeam.query(
+                dbPath,
+                "SELECT id, from_id, to_id, rel FROM edges ORDER BY id LIMIT ?",
+                listOf(limit.toString())
+            )
+            if (rows4 != null) {
+                return rows4.map {
+                    EdgeFull(
+                        SqliteSeam.rowLong(it, 0), SqliteSeam.rowLong(it, 1),
+                        SqliteSeam.rowLong(it, 2), SqliteSeam.rowStr(it, 3),
+                        "EXTRACTED", 1.0
+                    )
+                }
+            }
+            rustGraphDb = false
+        }
+        return allEdgesKotlin(limit)
+    }
+
+    fun confirmAmbiguous(edgeId: Long) {
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE edges SET tag = ?, confidence = ? WHERE id = ?",
+                listOf("EXTRACTED", 1.0, edgeId.toString())
+            )
+            if (r != null) return
+            rustGraphDb = false
+        }
+        confirmAmbiguousKotlin(edgeId)
+    }
+
+    fun deleteEdge(edgeId: Long) {
+        if (ensureRust()) {
+            val q = SqliteSeam.query(
+                dbPath, "SELECT fact_text FROM edges WHERE id = ?", listOf(edgeId.toString())
+            )
+            if (q == null) {
+                rustGraphDb = false
+                deleteEdgeKotlin(edgeId)
+                return
+            }
+            val ft = if (q.isEmpty()) "" else SqliteSeam.rowStr(q[0], 0)
+            val steps = ArrayList<Pair<String, List<Any?>>>()
+            steps.add("DELETE FROM edges WHERE id = ?" to listOf(edgeId.toString()))
+            if (ft.isNotBlank()) {
+                steps.add("DELETE FROM fts_fact WHERE fact_text = ?" to listOf(ft))
+            }
+            val res = SqliteSeam.tx(dbPath, steps)
+            if (res != null) return
+            rustGraphDb = false
+        }
+        deleteEdgeKotlin(edgeId)
+    }
+
+    fun getOrCreateEpisode(sessionId: String, role: String, text: String, source: String): Long {
+        if (ensureRust()) {
+            val clean = text.take(500)
+            val q = SqliteSeam.query(
+                dbPath,
+                "SELECT id FROM episodes WHERE session_id = ? AND text = ? LIMIT 1",
+                listOf(sessionId, clean)
+            )
+            if (q == null) {
+                rustGraphDb = false
+                return getOrCreateEpisodeKotlin(sessionId, role, text, source)
+            }
+            if (q.isNotEmpty()) return SqliteSeam.rowLong(q[0], 0)
+            val ins = SqliteSeam.exec(
+                dbPath,
+                "INSERT INTO episodes(session_id, role, text, source, ts) VALUES(?,?,?,?,?)",
+                listOf(sessionId, role, clean, source, System.currentTimeMillis())
+            )
+            if (ins != null) return ins.lastId
+            rustGraphDb = false
+        }
+        return getOrCreateEpisodeKotlin(sessionId, role, text, source)
+    }
+
+    fun countEpisodes(sessionId: String): Int {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT COUNT(*) FROM episodes WHERE session_id = ?", listOf(sessionId)
+            )
+            if (rows != null && rows.isNotEmpty()) return SqliteSeam.rowInt(rows[0], 0)
+            rustGraphDb = false
+        }
+        return countEpisodesKotlin(sessionId)
+    }
+
+    fun episodesForSession(sessionId: String, offset: Int, limit: Int): List<EpisodeRow> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, role, text, source FROM episodes WHERE session_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+                listOf(sessionId, limit.toString(), offset.toString())
+            )
+            if (rows != null) {
+                return rows.map {
+                    EpisodeRow(
+                        SqliteSeam.rowLong(it, 0), SqliteSeam.rowStr(it, 1),
+                        SqliteSeam.rowStr(it, 2), SqliteSeam.rowStr(it, 3)
+                    )
+                }
+            }
+            rustGraphDb = false
+        }
+        return episodesForSessionKotlin(sessionId, offset, limit)
+    }
+
+    fun deleteEpisodesBefore(sessionId: String, beforeTs: Long): Int {
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "DELETE FROM episodes WHERE session_id=? AND ts<?",
+                listOf(sessionId, beforeTs.toString())
+            )
+            if (r != null) return r.changes.toInt()
+            rustGraphDb = false
+        }
+        return deleteEpisodesBeforeKotlin(sessionId, beforeTs)
+    }
+
+    fun unexpireEdge(edgeId: Long) {
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE edges SET invalid_at = NULL, expired_at = NULL WHERE id = ?",
+                listOf(edgeId.toString())
+            )
+            if (r != null) return
+            rustGraphDb = false
+        }
+        unexpireEdgeKotlin(edgeId)
+    }
+
+    fun expireEdge(edgeId: Long) {
+        if (ensureRust()) {
+            val nowExp = System.currentTimeMillis()
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE edges SET invalid_at = ?, expired_at = ? WHERE id = ?",
+                listOf(nowExp, nowExp, edgeId.toString())
+            )
+            if (r != null) return
+            rustGraphDb = false
+        }
+        expireEdgeKotlin(edgeId)
+    }
+
+    fun supersedeConflictingEdges(fromId: Long, toId: Long, rel: String): Int {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, to_id FROM edges WHERE from_id = ? AND rel = ? AND invalid_at IS NULL",
+                listOf(fromId.toString(), rel)
+            )
+            if (rows == null) {
+                rustGraphDb = false
+                return supersedeConflictingEdgesKotlin(fromId, toId, rel)
+            }
+            var n = 0
+            for (r in rows) {
+                val eid = SqliteSeam.rowLong(r, 0)
+                val oldTo = SqliteSeam.rowLong(r, 1)
+                if (oldTo != toId) {
+                    expireEdge(eid)
+                    n++
+                }
+            }
+            return n
+        }
+        return supersedeConflictingEdgesKotlin(fromId, toId, rel)
+    }
+
+    fun searchFacts(query: String, limit: Int = 20, sinceMs: Long = 0L, untilMs: Long = Long.MAX_VALUE): List<EdgeFull> {
+        if (ensureRust()) {
+            val tokens = query.split(Regex("[^A-Za-z0-9_]+")).filter { it.length >= 2 }.distinct()
+            if (tokens.isEmpty()) return emptyList()
+            val matchQ = tokens.joinToString(" OR ") { it + "*" }
+            val fts = SqliteSeam.query(
+                dbPath,
+                "SELECT fact_text FROM fts_fact WHERE fts_fact MATCH ? LIMIT ?",
+                listOf(matchQ, (limit * 3).toString())
+            )
+            if (fts == null) {
+                rustGraphDb = false
+                return searchFactsKotlin(query, limit, sinceMs, untilMs)
+            }
+            val facts = ArrayList<String>()
+            for (r in fts) {
+                val f = SqliteSeam.rowStr(r, 0)
+                if (f.isNotBlank()) facts.add(f)
+            }
+            if (facts.isEmpty()) return emptyList()
+            val out = ArrayList<EdgeFull>()
+            val rangeOnSf = sinceMs > 0L || untilMs != Long.MAX_VALUE
+            for (f in facts) {
+                val ec = SqliteSeam.query(
+                    dbPath,
+                    "$EDGE_SELECT WHERE fact_text = ? AND invalid_at IS NULL LIMIT 1",
+                    listOf(f)
+                )
+                if (ec == null || ec.isEmpty()) {
+                    if (ec == null) {
+                        rustGraphDb = false
+                        return searchFactsKotlin(query, limit, sinceMs, untilMs)
+                    }
+                    continue
+                }
+                val e = edgeFullFromRow(ec[0])
+                if (!rangeOnSf || (e.recordedAt > 0L && e.recordedAt >= sinceMs && e.recordedAt <= untilMs)) {
+                    out.add(e)
+                }
+                if (out.size >= limit) break
+            }
+            return out
+        }
+        return searchFactsKotlin(query, limit, sinceMs, untilMs)
+    }
+
+    fun edgeById(edgeId: Long): EdgeFull? {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath, "$EDGE_SELECT WHERE id = ? LIMIT 1", listOf(edgeId.toString())
+            )
+            if (rows != null) {
+                return if (rows.isEmpty()) null else edgeFullFromRow(rows[0])
+            }
+            rustGraphDb = false
+        }
+        return edgeByIdKotlin(edgeId)
+    }
+
+    fun setEdgeTag(edgeId: Long, tag: String, confidence: Double? = null) {
+        if (ensureRust()) {
+            val r = if (confidence != null) {
+                SqliteSeam.exec(
+                    dbPath,
+                    "UPDATE edges SET tag = ?, confidence = ? WHERE id = ?",
+                    listOf(tag, confidence, edgeId.toString())
+                )
+            } else {
+                SqliteSeam.exec(
+                    dbPath,
+                    "UPDATE edges SET tag = ? WHERE id = ?",
+                    listOf(tag, edgeId.toString())
+                )
+            }
+            if (r != null) return
+            rustGraphDb = false
+        }
+        setEdgeTagKotlin(edgeId, tag, confidence)
+    }
+
+    fun activeEdgesTouching(labels: Set<String>): List<EdgeFull> {
+        if (ensureRust()) {
+            if (labels.isEmpty()) return emptyList()
+            val labs = labels.take(24)
+            val ph = labs.joinToString(",") { "?" }
+            val args = ArrayList<Any?>()
+            args.addAll(labs)
+            args.addAll(labs)
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT e.id, e.from_id, e.to_id, e.rel, e.tag, e.confidence, e.fact_text, e.valid_at, e.invalid_at, e.recorded_at, e.expired_at, e.episode_id FROM edges e JOIN nodes nf ON nf.id = e.from_id JOIN nodes nt ON nt.id = e.to_id WHERE e.invalid_at IS NULL AND (nf.label IN (" + ph + ") OR nt.label IN (" + ph + ")) ORDER BY e.id DESC LIMIT 30",
+                args
+            )
+            if (rows != null) return rows.map { edgeFullFromRow(it) }
+            rustGraphDb = false
+        }
+        return activeEdgesTouchingKotlin(labels)
+    }
+
+    fun nodeByLabel(label: String): Node? {
+        if (ensureRust()) {
+            val clean = label.trim().take(200)
+            if (clean.isBlank()) return null
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, type, label, source FROM nodes WHERE LOWER(label) = LOWER(?) LIMIT 1",
+                listOf(clean)
+            )
+            if (rows != null) {
+                return if (rows.isEmpty()) null else nodeFromRow(rows[0])
+            }
+            rustGraphDb = false
+        }
+        return nodeByLabelKotlin(label)
+    }
+
+    fun addAlias(nodeId: Long, alias: String) {
+        if (ensureRust()) {
+            val clean = alias.trim().take(200)
+            if (clean.isBlank() || nodeId <= 0) return
+            val q = SqliteSeam.query(
+                dbPath,
+                "SELECT aliases_json FROM nodes WHERE id = ? LIMIT 1",
+                listOf(nodeId.toString())
+            )
+            if (q == null) {
+                rustGraphDb = false
+                addAliasKotlin(nodeId, alias)
+                return
+            }
+            val raw = if (q.isEmpty()) "[]" else SqliteSeam.rowStr(q[0], 0)
+            val arr = try {
+                org.json.JSONArray(raw)
+            } catch (e: Exception) {
+                org.json.JSONArray()
+            }
+            for (i in 0 until arr.length()) if (arr.optString(i) == clean) return
+            arr.put(clean)
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE nodes SET aliases_json = ? WHERE id = ?",
+                listOf(arr.toString(), nodeId.toString())
+            )
+            if (r != null) return
+            rustGraphDb = false
+        }
+        addAliasKotlin(nodeId, alias)
+    }
+
+    fun episodeSource(episodeId: Long): String {
+        if (ensureRust()) {
+            if (episodeId <= 0) return "graph"
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT source FROM episodes WHERE id = ? LIMIT 1",
+                listOf(episodeId.toString())
+            )
+            if (rows != null) {
+                val out = if (rows.isEmpty()) "graph" else SqliteSeam.rowStr(rows[0], 0)
+                return if (out.isBlank()) "graph" else out
+            }
+            rustGraphDb = false
+        }
+        return episodeSourceKotlin(episodeId)
+    }
+
+    fun outEdges(id: Long, limit: Int = 20): List<EdgeFull> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "$EDGE_SELECT WHERE from_id = ? AND invalid_at IS NULL LIMIT ?",
+                listOf(id.toString(), limit.toString())
+            )
+            if (rows != null) return rows.map { edgeFullFromRow(it) }
+            rustGraphDb = false
+        }
+        return outEdgesKotlin(id, limit)
+    }
+
+    fun latestFactsVc230(limit: Int = 10): List<Fact> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT fact_text, recorded_at, tag, confidence FROM edges WHERE invalid_at IS NULL AND fact_text IS NOT NULL AND fact_text != '' ORDER BY id DESC LIMIT ?",
+                listOf(limit.toString())
+            )
+            if (rows != null) {
+                return rows.map {
+                    Fact(
+                        SqliteSeam.rowStr(it, 0), SqliteSeam.rowLong(it, 1), "graph",
+                        SqliteSeam.rowStr(it, 2).ifBlank { "EXTRACTED" },
+                        SqliteSeam.rowDoubleOrNull(it, 3) ?: 1.0
+                    )
+                }
+            }
+            rustGraphDb = false
+        }
+        return latestFactsVc230Kotlin(limit)
+    }
+
+    fun rewireNodeEdges(oldId: Long, canonId: Long) {
+        if (ensureRust()) {
+            if (oldId <= 0 || canonId <= 0 || oldId == canonId) return
+            val rows = SqliteSeam.query(
+                dbPath,
+                "SELECT id, from_id, to_id, rel FROM edges WHERE from_id = ? OR to_id = ?",
+                listOf(oldId.toString(), oldId.toString())
+            )
+            if (rows == null) {
+                rustGraphDb = false
+                rewireNodeEdgesKotlin(oldId, canonId)
+                return
+            }
+            for (r in rows) {
+                val eid = SqliteSeam.rowLong(r, 0)
+                val f = SqliteSeam.rowLong(r, 1)
+                val t = SqliteSeam.rowLong(r, 2)
+                val rel = SqliteSeam.rowStr(r, 3)
+                val nf = if (f == oldId) canonId else f
+                val nt = if (t == oldId) canonId else t
+                if (nf == nt) {
+                    SqliteSeam.exec(dbPath, "DELETE FROM edges WHERE id = ?", listOf(eid.toString()))
+                    continue
+                }
+                val dup = SqliteSeam.query(
+                    dbPath,
+                    "SELECT id FROM edges WHERE from_id = ? AND to_id = ? AND rel = ? LIMIT 1",
+                    listOf(nf.toString(), nt.toString(), rel)
+                )
+                if (dup == null) {
+                    rustGraphDb = false
+                    rewireNodeEdgesKotlin(oldId, canonId)
+                    return
+                }
+                if (dup.isNotEmpty()) {
+                    SqliteSeam.exec(dbPath, "DELETE FROM edges WHERE id = ?", listOf(eid.toString()))
+                    continue
+                }
+                val fl = nodeById(nf)?.label ?: ""
+                val tl = nodeById(nt)?.label ?: ""
+                SqliteSeam.exec(
+                    dbPath,
+                    "UPDATE edges SET from_id = ?, to_id = ?, fact_text = ? WHERE id = ?",
+                    listOf(nf, nt, fl + " " + rel + " " + tl, eid.toString())
+                )
+            }
+            return
+        }
+        rewireNodeEdgesKotlin(oldId, canonId)
+    }
+
 }
 
 // v4.48.9.23 (vc189): tipe Graph v2 (top-level).
