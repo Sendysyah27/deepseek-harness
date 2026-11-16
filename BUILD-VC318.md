@@ -491,7 +491,20 @@ Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S4.md §4):
 
 ### 9.5 Push branch vc317-rust
 
-(diisi setelah langkah 6)
+- Remote HEAD sebelum push: `39e8c1a5164800026cc79c63e54d519eede7921e`
+  (tree `44fb64c25e209edd9bffd2c039781847dc665db5`) — BUKAN
+  `c207878f` dari §8.5 slice 3: remote sudah bergerak sesudah push slice
+  3 (staging == remote di luar delta, terverifikasi check — tidak ada
+  drift).
+- Push: delta via Git Data API (`base_tree` = tree HEAD remote) —
+  file yang diubah: crate (9: 7 modul Rust baru + `lib.rs` +
+  `jni_glue.rs`; `Cargo.toml`/`Cargo.lock` TIDAK berubah) + Kotlin (9:
+  7 wrapper + `RustCore.kt` + `priv/PrivPairNotif.kt`) + `tests/
+  TestSmallModulesVc318.kt` (baru) + `tests/run-suite-ci.sh` +
+  `.github/workflows/android.yml` + `BUILD-VC318.md` (baru §9).
+- Commit baru: `6f52c3d31ec0d4243616b03aae528d300a26e205` (tree
+  `a293b96d5ac9ff0480aa7c915a23ac5c75c2dd6d`).
+- Verifikasi: remote tree == staging (22/22 file delta SHA cocok).
 
 ### 9.6 CI + APK slice 4
 

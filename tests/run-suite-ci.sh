@@ -119,7 +119,12 @@ run_c() {
   for _f in NotifIds SystemBarSpecVc309 DsSafetyStrip McpHelper SessionBackgroundVc304 Behaviors ChatThemeVc306; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main"; return 1; }; done
   git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/priv/PrivPairNotif.kt | grep -q PrivPairNotif.kt || { echo "GAGAL C: priv/PrivPairNotif.kt tidak berubah vs main"; return 1; }
   for _r in notif_ids system_bar_spec ds_safety_strip mcp_helper session_background behaviors chat_theme; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main"; return 1; }; done
-  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/Flavor.kt | grep -q Flavor.kt && { echo "GAGAL C: Flavor.kt berubah vs main (slice 4 DIKECUALIKAN/deferred)"; return 1; }
+  # Flavor.kt: bandingkan commit slice ini (HEAD) vs INDUKNYA (HEAD~1),
+  # BUKAN vs main — Flavor.kt branch SUDAH beda dari main sejak lama
+  # (pre-slice-4, blob a3feca39 vs main ec173ba0); yang dilarang slice 4
+  # adalah MENGUBAHNYA di commit ini. (Perbaikan integrator ronde 1 CI.)
+  git diff --name-only HEAD~1 HEAD -- app/src/main/java/com/senzwh/deepharness/Flavor.kt | grep -q Flavor.kt && { echo "GAGAL C: Flavor.kt berubah di commit slice ini (slice 4 DIKECUALIKAN/deferred)"; return 1; }
+  echo "LULUS C (slice 4): Flavor.kt tidak berubah di commit slice ini"
   echo "LULUS C (slice 4): 7 file Kotlin + PrivPairNotif berubah, 7 modul Rust baru, Flavor.kt tidak berubah"
   echo "LULUS C"
   return 0
