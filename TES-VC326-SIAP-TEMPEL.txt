@@ -1,0 +1,74 @@
+TES-VC326-SIAP-TEMPEL — Slice 10: Daun murni Tools.kt via Rust (vc326, 4.48.9.160)
+============================================================================
+
+CATATAN PENTING — BACA DULU:
+Versi ini TIDAK mengubah apa pun yang kelihatan di layar. Yang berubah
+hanya "mesin di dalam" untuk 3 hal: cari di DuckDuckGo (web_search),
+cari video YouTube (search_youtube), dan baca halaman web (web_fetch).
+Dulu mesin lama (Kotlin), sekarang mesin baru (Rust) — tapi caranya,
+isinya, dan hasilnya SAMA PERSIS (dibuktikan 172 cek otomatis:
+hasil Rust = hasil Kotlin, huruf per huruf). Kalau ada yang beda
+di layar, itu BUG — laporkan.
+
+Jadi: T1–T6 dari TES-VC322 dan T7–T9 dari TES-VC325 TETAP BERLAKU
+semua. Di bawah ini hanya T TAMBAHAN untuk versi ini (tes asap,
+masing-masing 1 menit).
+
+--------------------------------------------------------------------------------
+T10 — WEB_SEARCH MASIH MEMBERI HASIL YANG SAMA (tes utama vc326)
+--------------------------------------------------------------------------------
+Tujuan: memastikan cari web lewat DuckDuckGo tetap jalan sesudah
+mesinnya diganti.
+
+Langkah:
+  1. Buka app Harness (versi vc326).
+     LULUS bila: app terbuka normal, tidak force-close.
+  2. Di chat, ketik perintah cari web (misalnya: cari "harga emas
+     hari ini" — atau apa pun yang biasa kamu cari).
+     LULUS bila: muncul daftar hasil berupa judul + alamat web
+     (bentuknya: "- judul" lalu alamat di bawahnya), BUKAN pesan
+     "Tidak ada hasil terbaca" dan BUKAN kartu merah.
+  3. Ketuk salah satu alamat hasil (kalau bisa).
+     LULUS bila: halaman terbuka normal.
+
+GAGAL bila: hasil kosong padahal biasanya ada / format hasil
+berubah aneh / kartu merah muncul.
+
+--------------------------------------------------------------------------------
+T11 — SEARCH_YOUTUBE MASIH MEMBERI DAFTAR VIDEO + LABEL SHORTS
+--------------------------------------------------------------------------------
+Tujuan: memastikan cari video YouTube tetap jalan, termasuk label
+[Shorts] untuk video pendek.
+
+Langkah:
+  1. Di chat, ketik perintah cari video YouTube (misalnya:
+     cari video "cara membuat kopi").
+     LULUS bila: muncul daftar bernomor ("1. judul ...", "2. judul
+     ...") lengkap dengan nama channel, durasi, dan alamat
+     youtube.com/watch?v=...
+  2. Cari video pendek (Shorts).
+     LULUS bila: video pendek tetap diberi label "[Shorts]" di
+     belakang judulnya.
+
+GAGAL bila: daftar kosong / nomor urut hilang / durasi atau
+channel hilang / label [Shorts] hilang dari video pendek.
+
+--------------------------------------------------------------------------------
+T12 — WEB_FETCH HALAMAN PANJANG TETAP TERPOTONG RAPI
+--------------------------------------------------------------------------------
+Tujuan: memastikan baca halaman web yang panjang tetap dipotong
+rapi dengan penanda "(dipotong, sisa ... char)".
+
+Langkah:
+  1. Di chat, minta baca 1 halaman web yang panjang (artikel berita
+     atau halaman Wikipedia).
+     LULUS bila: isi halaman tampil, dan kalau terlalu panjang,
+     di ujungnya ada penanda "(dipotong, sisa ... char)".
+  2. Periksa tidak ada karakter aneh (tanda "?" berlebih atau
+     huruf rusak) di tengah teks.
+
+GAGAL bila: penanda potong hilang / teks rusak / kartu merah.
+
+--------------------------------------------------------------------------------
+RINGKASAN: T10–T12 di atas LULUS + T1–T6 vc322 dan T7–T9 vc325 tetap
+LULUS = vc326 AMAN.

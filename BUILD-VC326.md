@@ -326,4 +326,85 @@ baru — ronde 3 menutup suite. Log ronde 1/2 diarsipkan
 
 ## §8. Push + CI + APK
 
-_(diisi sesudah push/CI/APK)_
+### §8.1 Push branch `vc317-rust`
+
+- Remote HEAD sebelum push: `f1cac218a832ebc722f52ddaf15300395d9df368`
+  (doc-sync vc325 — cocok ekspektasi; main TIDAK disentuh).
+- Verifikasi pra-push: staging == remote di luar delta (0 file
+  hanya-di-remote; 4 file baru + 17 berubah, semua sesuai delta
+  slice 10; `build.py` diff HANYA 2 baris VERSION).
+- Push via `gh.py push-tree` (493 blob): commit
+  **`25b53acba0a46711f8f00a2f53b6b1d66c106f9a`**,
+  parent `f1cac218`, pesan "vc326 slice 10: daun murni Tools.kt
+  via toolsLeavesJson (RUST_CORE_VERSION 7->8, suite 1946/1947,
+  P12 172/172)".
+- Verifikasi pasca-push: HEAD remote = `25b53acb`; **493/493 file
+  lokal SHA-nya cocok dengan tree remote** (0 mismatch);
+  21/21 file delta hadir di remote.
+
+### §8.2 CI
+
+- Run: **43925372330** —
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43925372330
+  (workflow `android.yml`, branch `vc317-rust`, head `25b53acb`,
+  event push, dibuat 2026-11-16T18:06:42Z).
+- **Status: SUCCESS** (completed, conclusion `success`,
+  updated 2026-11-16T18:17:45Z, ~11 menit). Semua step hijau
+  termasuk P12 (172 cek), C, D, build senz+pure, Verify APKs.
+
+### §8.3 Artifact CI (`vc317-work/apk-vc326-ci/`)
+
+- `harness-vc317-apks` (artifact id 14256767261, 29.128.608 byte):
+  `DeepSeekHarness-v4.48.9.160.apk` (14.687.340 byte) +
+  `Harness-v4.48.9.160-pure.apk` (14.638.188 byte).
+- Main: MD5 `bd2f832f55a0a12165b7735e3a8e25e2`,
+  SHA256 `711b196380ddd6a4f4cda0a56fa143c2bfd3b0f7673b404e0807863de85f01c1`;
+  Pure: MD5 `b30de76b379599e5a7c9df3e839c8fa4`,
+  SHA256 `25950402a1a9182e62e46f9862697d30223f1e3082f122a7557e68c4babe0036`.
+- aapt2: keduanya 326/4.48.9.160; apksigner v2+v3 true, 1 signer
+  masing-masing; `libharness_core.so` 4.201.592 byte di
+  `lib/arm64-v8a`; simbol JNI `Java_harness_core_RustCore_toolsLeavesJson`
+  ADA; `hsurr:` 0 (di .so maupun dex).
+- Sidik jari CI (EKSPEKTASI beda — kunci runner, bukan kunci VM):
+  Main SHA-256 `c82141c7d81cb5e03352c94221488c9f5c5c64da4301dac12f8e38a0bfb23968`,
+  Pure SHA-256 `7bbdd59743e777edff61edab93e48c1d933e0e8548edc833cd9effd9ae33b10b`.
+
+_(APK VM + gerbang sidik jari diisi sesudah build VM)_
+
+### §8.4 Build VM (`vc317-work/apk-vc326-vm/`, JH `~/jdk-21-sys`,
+langkah Rust rust-lld + CC 0r; clang NDK hidup 21.0.0 —
+TIDAK perlu restore dari zip cache)
+
+- Main `DeepSeekHarness-v4.48.9.160.apk` 14.867.564 byte,
+  MD5 `3b0adfda57c9d3841251c5741ceb8e6e`,
+  SHA256 `07596a1fa61d18184760e31bc1e21a0b955fc85abe5768f34128cdb12424e593`,
+  **sidik jari `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+  — GERBANG COCOK (sama vc316, bisa menimpa)**.
+- Pure `Harness-v4.48.9.160-pure.apk` 14.818.412 byte,
+  MD5 `5b42e17bae21a9a661af2576f68ee8fc`,
+  SHA256 `1d152e02abfeef063e5960e14bfc2e15f8b98f177f36d03d6028066605ab587c`,
+  **sidik jari `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+  — GERBANG COCOK (sama vc316, bisa menimpa)**.
+- Keduanya: apksigner Verifies, v2+v3 true, 1 signer,
+  aapt2 326/4.48.9.160, `libharness_core.so` 4.783.464 byte
+  di `lib/arm64-v8a`, simbol `toolsLeavesJson` ADA,
+  `hsurr:` 0, arm64-v8a saja.
+- Log build: `build-senz.log`, `build-pure.log` (di folder yang sama).
+
+### §8.5 Dokumen akhir
+
+- `BUILD-VC326.md` ini difinalisasi (§6 + §7 + §8) sesudah CI
+  SUCCESS + build VM lolos gerbang sidik jari.
+- `TES-VC326-SIAP-TEMPEL.txt`: perilaku user-visible IDENTIK
+  (porting murni, paritas 172/172) — tidak ada tes perangkat
+  BARU yang wajib; T10–T12 di file itu hanya tes asap 1 menit
+  (web_search, search_youtube + label [Shorts], web_fetch
+  potong rapi). T1–T6 vc322 + T7–T9 vc325 tetap berlaku.
+- **TERBUKA — doc-sync push:** salinan `BUILD-VC326.md` +
+  `TES-VC326-SIAP-TEMPEL.txt` sudah disinkronkan ke
+  `branch-stage/` (siap push), TAPI belum di-push ke
+  `vc317-rust` — HEAD remote masih `25b53acb` (commit push
+  slice 10). Alasan: tugas ini hanya memerintahkan SATU push
+  (langkah 7); doc-sync akan memicu satu run CI penuh lagi
+  hanya untuk perubahan dokumen. Koordinator yang memutuskan
+  (pola vc325: doc-sync `f1cac218`).
