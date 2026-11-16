@@ -270,7 +270,58 @@ vc321 (GroupChat/DsApiClient/SlotClient) berubah vs baseline.
 
 ## §8. Push + CI + APK
 
-*(diisi sesudah push — lihat MILESTONES.md)*
+- **Pra-cek drift (sebelum push):** remote HEAD 1eaaf4f9 terverifikasi
+  (cocok brief); selisih remote tree vs staging tepat 9 berubah + 1 baru,
+  0 remote-only: 5 file fix + build.py + TestInputLimitVc316.kt +
+  run-suite-ci.sh + android.yml + TestRoomIxlFixVc321.kt (baru).
+- **Push:** 16 Nov 2026 ~08:10 WIB, branch `vc317-rust`, commit
+  `a21b3abce0cd4a9fd006f699d968da9d596c541b`, 466 file via `gh.py
+  push-tree`. Pesan: "vc321 (4.48.9.155): fix room-lane IXL —
+  selectCatalog+delta room, riwayat adaptif + guard reset sesi server
+  1-1 (P7 52 cek, suite 1127/1128)".
+- **Verifikasi pasca-push:** remote HEAD = a21b3abc; remote tree 466
+  blob == staging 466 file, 0 beda; 12/12 file delta SHA cocok
+  (termasuk BUILD-VC321.md + TES-VC321-SIAP-TEMPEL.txt yang ikut
+  ter-push). Main tidak disentuh (tetap 2e6245e3 = vc309).
+- **CI:** run [#43829092826](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43829092826)
+  (push, head a21b3abc, dibuat 08:10:13Z) — **SUCCESS**, job `build`
+  completed/success. Artifact `harness-vc317-apks` (nama belum diganti
+  dari vc320) 26.404.791 byte.
+- **APK CI** (`vc317-work/apk-vc321-ci/`): zip MD5
+  85e3127043f1c9e743e7c8ca046a8859.
+  - Main `DeepSeekHarness-v4.48.9.155.apk` 13.319.276 B, MD5
+    dba22c901a7c4c405a6cae25f302afad, SHA256
+    cead80a68d42290f13debba1c29128918d341b9c1377abc40ce1428513f5f312;
+    v2+v3 true, 1 signer (kunci runner
+    16ebf9932e89e57730d56bf9208ea7a4a3326e42d14736035a80b6c0066e4b60 —
+    beda dari VM, EKSPEKTASI).
+  - Pure `Harness-v4.48.9.155-pure.apk` 13.270.124 B, MD5
+    f166b3b711634f8b3773e3e6b5bd6875, SHA256
+    3dee07228bbb21d4ca5651b7c632ce0de7f4d9befeb81955d57925ac42c26f9d;
+    v2+v3 true, 1 signer (kunci runner
+    9081a38e034a9e2790ee7c39b7774e6fb1afef37e9c1420a7e4f3290d7ae7dee).
+  - Keduanya 321/4.48.9.155, libharness_core.so di lib/arm64-v8a
+    (1.854.424 B), hsurr: 0, hanya arm64.
+- **APK VM** (`vc317-work/apk-vc321-vm/`, build `python3 -u build.py`
+  senz lalu pure; log `/tmp/build-vc321-senz.log`,
+  `/tmp/build-vc321-pure.log`):
+  - Main `DeepSeekHarness-v4.48.9.155.apk` 13.401.196 B, MD5
+    b69be4e70786c94a6c0431e2b6fdeecb, SHA256
+    1af379ced32c2cd795841cdcbde0473998221f6323966bd4b9c99bd69e959696;
+    v2+v3 true, 1 signer, **sidik jari
+    e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177 —
+    COCOK gerbang vc316** (bisa menimpa).
+  - Pure `Harness-v4.48.9.155-pure.apk` 13.352.044 B, MD5
+    fa75a7af41648a496d004bad79d8ef60, SHA256
+    e6c3a023ee8dd8b4d10d7fb5455783fd1e09dc968139cbf9e947a62c87421318;
+    v2+v3 true, 1 signer, **sidik jari
+    f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f —
+    COCOK gerbang vc316** (bisa menimpa).
+  - Keduanya 321/4.48.9.155, libharness_core.so di lib/arm64-v8a
+    (2.119.656 B), hsurr: 0, hanya arm64.
+- **Doc-sync:** BUILD-VC321.md diperbarui (§8 ini) via `gh.py
+  put-file` sesudah CI/APK (commit terpisah, isi §8 saja yang berubah
+  vs versi ter-push).
 
 ## §9. Tes perangkat (TES-VC321-SIAP-TEMPEL)
 
