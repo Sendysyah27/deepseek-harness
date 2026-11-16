@@ -237,8 +237,12 @@ fun main(args: Array<String>) {
         "Vc322" !in gcSrc && "vc322" !in gcSrc && "Vc322" !in bgSrc && "vc322" !in bgSrc)
     // RustCore.kt: di tree lokal (work-impl/integrated) ia ada di
     // <tree>/harness/core/; di repo/CI tree = .../deepharness sehingga
-    // RustCore ada di <parent-tree>/harness/core/. Coba keduanya.
-    val rcSrc = listOf(File(tree, "harness/core/RustCore.kt"), File(tree.parentFile, "harness/core/RustCore.kt")).firstOrNull { it.exists() }?.readText().orEmpty()
+    // RustCore ada di <naik-3>/harness/core/ (deepharness -> senzwh
+    // -> com -> java). Coba semua tingkat.
+    // (Koreksi CI ronde 1+2: naik 1 dan 2 tingkat SALAH — parent tree CI
+    // adalah .../com/senzwh lalu .../com, bukan .../java — 5.18 gagal
+    // 2x di CI karena jalur ini.)
+    val rcSrc = listOf(File(tree, "harness/core/RustCore.kt"), File(tree.parentFile, "harness/core/RustCore.kt"), File(tree.parentFile?.parentFile, "harness/core/RustCore.kt"), File(tree.parentFile?.parentFile?.parentFile, "harness/core/RustCore.kt")).firstOrNull { it.exists() }?.readText().orEmpty()
     check("5.18 RUST_CORE_VERSION tetap 4 (tidak ada JNI baru)", "const val VERSION = 4" in rcSrc)
 
     println("== §6. Sesi pendek + jalur lain tidak berubah ==")
