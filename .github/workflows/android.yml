@@ -74,8 +74,37 @@ jobs:
         working-directory: harness-core
         run: cargo test --locked
 
-      - name: JVM suite (398/399; R2-4.1 usang ditoleransi)
-        run: bash tests/run-suite-ci.sh
+      # ARM64-ONLY (arahan Sendy 06:58): Rust hanya aarch64-linux-android,
+      # APK hanya berisi native lib arm64-v8a — tanpa x86_64/ABI lain.
+      - name: Fetch main (untuk diff check suite)
+        run: git fetch origin main --depth=1
+
+      - name: Suite 0 — kompilasi tree
+        run: bash tests/run-suite-ci.sh 0
+
+      - name: Suite P1 DsFailure (103 cek)
+        run: bash tests/run-suite-ci.sh P1
+
+      - name: Suite N9 audit (46 cek)
+        run: bash tests/run-suite-ci.sh N9
+
+      - name: Suite BR browser (45 cek)
+        run: bash tests/run-suite-ci.sh BR
+
+      - name: Suite IXL input-limit (72 cek)
+        run: bash tests/run-suite-ci.sh IXL
+
+      - name: Suite R1 Concat API (64 cek)
+        run: bash tests/run-suite-ci.sh R1
+
+      - name: Suite R2 Concat wiring (69 cek; R2-4.1 usang ditoleransi)
+        run: bash tests/run-suite-ci.sh R2
+
+      - name: Suite C — diff vs main
+        run: bash tests/run-suite-ci.sh C
+
+      - name: Suite D — sapu tree
+        run: bash tests/run-suite-ci.sh D
 
       - name: Build APK Main (senz)
         run: python3 build.py --flavor senz
