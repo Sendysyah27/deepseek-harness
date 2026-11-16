@@ -1,8 +1,8 @@
 # BUILD-VC318 — Slice 2: PowSolver.kt → Rust (vc318 / 4.48.9.152)
 
 **Tanggal:** 16 Nov 2026 · **Integrator:** subagent slice 2 (koordinator: Jhon)
-· **Status:** INTEGRASI LOKAL + PUSH BRANCH SELESAI (pra-CI — angka CI/VM di §7
-menyusul setelah langkah 7–9; dokumen ini diperbarui lagi pasca-verifikasi).
+· **Status:** SELESAI PENUH — kode Rust + JNI + CI hijau + APK VM + CI
+terverifikasi (sidik jari VM COCOK vc316, bisa menimpa).
 
 ## 1. Keputusan versi (koordinator)
 
@@ -109,15 +109,57 @@ Quirk yang DIREPLIKASI (bukan diperbaiki — porting murni, PATCH-S2.md §4.2):
   file yang diubah: crate (3) + Kotlin (2) + `build.py` + `tests/
   TestPowSolverVc318.kt` (baru) + `tests/run-suite-ci.sh` +
   `.github/workflows/android.yml` + `BUILD-VC318.md` (baru).
-- Commit baru: _(diisi setelah push)_.
-- Verifikasi: remote tree == staging (0 selisih SHA pada file yang diubah).
+- Commit baru: `7339c730ef65947e4eef38002cb6db900f431a3b` (tree
+  `aebc9937093d284a26015e975dbad0ab2eb4a4cf`).
+- Verifikasi: remote tree == staging (10/10 file delta SHA cocok).
 
 ## 7. CI + APK (diisi setelah langkah 7–9)
 
-- CI run: _(URL + nomor run + hasil)_.
-- APK CI: _(path + ukuran + MD5 + SHA256; sidik jari CI beda dari VM —
-  kunci runner, BUKAN kegagalan)_.
-- APK VM: _(path `vc317-work/apk-vc318-vm/` + ukuran + MD5 + SHA256 +
-  sidik jari; gerbang: Main `e738145b…`, Pure `f7c336ae…` — HARUS cocok
-  vc316, bila beda = BUILD GAGAL)_.
-- Tes perangkat: `vc317-work/TES-VC318-SIAP-TEMPEL.txt`.
+- CI run: **#10 (43784602557, commit 7339c730) — SUCCESS**
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43784602557
+  (cargo test + suite 0/P1 103/P2 36/N9 46/BR 45/IXL 72/R1 64/R2 69
+  dengan R2-4.1 ditoleransi/C/D + build APK Main + Pure + Verify + Upload —
+  semua langkah hijau).
+- APK CI (`vc317-work/apk-vc318-ci/`, zip 25.224.479 B, MD5
+  `7e79e8e6e34084828bdaea353f6f584f`, SHA256
+  `29b5be136c0d98bc396c8a50143ca0c7aca4849cf52bc701e985bb2b94a873cb`):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 12.717.164 B, MD5
+    `ee18669afc45df8c2af284374131066f`, SHA256
+    `7e45808b33aae7ba8c5f8932ad4b322a76ee2b914d5b108ee9f94eff62a2a95b`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Android Debug —
+    kunci runner CI); libharness_core.so 336.376 B di lib/arm64-v8a;
+    hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    12.672.108 B, MD5 `3dc23137ec87ed92b1f89525cbd9f55c`, SHA256
+    `8700724d73acd6d116a420293ed1d1ecb54d8e966f80c596cecc75944bfdf22a`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Harness — kunci
+    runner CI); libharness_core.so 336.376 B; hsurr 0.
+  - Sidik jari CI AKAN beda dari VM (kunci runner) — BUKAN kegagalan.
+    Gerbang sidik jari hanya berlaku untuk APK VM (§ bawah).
+- APK VM (`vc317-work/apk-vc318-vm/`, build `build.py --flavor senz/pure`,
+  log `build-senz.log`/`build-pure.log`, .so 423.688 B):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 12.749.932 B, MD5
+    `71250543e783bb8306fd2cb286932b32`, SHA256
+    `bc6e3f8c9e85af57027ea81bb9ea30191ee2d054db4009c0a77b198c46640ead`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    — **COCOK gerbang vc316**; libharness_core.so 423.688 B di
+    lib/arm64-v8a (arm64-only); hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    12.704.876 B, MD5 `90dfe2d31ee72a4fa9325737bf3a64dd`, SHA256
+    `b69031a71a569d5ae073a70efd5c4ccd092409def501f5539c68c81d8d84bebd`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    — **COCOK gerbang vc316**; libharness_core.so 423.688 B; hsurr 0.
+  - Bukti isi `.so` (strings di `libharness_core.so` APK VM): ke-6 simbol
+    JNI PoW baru ADA (`powSha3Hex`, `powDsHashV1Hex`,
+    `powSolveDeepSeekJson`, `powSolveFastJson`, `powSolveFmtJson`,
+    `powSolveJson`) + `classifyFailureJson` slice 1.
+  - Catatan: `.so` VM (423.688 B) lebih besar dari `.so` CI (336.376 B)
+    — pola yang sama seperti vc317 (VM 396.920 B vs CI 313.688 B);
+    bukan anomali.
+- Tes perangkat: `vc317-work/TES-VC318-SIAP-TEMPEL.txt` (T1–T6, bahasa
+  bayi; T2/T3 membuktikan PoW Rust jalan di perangkat — tiap chat baru
+  harus menyelesaikan PoW sebelum server menjawab).
