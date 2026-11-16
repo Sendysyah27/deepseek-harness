@@ -390,7 +390,7 @@ Simbol JNI baru (7, satu fungsi JSON bulk per modul): `notifIdsJson`,
 `sessionBackgroundJson`, `behaviorsJson`, `chatThemeJson` — semua
 `catch_unwind` (pola `guarded_string` slice 1); JSON
 `{"ok":true, ...}` atau `{"ok":false,"error":"rust core error"}`.
-Total simbol JNI kini 21 (4 basis + 8 PoW + 1 redact + 7 slice 4);
+Total simbol JNI kini 20 (4 basis + 8 PoW + 1 redact + 7 slice 4);
 `external fun` di `RustCore.kt` kini 20.
 
 Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S4.md §4):
@@ -508,9 +508,99 @@ Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S4.md §4):
 
 ### 9.6 CI + APK slice 4
 
-(diisi setelah langkah 7–9)
+- CI run **#16 (43795370835, commit 6f52c3d3) — FAILURE** — hanya
+  step 20 "Suite C — diff vs main" yang merah; cargo test + suite
+  0/P1 103/P2 36/**P4 235**/N9 46/BR 45/IXL 72/R1 64/R2 69 (R2-4.1
+  ditoleransi)/D semua HIJAU (D belum jalan karena C gagal duluan).
+  Log (trik 302 + opener bersih): `GAGAL C: Flavor.kt berubah vs main
+  (slice 4 DIKECUALIKAN/deferred)`.
+  DIAGNOSA (bug cek integrator, BUKAN kode): cek C membandingkan
+  Flavor.kt vs `origin/main` — padahal Flavor.kt branch SUDAH beda
+  dari main sejak lama (pre-slice-4). Bukti API: blob Flavor.kt SAMA
+  di commit induk `39e8c1a5` dan commit slice 4 `6f52c3d3`
+  (`a3feca39da92376501953bf924956f3d5c50f584`) vs main
+  (`ec173ba05474edd9a875635050465088e6cbd7d6`) — slice 4 TIDAK
+  menyentuhnya. Perbaikan ronde 1 CI: cek C Flavor.kt diganti
+  `git diff HEAD~1 HEAD` (gagal hanya bila commit slice ini sendiri
+  mengubah Flavor.kt) + BUILD-VC318.md §9.5 diisi — commit
+  `64865f220e9d3af7f69980dcdeebda0dec22217e` (2/2 SHA cocok).
+- CI run **#17 (43796185800, commit 64865f22) — SUCCESS**
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43796185800
+  (cargo test + suite 0/P1 103/P2 36/**P4 235**/N9 46/BR 45/IXL 72/R1 64/R2 69
+  dengan R2-4.1 ditoleransi/C/D + build APK Main + Pure + Verify + Upload —
+  semua langkah hijau).
+- APK CI (`vc317-work/apk-vc318-s4-ci/`, zip 26.074.437 B, MD5
+  `aee6a5c8ae3fd51600241b6c2dee0ca2`, SHA256
+  `7b89f20cceef2a477d28a931c537d45e88cfe49fc91153458d4d45b8ebd954c1`):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 13.151.340 B, MD5
+    `75349456f2ca05768ef2799fc29c1f49`, SHA256
+    `647cfab4d3584029a22cc10bba21b56bccd7dd3959ac26fee9d6ad5ace88ea46`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Android Debug —
+    kunci runner CI); libharness_core.so 1.463.864 B di lib/arm64-v8a;
+    7 simbol bulk S4 ADA (`notifIdsJson`, `systemBarSpecJson`,
+    `dsSafetyStripJson`, `mcpHelperJson`, `sessionBackgroundJson`,
+    `behaviorsJson`, `chatThemeJson`) + `redactSecrets` + PoW +
+    `classifyFailureJson`; hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    13.102.188 B, MD5 `ceace1125330f3392eb3b3a0e3a85a3e`, SHA256
+    `bea6f4250f9ca9cbbd5821910e46e27a4b5fc9ddbae7ad4e55f6c13c0c0f43fd`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Harness — kunci
+    runner CI); libharness_core.so 1.463.864 B; simbol S4 ADA; hsurr 0.
+  - Sidik jari CI AKAN beda dari VM (kunci runner) — BUKAN kegagalan.
+    Gerbang sidik jari hanya berlaku untuk APK VM (§ bawah).
+  - CATATAN UKURAN: `.so` CI 1.435.080 B (slice 3) → 1.463.864 B
+    (slice 4, +28.784 B — 7 modul kecil tanpa regex baru); pola sama
+    di VM (1.672.504 → 1.709.520 B). Bukan anomali.
+- APK VM (`vc317-work/apk-vc318-s4-vm/`, build `build.py --flavor senz/pure`,
+  log `build-senz.log`/`build-pure.log`, .so 1.709.520 B, arm64-only):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 13.225.068 B, MD5
+    `88892d68e8fa00de5f8a20146fb9b43f`, SHA256
+    `19a56e2a744eda030b2c850edcc1977ad9afb5d3490279bd9a22e91436a9ddcf`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    — **COCOK gerbang vc316**; libharness_core.so 1.709.520 B di
+    lib/arm64-v8a (arm64-only); hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    13.175.916 B, MD5 `02bd26543980c6ad936c542d2c644d99`, SHA256
+    `f7fdffdc41d12fa75f6c540b8e094a6fec8c54bbb5bf6dab2eee27eb472bc7ae`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    — **COCOK gerbang vc316**; libharness_core.so 1.709.520 B; hsurr 0.
+  - Bukti isi `.so` (strings di `libharness_core.so` APK VM + CI):
+    **20/20 simbol JNI ADA** (4 basis: rustCoreVersion,
+    rustCoreCapabilities, echo, classifyFailureJson; 8 PoW slice 2;
+    `redactSecrets` slice 3; 7 bulk slice 4).
+- Tes perangkat: `vc317-work/TES-VC318-SIAP-TEMPEL.txt` — slice 4
+  TIDAK membawa perubahan perilaku yang terlihat user (7 modul kecil
+  pindah mesinnya ke Rust — HASILNYA SAMA PERSIS seperti sebelumnya);
+  T1–T6 slice 2 tetap berlaku apa adanya, dengan catatan slice 4 di
+  kepala file. Tidak ada T-baru.
 
-## PENUTUP BATCH vc318 — (diisi setelah APK VM slice 4 terverifikasi)
+## PENUTUP BATCH vc318 — SELESAI PENUH 16 Nov 2026
 
 APK VM kanonis batch vc318 = `vc317-work/apk-vc318-s4-vm/` (slice
-terakhir, berisi semua slice 2+3+4).
+terakhir, berisi semua slice 2+3+4):
+- Main `DeepSeekHarness-v4.48.9.152.apk` — 13.225.068 B, MD5
+  `88892d68e8fa00de5f8a20146fb9b43f`, SHA256
+  `19a56e2a744eda030b2c850edcc1977ad9afb5d3490279bd9a22e91436a9ddcf`,
+  sidik jari `e738145b…` (COCOK vc316).
+- Pure `Harness-v4.48.9.152-pure.apk` — 13.175.916 B, MD5
+  `02bd26543980c6ad936c542d2c644d99`, SHA256
+  `f7fdffdc41d12fa75f6c540b8e094a6fec8c54bbb5bf6dab2eee27eb472bc7ae`,
+  sidik jari `f7c336ae…` (COCOK vc316).
+
+Ringkasan batch (semua di branch `vc317-rust`, versi TETAP
+318/4.48.9.152, `RUST_CORE_VERSION` 2, main TIDAK disentuh):
+- Slice 2 (PoW): 8 simbol JNI, cargo 139/139, suite 434/435.
+- Slice 3 (RedactSecrets): +1 simbol, cargo 149/149, suite 528/529.
+- Slice 4 (7 modul kecil): +7 simbol bulk JSON, cargo 174/174, suite
+  763/764 (P4 235/235 baru). CI run #17 SUCCESS; APK CI + VM
+  terverifikasi; sidik jari VM COCOK vc316 — BISA menimpa.
+- Total akhir: crate `harness-core` 10 modul Rust, 20 simbol JNI
+  (4 basis + 8 PoW + 1 redact + 7 bulk),
+  `external fun` RustCore.kt 20, suite JVM 763/764 (satu-satunya gagal
+  R2-4.1 usang warisan vc315, ditoleransi).
+- `Flavor.kt` tetap Kotlin (deferred permanen sampai langkah 0d
+  `build.py` diubah — butuh Gas terpisah).
