@@ -3,6 +3,7 @@ package com.senzwh.deepharness
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import harness.core.RustCore
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -30,6 +31,9 @@ import org.json.JSONObject
  * dipakai untuk login OAuth — selalu browser sistem (Intent VIEW).
  */
 object McpOAuth {
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustMcpOAuth = RustCore.available
+
     const val REDIRECT_URI = "http://127.0.0.1:8931/"
     private const val REDIRECT_PORT = 8931
 
@@ -42,12 +46,47 @@ object McpOAuth {
         return b64url(buf)
     }
 
-    private fun challenge(verifier: String): String =
+    private fun challenge(verifier: String): String {
+        HttpSeam.pkceChallenge(verifier)?.let { return it }
+        if (!HttpSeam.rustHttp) rustMcpOAuth = false
+        return challengeKotlin(verifier)
+    }
+
+    private fun challengeKotlin(verifier: String): String =
         b64url(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
 
-    private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+    private fun enc(s: String): String {
+        HttpSeam.formEncode(s)?.let { return it }
+        if (!HttpSeam.rustHttp) rustMcpOAuth = false
+        return encKotlin(s)
+    }
+
+    private fun encKotlin(s: String): String = URLEncoder.encode(s, "UTF-8")
 
     private fun postFormRaw(url: String, params: Map<String, String>): Pair<Int, String> {
+        if (rustMcpOAuth) {
+            val body = HttpSeam.formBody(params.entries.map { it.key to it.value })
+            if (body != null) {
+                val r = HttpSeam.request(
+                    "POST", url,
+                    mapOf(
+                        "Content-Type" to "application/x-www-form-urlencoded",
+                        "Accept" to "application/json"
+                    ),
+                    body, 30000, 60000
+                )
+                if (r != null) {
+                    if (!HttpSeam.rustHttp) rustMcpOAuth = false
+                    return r.code to r.body
+                }
+                if (!HttpSeam.rustHttp) rustMcpOAuth = false
+                // null = transport gagal -> fallback Kotlin (saklar hidup).
+            } else if (!HttpSeam.rustHttp) rustMcpOAuth = false
+        }
+        return postFormRawKotlin(url, params)
+    }
+
+    private fun postFormRawKotlin(url: String, params: Map<String, String>): Pair<Int, String> {
         val body = params.entries.joinToString("&") { "${enc(it.key)}=${enc(it.value)}" }
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
@@ -95,6 +134,37 @@ object McpOAuth {
         }
     }
 
+    /** Rakit URL auth loopback — Rust dulu, fallback Kotlin (bangun String yang sama). */
+    private fun buildAuthUrl(
+        authUrl: String, clientId: String, scopes: String, state: String,
+        ch: String, offline: Boolean
+    ): String {
+        HttpSeam.oauthAuthUrl(authUrl, clientId, REDIRECT_URI, scopes, state, ch, offline)
+            ?.let { return it }
+        if (!HttpSeam.rustHttp) rustMcpOAuth = false
+        val q = StringBuilder(authUrl)
+            .append("?response_type=code&client_id=").append(encKotlin(clientId))
+            .append("&redirect_uri=").append(encKotlin(REDIRECT_URI))
+            .append("&scope=").append(encKotlin(scopes))
+            .append("&state=").append(encKotlin(state))
+            .append("&code_challenge=").append(encKotlin(ch))
+            .append("&code_challenge_method=S256")
+        if (offline) q.append("&access_type=offline&prompt=consent")
+        return q.toString()
+    }
+
+    /** Parse query callback — Rust dulu, fallback Kotlin (map yang sama). */
+    private fun parseCallbackQuery(query: String): Map<String, String> {
+        HttpSeam.oauthParseCallback(query)?.let { return it }
+        if (!HttpSeam.rustHttp) rustMcpOAuth = false
+        val params = HashMap<String, String>()
+        for (part in query.split("&")) {
+            val kv = part.split("=", limit = 2)
+            if (kv.size == 2) params[kv[0]] = URLDecoder.decode(kv[1], "UTF-8")
+        }
+        return params
+    }
+
     fun startLoopback(ctx: Context, def: McpServerDef, clientId: String, clientSecret: String? = null, onDone: (String) -> Unit) {
         Thread {
             try {
@@ -108,15 +178,8 @@ object McpOAuth {
                 } catch (e: Exception) {
                     throw Exception("Port $REDIRECT_PORT dipakai — tutup app yang memakainya lalu ulangi.")
                 }
-                val q = StringBuilder(authUrl)
-                    .append("?response_type=code&client_id=").append(enc(clientId))
-                    .append("&redirect_uri=").append(enc(REDIRECT_URI))
-                    .append("&scope=").append(enc(def.scopes))
-                    .append("&state=").append(enc(state))
-                    .append("&code_challenge=").append(enc(ch))
-                    .append("&code_challenge_method=S256")
-                if (def.offline) q.append("&access_type=offline&prompt=consent")
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(q.toString())).apply {
+                val q = buildAuthUrl(authUrl, clientId, def.scopes, state, ch, def.offline)
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(q)).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 ctx.startActivity(intent)
@@ -132,11 +195,7 @@ object McpOAuth {
                 do { ln = reader.readLine() } while (ln != null && ln.isNotEmpty())
                 val path = reqLine.split(" ").getOrNull(1) ?: ""
                 val query = path.substringAfter("?", "")
-                val params = HashMap<String, String>()
-                for (part in query.split("&")) {
-                    val kv = part.split("=", limit = 2)
-                    if (kv.size == 2) params[kv[0]] = URLDecoder.decode(kv[1], "UTF-8")
-                }
+                val params = parseCallbackQuery(query)
                 val body = "<html><body><h2>Berhasil — kembali ke aplikasi S&Harness.</h2></body></html>"
                 val bodyBytes = body.toByteArray(Charsets.UTF_8)
                 val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bodyBytes.size}\r\nConnection: close\r\n\r\n"

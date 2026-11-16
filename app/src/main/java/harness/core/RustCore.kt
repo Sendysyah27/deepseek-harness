@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 5
+    const val VERSION = 6
 
     val available: Boolean
 
@@ -119,4 +119,17 @@ object RustCore {
      * fallback ke implementasi Kotlin lama.
      */
     external fun sqliteJson(request: String): String?
+
+    // ---- Slice 8: HTTP clients (ureq + logika murni HTTP) ----
+    /**
+     * HTTP generik + logika murni HTTP. Request JSON `{"op":...}`:
+     * `request` (method/url/headers/body/timeout/cap/want_headers),
+     * `mcp_extract`, `shape_fingerprint`, `decode_word`,
+     * `gmail_headers`, `pkce_challenge`, `form_encode`, `form_body`,
+     * `oauth_auth_url`, `oauth_parse_callback`, `sse_apply`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama.
+     */
+    external fun httpJson(request: String): String?
 }

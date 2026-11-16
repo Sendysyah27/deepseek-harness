@@ -217,12 +217,12 @@ fun main(args: Array<String>) {
     check("6.18 rumus lama tanpa marker", SkillJudge.triggerScore(d6, "buka discord") == SkillJudge.TriggerScore(false, 1, 0, 1))
 
     // ================= 7. Seam =================
-    println("== 7. Seam JNI (VERSION 5 + capabilities + saklar) ==")
-    check("7.1 RustCore.VERSION == 5", RustCore.VERSION == 5, "VERSION=${RustCore.VERSION}")
+    println("== 7. Seam JNI (VERSION 6 + capabilities + saklar) ==")
+    check("7.1 RustCore.VERSION == 6", RustCore.VERSION == 6, "VERSION=${RustCore.VERSION}")
     if (useRust) {
         check("7.2 RustCore.available true (mode rust)", RustCore.available)
         val caps = JSONObject(RustCore.rustCoreCapabilities())
-        check("7.3 capabilities version 5", caps.getInt("version") == 5, "version=${caps.optInt("version")}")
+        check("7.3 capabilities version 6", caps.getInt("version") == 6, "version=${caps.optInt("version")}")
         val fns = caps.getJSONArray("functions")
         val fnNames = (0 until fns.length()).map { fns.getString(it) }.toSet()
         check("7.4 capabilities memuat 3 fungsi baru", "toolRegistryJson" in fnNames && "agentPromptJson" in fnNames && "skillTriggerJson" in fnNames)

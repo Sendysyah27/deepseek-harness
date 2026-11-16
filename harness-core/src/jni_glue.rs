@@ -15,6 +15,7 @@ use crate::chat_theme;
 use crate::concat_api_client;
 use crate::ds_failure;
 use crate::ds_safety_strip;
+use crate::http;
 use crate::mcp_helper;
 use crate::notif_ids;
 use crate::pow_solver;
@@ -39,7 +40,8 @@ use std::sync::Once;
 /// v4 = slice 6 (tool_registry/agent_prompt/skill_trigger):
 /// +3 fungsi bulk JSON `toolRegistryJson`/`agentPromptJson`/`skillTriggerJson`.
 /// v5 = slice 7 (sqlite): +1 fungsi `sqliteJson` (rusqlite generik).
-pub const RUST_CORE_VERSION: jint = 5;
+/// v6 = slice 8 (http): +1 fungsi `httpJson` (ureq + logika murni HTTP).
+pub const RUST_CORE_VERSION: jint = 6;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -184,13 +186,15 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "sessionBackgroundJson", "behaviorsJson", "chatThemeJson",
                 "concatApiJson",
                 "toolRegistryJson", "agentPromptJson", "skillTriggerJson",
-                "sqliteJson"],
+                "sqliteJson",
+                "httpJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
                 "concat_api_client",
                 "tool_registry", "agent_prompt", "skill_trigger",
-                "sqlite", "sqlite_schema"]
+                "sqlite", "sqlite_schema",
+                "http", "sse"]
         })
         .to_string())
     })
@@ -817,6 +821,25 @@ pub extern "C" fn Java_harness_core_RustCore_skillTriggerJson(
 // ------------------------------------------------------- Slice 7: SQLite --
 //
 // Satu fungsi JNI generik untuk semua DB (rusqlite). Request JSON:
+// ------------------------------------------------------------- Slice 8: HTTP --
+// `{"op":"request"|"mcp_extract"|"shape_fingerprint"|"decode_word"|
+// "gmail_headers"|"pkce_challenge"|"form_encode"|"form_body"|
+// "oauth_auth_url"|"oauth_parse_callback"|"sse_apply",...}`.
+// Respons `{"ok":true,...}` / `{"ok":false,...}`; `null` = Rust gagal
+// (panic/error di boundary) -> pemanggil Kotlin WAJIB fallback ke
+// implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_httpJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        http::http_json(&req).ok()
+    })
+}
+
 // `{"op":"ensure"|"query"|"exec"|"tx","db":<path>,"key":<kunci>,...}`.
 // Respons `{"ok":true,...}`; `null` = Rust gagal (panic/error di
 // boundary) -> pemanggil Kotlin WAJIB fallback ke implementasi lama.

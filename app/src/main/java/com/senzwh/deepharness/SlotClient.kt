@@ -2,6 +2,7 @@ package com.senzwh.deepharness
 
 import android.content.Context
 import android.util.Base64
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -58,6 +59,9 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
     // vc271 O5: antrean FIFO ganti penolakan busy (lihat ApiRequestQueue).
     private val queue = ApiRequestQueue("slot" + slot)
     private val tokLock = Any()
+
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustSlotClient = RustCore.available
 
     private fun hprefs() = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
     private fun fp(): String = try { AccountPool.tokenFp(token) } catch (e: Exception) { "?" }
@@ -397,19 +401,56 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
     }
 
     private fun headers(conn: HttpURLConnection, token: String, cookie: String, ua: String, powHeader: String?) {
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        if (cookie.isNotBlank()) conn.setRequestProperty("Cookie", cookie)
-        conn.setRequestProperty("User-Agent", ua)
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "*/*")
-        conn.setRequestProperty("Origin", "https://chat.deepseek.com")
-        conn.setRequestProperty("Referer", "https://chat.deepseek.com/")
-        conn.setRequestProperty("x-client-platform", "web")
-        conn.setRequestProperty("x-client-locale", "id_ID")
-        if (powHeader != null) conn.setRequestProperty("x-ds-pow-response", powHeader)
+        for ((k, v) in headersMap(token, cookie, ua, powHeader)) conn.setRequestProperty(k, v)
+    }
+
+    /** Header yang sama dengan `headers(conn, ...)` — sebagai map untuk seam Rust. */
+    private fun headersMap(token: String, cookie: String, ua: String, powHeader: String?): Map<String, String> {
+        val h = mutableMapOf<String, String>()
+        h["Authorization"] = "Bearer $token"
+        if (cookie.isNotBlank()) h["Cookie"] = cookie
+        h["User-Agent"] = ua
+        h["Content-Type"] = "application/json"
+        h["Accept"] = "*/*"
+        h["Origin"] = "https://chat.deepseek.com"
+        h["Referer"] = "https://chat.deepseek.com/"
+        h["x-client-platform"] = "web"
+        h["x-client-locale"] = "id_ID"
+        if (powHeader != null) h["x-ds-pow-response"] = powHeader
+        return h
     }
 
     private fun postJson(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
+        if (rustSlotClient) {
+            val r = HttpSeam.request(
+                "POST", "https://chat.deepseek.com$path",
+                headersMap(token, cookie, ua, powHeader),
+                body.toString(), 20000, 30000,
+                wantHeaders = listOf("Retry-After")
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustSlotClient = false
+                return postJsonResult(path, r.code, r.body, r.headers["Retry-After"])
+            }
+            if (!HttpSeam.rustHttp) rustSlotClient = false
+            // null = transport gagal -> fallback Kotlin (saklar hidup).
+        }
+        return postJsonKotlin(path, body, token, cookie, ua, powHeader)
+    }
+
+    /** Bagian sesudah transport postJson: error mapping + parse JSON (sama untuk Rust/Kotlin). */
+    private fun postJsonResult(path: String, code: Int, text: String, retryAfter: String?): JSONObject {
+        if (code !in 200..299) {
+            // vc316 P1: baca Retry-After; suffix "[retry_after=<n>]" dibaca
+            // DsFailure.classifyFailure di chat() sebagai jeda pertama
+            // tangga rate-limit.
+            val retryAfterSec = DsFailure.parseRetryAfterHeader(retryAfter)
+            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
+        }
+        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+    }
+
+    private fun postJsonKotlin(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
         val conn = URL("https://chat.deepseek.com$path").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 20000
@@ -422,14 +463,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
-        if (code !in 200..299) {
-            // vc316 P1: baca Retry-After; suffix "[retry_after=<n>]" dibaca
-            // DsFailure.classifyFailure di chat() sebagai jeda pertama
-            // tangga rate-limit.
-            val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
-            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
-        }
-        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+        return postJsonResult(path, code, text, conn.getHeaderField("Retry-After"))
     }
 
     private fun postCompletion(body: JSONObject, token: String, cookie: String, ua: String, powHeader: String, onPartial: (String) -> Unit): Pair<String, String> {
@@ -450,6 +484,14 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         val content = StringBuilder()
         val thinkingBuf = StringBuilder()
         val state = StreamState()
+        // Slice 8: mesin parse SSE Rust (state JSON) bila saklar hidup;
+        // bila seam mati di awal, langsung jalur Kotlin. Bila seam mati
+        // DI TENGAH stream, baris dilewati + saklar dimatikan — stream
+        // ini berakhir stream_terputus lalu retry chat() memakai Kotlin.
+        val useRust = rustSlotClient && HttpSeam.rustHttp
+        if (rustSlotClient && !HttpSeam.rustHttp) rustSlotClient = false
+        var sseStateJson = HttpSeam.sseInitState()
+        var sawFinish = false
         val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
         var lastPartialAt = 0L
         val rawSample = StringBuilder()
@@ -468,7 +510,20 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             if (obj.has("code") && obj.optInt("code", 0) != 0) {
                 throw Exception("SERVER ${obj.optInt("code")}: ${obj.optString("msg")}")
             }
-            applyChunk(obj, content, thinkingBuf, state)
+            if (useRust) {
+                val step = HttpSeam.sseApply(sseStateJson, payload)
+                if (step == null) {
+                    rustSlotClient = false
+                } else {
+                    sseStateJson = step.state
+                    content.append(step.contentDelta)
+                    thinkingBuf.append(step.thinkingDelta)
+                    sawFinish = step.sawFinish
+                }
+            } else {
+                applyChunkKotlin(obj, content, thinkingBuf, state)
+                sawFinish = state.sawFinish
+            }
             val now = System.currentTimeMillis()
             if (content.isNotEmpty() && now - lastPartialAt > 250) {
                 lastPartialAt = now
@@ -481,7 +536,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             if (rawStr.contains("rate_limit") || rawStr.contains("too frequent", ignoreCase = true)) {
                 throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final." + DsFailure.retryAfterSuffix(retryAfterSec))
             }
-            if (!state.sawFinish) {
+            if (!sawFinish) {
                 throw Exception("stream_terputus: koneksi ke server putus sebelum jawaban selesai (baris data: $dataLines, fragmen berpikir ${thinkingBuf.length} karakter). Cuplikan mentah: ${rawStr.take(400)}")
             }
             throw Exception("jawaban_kosong: stream selesai resmi tapi tanpa fragmen jawaban (fragmen berpikir ${thinkingBuf.length} karakter dibuang, baris data: $dataLines). Cuplikan mentah: ${rawStr.take(400)}")
@@ -499,13 +554,13 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
 
     private val fragIdxRe = Regex("fragments/(-?\\d+)")
 
-    private fun declareFragment(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
+    private fun declareFragmentKotlin(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
         state.fragmentThinking[idx] = isThink
         if (idx >= state.fragmentCount) state.fragmentCount = idx + 1
         if (makeCurrent) state.currentThinking = isThink
     }
 
-    private fun routeIsThinking(state: StreamState, path: String): Boolean {
+    private fun routeIsThinkingKotlin(state: StreamState, path: String): Boolean {
         if (path.contains("thinking", ignoreCase = true) || path.contains("reasoning", ignoreCase = true)) return true
         val m = fragIdxRe.find(path) ?: return state.currentThinking
         val raw = m.groupValues[1].toIntOrNull() ?: return state.currentThinking
@@ -513,13 +568,13 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         val known = state.fragmentThinking[raw]
         if (known != null) return known
         if (raw == state.fragmentCount && state.fragmentCount > 0) {
-            declareFragment(state, raw, false)
+            declareFragmentKotlin(state, raw, false)
             return false
         }
         return state.currentThinking
     }
 
-    private fun applyChunk(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyChunkKotlin(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val p = obj.optString("p", "")
         if (p == "response/status" && obj.optString("v") == "FINISHED") state.sawFinish = true
         if (p.isNotEmpty() && !p.contains("/status")) state.lastPath = p
@@ -529,7 +584,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             val arr = obj.optJSONArray("v") ?: return
             for (i in 0 until arr.length()) {
                 val sub = arr.optJSONObject(i) ?: continue
-                applyChunk(sub, content, thinking, state)
+                applyChunkKotlin(sub, content, thinking, state)
             }
             return
         }
@@ -548,36 +603,36 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 val contentish = effPath.isEmpty() || effPath.endsWith("content") || effPath.endsWith("fragments") ||
                     effPath.contains("thinking") || effPath.contains("reasoning")
                 if (!contentish) return
-                if (routeIsThinking(state, effPath)) thinking.append(v) else content.append(v)
+                if (routeIsThinkingKotlin(state, effPath)) thinking.append(v) else content.append(v)
             }
             is JSONArray -> {
                 for (i in 0 until v.length()) {
                     val el = v.optJSONObject(i)
-                    if (el != null) applyValueObject(obj, el, effPath, content, thinking, state)
+                    if (el != null) applyValueObjectKotlin(obj, el, effPath, content, thinking, state)
                     else {
                         val s = v.optString(i, "")
-                        if (s.isNotEmpty()) { if (routeIsThinking(state, effPath)) thinking.append(s) else content.append(s) }
+                        if (s.isNotEmpty()) { if (routeIsThinkingKotlin(state, effPath)) thinking.append(s) else content.append(s) }
                     }
                 }
             }
-            is JSONObject -> applyValueObject(obj, v, effPath, content, thinking, state)
+            is JSONObject -> applyValueObjectKotlin(obj, v, effPath, content, thinking, state)
         }
     }
 
-    private fun applyValueObject(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyValueObjectKotlin(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val typeStr = v.optString("type", "")
         if (typeStr.isNotEmpty()) {
             val isThink = typeStr.contains("THINK", ignoreCase = true)
             val raw = fragIdxRe.find(effPath)?.groupValues?.get(1)?.toIntOrNull()
             val idx = if (raw != null && raw >= 0) raw else state.fragmentCount
-            declareFragment(state, idx, isThink)
+            declareFragmentKotlin(state, idx, isThink)
             val c = v.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
             return
         }
         val directContent = v.optString("content", "")
         if (directContent.isNotEmpty()) {
-            if (routeIsThinking(state, effPath)) thinking.append(directContent) else content.append(directContent)
+            if (routeIsThinkingKotlin(state, effPath)) thinking.append(directContent) else content.append(directContent)
             return
         }
         val resp = v.optJSONObject("response") ?: obj.optJSONObject("response") ?: v
@@ -586,7 +641,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         for (i in 0 until frags.length()) {
             val f = frags.optJSONObject(i) ?: continue
             val isThink = f.optString("type", "").contains("THINK", ignoreCase = true)
-            declareFragment(state, i, isThink, makeCurrent = false)
+            declareFragmentKotlin(state, i, isThink, makeCurrent = false)
             val c = f.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
         }

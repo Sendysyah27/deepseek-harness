@@ -1,6 +1,7 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import harness.core.RustCore
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -43,6 +44,9 @@ data class ApiClientDef(
 )
 
 object ApiClients {
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustApiClients = RustCore.available
+
     val CLIENTS: List<ApiClientDef> = listOf(
         ApiClientDef(
             "template", "CONTOH — bukan app nyata", "https://invalid.example", false,
@@ -111,6 +115,53 @@ object ApiClients {
             val k = keys.next()
             path = path.replace("{$k}", URLEncoder.encode(params.optString(k), "UTF-8"))
         }
+        val url = def.baseUrl.trimEnd('/') + path
+        if (rustApiClients) {
+            val headers = mutableMapOf(
+                "Authorization" to "Bearer $token",
+                "Accept" to "application/json"
+            )
+            var body: String? = null
+            if (ep.method == "POST") {
+                headers["Content-Type"] = "application/json"
+                body = args.optString("body", "")
+            }
+            val r = HttpSeam.request(
+                ep.method, url, headers, body, 15000, 30000
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustApiClients = false
+                return callHttpResult(ctx, def, ep, r.code, r.body)
+            }
+            if (!HttpSeam.rustHttp) rustApiClients = false
+            // null = transport gagal -> fallback Kotlin (saklar hidup).
+        }
+        return callHttpKotlin(ctx, def, ep, token, args, path)
+    }
+
+    /** Bagian sesudah transport: error mapping + detektor bentuk (sama untuk Rust/Kotlin). */
+    private fun callHttpResult(
+        ctx: Context, def: ApiClientDef, ep: ApiEndpoint, code: Int, raw: String
+    ): String {
+        if (code !in 200..299)
+            return "API error (HTTP $code) pada ${def.label}/${ep.name}: " +
+                ProotSession.truncateOutput(raw)
+        // Detektor bentuk: hanya respons sukses yang dilacak.
+        val fp = shapeFingerprint(raw)
+        val key = shapeKey(def.id, ep.name)
+        val prev = prefs(ctx).getString(key, null)
+        prefs(ctx).edit().putString(key, fp).apply()
+        val body = ProotSession.truncateOutput(raw)
+        return if (prev != null && prev != fp)
+            "[API-BERUBAH] bentuk respons endpoint ini berubah — " +
+                "verifikasi via layar sebelum percaya.\n" + body
+        else body
+    }
+
+    private fun callHttpKotlin(
+        ctx: Context, def: ApiClientDef, ep: ApiEndpoint, token: String, args: JSONObject,
+        path: String
+    ): String {
         val conn = (URL(def.baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15000
             readTimeout = 30000
@@ -133,19 +184,7 @@ object ApiClients {
             } catch (e: Exception) {
                 ""
             }
-            if (code !in 200..299)
-                return "API error (HTTP $code) pada ${def.label}/${ep.name}: " +
-                    ProotSession.truncateOutput(raw)
-            // Detektor bentuk: hanya respons sukses yang dilacak.
-            val fp = shapeFingerprint(raw)
-            val key = shapeKey(def.id, ep.name)
-            val prev = prefs(ctx).getString(key, null)
-            prefs(ctx).edit().putString(key, fp).apply()
-            val body = ProotSession.truncateOutput(raw)
-            return if (prev != null && prev != fp)
-                "[API-BERUBAH] bentuk respons endpoint ini berubah — " +
-                    "verifikasi via layar sebelum percaya.\n" + body
-            else body
+            return callHttpResult(ctx, def, ep, code, raw)
         } finally {
             try { conn.disconnect() } catch (e: Exception) {}
         }
@@ -153,6 +192,11 @@ object ApiClients {
 
     /** Fingerprint bentuk: kunci JSON level-atas terurut; non-JSON = "non-json". */
     private fun shapeFingerprint(body: String): String {
+        HttpSeam.shapeFingerprint(body)?.let { return it }
+        return shapeFingerprintKotlin(body)
+    }
+
+    private fun shapeFingerprintKotlin(body: String): String {
         return try {
             val o = JSONObject(body)
             val list = mutableListOf<String>()

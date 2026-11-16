@@ -3,7 +3,7 @@ name: Android vc317
 # CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
 # Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
 # (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
-# Job: cargo test -> suite JVM 1334/1335 (R2-4.1 = assert usang warisan vc315,
+# Job: cargo test -> suite JVM 1472/1473 (R2-4.1 = assert usang warisan vc315,
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
@@ -28,6 +28,13 @@ name: Android vc317
 # (sqlite.rs + sqlite_schema.rs, rusqlite 0.32 bundled); P9 134 cek
 # (rust 107 + kotlin 27 fallback); suite 1334/1335 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION 4->5; MemoryDb wrapper TIDAK di-port (sisa kerja).
+# Slice 8 vc324: HTTP clients via ureq — OcClient/ApiClients/McpHttp/
+# SlotClient (postJson + mesin SSE)/Gmail (decodeWord + fetchHeaders)/
+# McpOAuth (PKCE + form + POST token) via seam httpJson generik
+# (http.rs + sse.rs, ureq 2.12 tls + sha2 0.10); P10 138 cek
+# (rust 88 + kotlin 50 fallback); suite 1472/1473 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 5->6; DsApiClient TIDAK disentuh (split-nya slice 11);
+# transport Gmail IMAP/SMTP + openEventStream + listener loopback tetap Kotlin.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -129,6 +136,9 @@ jobs:
 
       - name: Suite P9 Rusqlite vc323 (134 cek, rust 107 + kotlin 27)
         run: bash tests/run-suite-ci.sh P9
+
+      - name: Suite P10 HTTP vc324 (138 cek, rust 88 + kotlin 50)
+        run: bash tests/run-suite-ci.sh P10
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

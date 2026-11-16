@@ -13,7 +13,7 @@
 //  5. QUIRK solveFast: maxTries=10 TETAP ketemu nonce 2357 (batas
 //     efektif 3 jt — direplikasi Rust, jangan "diperbaiki" satu sisi).
 //  6. solve == solveFmt A (nonce + hash sama).
-//  7. Seam: rustPowSolver default true, RustCore.VERSION == 5, fallback
+//  7. Seam: rustPowSolver default true, RustCore.VERSION == 6, fallback
 //     *Kotlin dipertahankan di sumber, 8 external fun PoW ada di RustCore.
 //
 // Di JVM .so TIDAK ada, jadi yang diuji di sini = jalur fallback Kotlin
@@ -210,7 +210,7 @@ fun main(args: Array<String>) {
 
     // ================= 8. Seam + fallback dipertahankan =================
     check("8.1 rustPowSolver default true", PowSolver.rustPowSolver)
-    check("8.2 RustCore.VERSION == 5", RustCore.VERSION == 5, "VERSION=${RustCore.VERSION}")
+    check("8.2 RustCore.VERSION == 6", RustCore.VERSION == 6, "VERSION=${RustCore.VERSION}")
     check(
         "8.3 fallback Kotlin dipertahankan (*Kotlin + saklar)",
         powSrc.contains("private fun sha3_256Kotlin") && powSrc.contains("private fun dsHashV1Kotlin") &&
