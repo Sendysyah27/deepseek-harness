@@ -207,16 +207,101 @@ RustCore.concatApiJson(request: String): String?
     timeout ~20 dtk karena `withTcp` join menunggu tidur handler 20 dtk
     sesudah timeout 15 dtk. Perbaikan: tidur handler 16 dtk + jendela
     14–20 dtk. Rerun: rust 102/102.
-- CI: (diisi sesudah jalan)
-- APK VM: (diisi sesudah jalan)
+- CI: run **#19 (43807229555, commit 871f17f9)** — **SUCCESS**
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43807229555
+  (cargo test + suite 0/P1 103/P2 36/P3 94/P4 235/**P5 157**/N9 46/BR 45/
+  IXL 72/R1 64/R2 69 dengan R2-4.1 ditoleransi/C/D + build APK Main +
+  Pure + Verify + Upload — semua langkah hijau).
+- APK CI (`vc317-work/apk-vc319-ci/`, zip 26.237.631 B, MD5
+  `5c5708fda0aa37cf9f69585dee08204f`, SHA256
+  `31dc7b25759f91f26762b48ae05260d76048f9fa0aa5e1e18ce9aac1fa2fdac9`):
+  - Main `DeepSeekHarness-v4.48.9.153.apk` — com.senzwh.deepharness
+    319/4.48.9.153, 13.233.260 B, MD5
+    `2f4723370028bfeca1e731d4a0457adc`, SHA256
+    `1a6b6c557d2ca98af6dfab89179e122bc3231cf676c04b97a7236a463628b744`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Android Debug —
+    kunci runner CI, sidik jari beda dari VM — EKSPEKTASI, bukan gagal);
+    libharness_core.so 1.610.480 B di lib/arm64-v8a; simbol
+    `Java_harness_core_RustCore_concatApiJson` ADA; hsurr 0.
+  - Pure `Harness-v4.48.9.153-pure.apk` — com.harness.app 319/4.48.9.153,
+    13.188.204 B, MD5 `3d7e0e0c7078f35eabc229f707f32ce6`, SHA256
+    `38575ca1f88331f912d3465f29559f03d0c4c8c0fa2eff7bff7464354b547561`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Harness — kunci
+    runner CI); libharness_core.so 1.610.480 B; hsurr 0.
+- APK VM (`vc317-work/apk-vc319-vm/`):
+  - Main `DeepSeekHarness-v4.48.9.153.apk` — com.senzwh.deepharness
+    319/4.48.9.153, 13.311.084 B, MD5
+    `097fcc5b3080d71a3fd76569a52c80bd`, SHA256
+    `44653614e7f97764469202fe56fd84c670acc30852a99ef253af6ec0ff533d39`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; **sidik jari
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177` —
+    COCOK vc316 (gerbang LULUS, bisa menimpa)**; libharness_core.so
+    1.868.936 B di lib/arm64-v8a; simbol concatApiJson ADA; hsurr 0;
+    arm64-only (0 lib x86/armeabi).
+  - Pure `Harness-v4.48.9.153-pure.apk` — com.harness.app 319/4.48.9.153,
+    13.266.028 B, MD5 `fc5743b9183e5e411d1bbf1f5165ae9c`, SHA256
+    `f1fbd6a29d7c6e2a1cdd99219bef5420cc25f632b5249456564d486cdcf50068`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; **sidik jari
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f` —
+    COCOK vc316 (gerbang LULUS, bisa menimpa)**; libharness_core.so
+    1.868.936 B; simbol concatApiJson ADA; hsurr 0; arm64-only.
+  - Build VM: senz SELESAI 05:16, pure SELESAI 05:25 (log
+    `apk-vc319-vm/build-senz.log` + `build-pure.log`). Build senz pertama
+    MATI di tengah jalan karena service VM restart (~05:09) — tidak ada
+    APK yang dihasilkan; build diulang via nohup + log dan selesai.
+    (Bukan kegagalan build — gangguan infra.)
 
 ## §7. Deviasi jujur / temuan tengah jalan
 
-- (diisi selama kerja berjalan)
+- **CI run pertama GAGAL 0 job (run #18, 43806341891, commit 0e570820)** —
+  akar: `android.yml` baris 100 TIDAK VALID YAML: nama step P5
+  `Suite P5 ConcatApi parity (157 cek: rust 102 + kotlin 55)` mengandung
+  titik dua di dalam skalar tak ber-quote (`cek:`) -> ScannerError
+  "mapping values are not allowed here" (kolom 49) -> GitHub menolak
+  workflow sebelum job dibuat (total_count 0, created == updated).
+  Perbaikan (ronde CI 1): titik dua -> koma. Validasi: `yaml.safe_load`
+  OK, 25 step, + `bash -n run-suite-ci.sh` OK. Re-push commit 871f17f9
+  -> run #19 SUCCESS. **Pelajaran: validasi YAML workflow (`python3
+  -c "import yaml; yaml.safe_load(...)"`) SEBELUM push — jangan ulangi.**
+  Dilaporkan di sini (laporan akhir ke koordinator) sebagai kegagalan
+  + akar + perbaikan, sebelum ronde perbaikan berikutnya (sesuai tugas).
+- **R1 berubah cara kompilasi**: wrapper ConcatApiClient kini import
+  `harness.core.RustCore`, jadi kompilasi mandiri lama (tes + klien saja)
+  tidak bisa lagi. R1 + P5 kini dikompilasi sebagai tes + klien +
+  RustCore.kt (json saja) — pola yang sama dipakai di CI (`run_r1`,
+  `run_p5`). Isi tes R1 TIDAK diubah.
+- **Assert `VERSION == 2` usang di P2/P3/P4** (3 cek) karena VERSION naik
+  ke 3 — diperbaiki jadi `== 3` di 6 file (work + branch-stage copies).
+  Bukan regresi; D7/D8 runner + CI ikut di-3-kan.
+- **Timeout P5 R23**: elapsed ~20 dtk (bukan 15) karena join handler
+  menunggu tidur server 20 dtk sesudah timeout — tidur dipendekkan ke
+  16 dtk + jendela 14–20 dtk.
+- **`java_double_string` eksponen tanpa `+`** ("1.0E16") + BigDecimal
+  org.json ("1E+16", "12345678.0") — lihat §2/§4/§6; deviasi tercatat,
+  bukan disembunyikan.
+- **MEMORY.md berubah di tengah tugas** (agen lain, di luar tugas ini —
+  baris produksi Adobe + aturan VO): tidak berdampak ke slice ini.
+- **Service VM restart** saat build senz pertama (~05:09): build mati
+  tanpa APK; diulang via nohup + log, selesai. Bukan kegagalan build.
 
 ## §8. Push + CI + APK
 
-- (diisi sesudah push)
+- Push 1: commit `0e570820894fd77d3517277628dddce29cb7144c` (branch
+  `vc317-rust`, base HEAD remote e5bca244 — TIDAK bergerak). Delta
+  terverifikasi: 11 file berubah + 3 baru, 0 drift (remote tree ==
+  staging 456/456 sesudah push). File delta: crate (4:
+  `concat_api_client.rs` baru + `lib.rs` + `jni_glue.rs` +
+  `ds_safety_strip.rs`) + Kotlin (2: `ConcatApiClient.kt` +
+  `RustCore.kt`) + `build.py` (VERSION saja) + `tests/` (P5 baru +
+  P2/P3/P4 assert VERSION + `run-suite-ci.sh`) + `.github/workflows/
+  android.yml` + `BUILD-VC319.md` (baru).
+- Push 2 (fix YAML): commit `871f17f9cd5fa96b5b071fa72c08c53d1b775033`
+  (hanya 1 baris android.yml). Remote == staging 456/456.
+- Main TIDAK disentuh (masih vc309).
+- CI: run #18 FAILURE (YAML, 0 job — lihat §7); run #19 SUCCESS
+  (43807229555). APK CI + VM terverifikasi — lihat §6.
+- Doc-sync: BUILD-VC319.md dilengkapi angka CI + APK sesudah push
+  (pola slice 4).
 
 ## §9. Tes perangkat
 
