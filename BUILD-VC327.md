@@ -420,7 +420,102 @@ tidak berubah — string `forceFresh = true, bgMode = bgMode` +
 
 ## §8. Push + CI + APK
 
-(DIISI sesudah push — commit + CI run + APK VM + sidik jari.)
+### §8.1 Push branch `vc317-rust`
+
+- Remote HEAD sebelum push: `a2828dd98e623f0caf1af3b485eb9f064cd260dc`
+  (doc-sync vc326 — cocok ekspektasi; main TIDAK disentuh,
+  tetap `2e6245e3`).
+- Verifikasi pra-push: staging == remote di luar delta (0 file
+  hanya-di-remote; 3 file baru + 10 berubah, semua sesuai delta
+  vc327; `build.py` diff HANYA 2 baris VERSION).
+  TEMUAN PRA-PUSH (penting, lihat §7): `branch-stage/` mengandung
+  `harness-core/target/` (1.141 file artefak cargo, 541 MB) karena
+  runner CI lokal menjalankan `cargo build` dengan CWD
+  branch-stage — push-tree langsung dari branch-stage akan
+  meng-commit artefak itu. Staging push DIBANGUN TERPISAH
+  (`work-impl/push-vc327/`, rsync exclude `harness-core/target/`,
+  497 file) dan diverifikasi SHA-per-blob lawan tree remote
+  sebelum push. (Juga: staging di /tmp GAGAL — tmpfs 512 MB penuh
+  saat copy; staging harus di workspace.)
+- Push via `gh.py push-tree` (497 blob): commit
+  **`0b25fccf94becc6b44f4917ec6d6dd8150ba88a1`**,
+  parent `a2828dd9`, pesan "vc327 fix residual: migrasi primed +
+  tahan forceFresh 1/10 mnt + reset accum create + delta
+  auto-save/continuation (RUST_CORE_VERSION tetap 8, suite
+  2012/2013, P13 66/66)".
+- Verifikasi pasca-push: HEAD remote = `0b25fccf`; **497/497 file
+  lokal SHA-nya cocok dengan tree remote** (0 mismatch);
+  13/13 file delta hadir di remote (10 berubah + 3 baru).
+
+### §8.2 CI
+
+- Run: **43943650352** —
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43943650352
+  (workflow `android.yml`, branch `vc317-rust`, head `0b25fccf`,
+  event push, dibuat 2026-11-16T19:51:13Z).
+- **Status: SUCCESS** (completed, conclusion `success`, ~9 menit).
+  Semua step hijau termasuk P13 (66 cek), C, D (D15/D16/D17 kini
+  hidup — perbaikan kode-mati §7 terbukti jalan di CI), build
+  senz+pure, Verify APKs. Ronde 1 langsung hijau (0 ronde perbaikan).
+
+### §8.3 Artifact CI (`vc317-work/apk-vc327-ci/`)
+
+- `harness-vc317-apks` (artifact id 14265446155, 29.133.821 byte):
+  `DeepSeekHarness-v4.48.9.161.apk` (14.687.340 byte) +
+  `Harness-v4.48.9.161-pure.apk` (14.642.284 byte).
+- Main: MD5 `2b99fe72c0996f860a4f003f8f3190a0`,
+  SHA256 `0729479cadfaa422a5cfb229a9c3740ddc5f927b2e213aa52c5b46775dcc68b8`;
+  Pure: MD5 `539a9ac20b17e05a4d785a2cc34250a2`,
+  SHA256 `29033f0974599a1e92d537677f680c5926b498625a82e45e929449947136cab8`.
+- aapt2: keduanya 327/4.48.9.161; apksigner v2+v3 true, 1 signer
+  masing-masing; `libharness_core.so` 4.201.592 byte di
+  `lib/arm64-v8a`; `hsurr:` 0 (di .so maupun dex).
+- Sidik jari CI (EKSPEKTASI beda — kunci runner, bukan kunci VM):
+  Main SHA-256 `cefc2ff153d25ca8360d66015d92bba91fe5a8aa11e64b3ed800ec9912da8b0b`,
+  Pure SHA-256 `2131204c8fabfd4f53d043c528362b6bd1a6a568a1b0cb9100ad487488c222d6`.
+
+### §8.4 Build VM (`vc317-work/apk-vc327-vm/`, JH `~/jdk-21-sys`,
+langkah Rust rust-lld + CC 0r; clang NDK hidup 21.0.0 —
+TIDAK perlu restore dari zip cache)
+
+- Main `DeepSeekHarness-v4.48.9.161.apk` 14.871.660 byte,
+  MD5 `a00381462fcef31f6770498d8e74df72`,
+  SHA256 `ae9db7c1fe073630ec4df57438819ba2c8b5399fe11027929511ec58b496f749`,
+  **sidik jari `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+  — GERBANG COCOK (sama vc316, bisa menimpa)**.
+- Pure `Harness-v4.48.9.161-pure.apk` 14.822.508 byte,
+  MD5 `84d558b51b5d33f625f418aa00fd3938`,
+  SHA256 `da5062aa6ff2b214604a52a3c0fb22f7b618ad3c00da21b8d98bc1937d448390`,
+  **sidik jari `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+  — GERBANG COCOK (sama vc316, bisa menimpa)**.
+- Keduanya: apksigner Verifies, v2+v3 true, 1 signer,
+  aapt2 327/4.48.9.161, `libharness_core.so` 4.783.464 byte
+  di `lib/arm64-v8a` (sama persis vc326 — Rust tidak berubah),
+  dex memuat 4 helper vc327 (`migratePrimedOnceVc327`,
+  `allowForceFreshVc327`, `deltaTurnPromptVc327`,
+  `autoSaveBlockVc327`), `hsurr:` 0, arm64-v8a saja.
+- Log build: `build-senz.log`, `build-pure.log` (di folder yang sama).
+
+### §8.5 Dokumen akhir
+
+- `BUILD-VC327.md` ini difinalisasi (§6 + §7 + §8) sesudah CI
+  SUCCESS + build VM lolos gerbang sidik jari.
+- `TES-VC327-SIAP-TEMPEL.txt`: tes perangkat Sendy = ulangi
+  skenario screenshot 00:13 (perintah panjang di "Utama" + langkah
+  slot Browser 2 + 1x "ingat: ...") — target tidak ada kartu merah
+  + 0 sesi baru; TES 3 menjelaskan baris JEJAK baru
+  ("dimigrasikan ke primed vc327", "Wadah PENGGANTI DITAHAN vc327").
+- **TERBUKA — doc-sync push:** salinan `BUILD-VC327.md` +
+  `TES-VC327-SIAP-TEMPEL.txt` sudah disinkronkan ke
+  `branch-stage/` (siap push), TAPI belum di-push ke
+  `vc317-rust` — HEAD remote masih `0b25fccf` (commit push
+  vc327). Alasan: tugas ini hanya memerintahkan SATU push
+  (langkah 7); doc-sync akan memicu satu run CI penuh lagi
+  hanya untuk perubahan dokumen. Koordinator yang memutuskan
+  (pola vc325: doc-sync `f1cac218`, vc326: `a2828dd9`).
+  CATATAN: `work-impl/push-vc327/` (staging push, 497 file)
+  DIHAPUS sesudah push terverifikasi supaya tidak membingungkan
+  — salinan otoritatif staging adalah `branch-stage/` + remote.
 
 ## §9. Tes perangkat (TES-VC327-SIAP-TEMPEL)
 
