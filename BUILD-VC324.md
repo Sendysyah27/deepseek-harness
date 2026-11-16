@@ -441,3 +441,90 @@ tes perangkat, bukan klaim P10.
    `preserve_order` mengurutkan kunci objek (vs org.json urutan
    sisip — hanya memengaruhi teks kompak objek error MCP; tes
    assert prefix, bukan kesamaan byte).
+
+## §8. Push + CI + APK
+
+- **Pra-cek drift (sebelum push 1):** remote HEAD `db46fbcc`
+  terverifikasi (cocok basis vc323, tidak bergerak); main tetap
+  `2e6245e3` (vc309). Selisih remote tree vs staging tepat
+  21 berubah + 5 baru, 0 remote-only:
+  berubah = android.yml, 6 wrapper (OcClient, ApiClients,
+  McpHttp, SlotClient, Gmail, McpOAuth) + RustCore.kt, build.py,
+  Cargo.lock, Cargo.toml, jni_glue.rs, lib.rs, 7 file tes
+  (assert VERSION 5→6), run-suite-ci.sh;
+  baru = BUILD-VC324.md, HttpSeam.kt, http.rs, sse.rs,
+  TestHttpVc324.kt.
+- **Push 1:** 16 Nov 2026 ~20:34 WIB, branch `vc317-rust`,
+  commit `4e24db8e0aec423c7cda8d210d1499c9ae6a92b4`, 483 file via
+  `gh.py push-tree` (parent `db46fbcc`). Verifikasi: remote HEAD
+  = 4e24db8e; remote tree 483 blob == staging 483 file, 0 beda;
+  main utuh.
+- **CI ronde 1:** run
+  [#43877083136](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43877083136)
+  (push, head 4e24db8e) — **FAILURE**, job `build`. Log (trik 302,
+  `/tmp/ci-vc324-r1.log`): P1–P9 semua HIJAU; satu-satunya gagal
+  = **P10 mode rust 87/88, cek 1.1** ("RustCore.kt VERSION 6 +
+  httpJson"). Akar: tes §1.1 membaca `harness/core/RustCore.kt`
+  relatif ke treeDir — jalan di layout lokal (integrated) tapi
+  TIDAK di layout CI (treeDir = `.../deepharness`, RustCore ada
+  3 tingkat di atas). Akar yang SAMA dengan P8 5.18 vc322 dan
+  P9 12.7 vc323. Perbaikan: §1.1 mencoba 4 tingkat (0/1/2/3).
+  Diverifikasi lokal di KEDUA layout SEBELUM re-push:
+  integrated rust 88/88, layout CI rust 88/88, layout CI kotlin
+  47/47 (3 cek identitas SKIP — merge/ tidak ada di layout itu
+  tanpa symlink; di CI symlink dibuat run-suite-ci.sh, jadi
+  cek itu jalan di sana).
+- **Push 2 (fix CI):** 16 Nov 2026 ~20:51 WIB, branch
+  `vc317-rust`, commit `8f93fd25e97fac6c854aeec9ddc17fededf446d7`,
+  483 file via `gh.py push-tree` (hanya
+  `tests/TestHttpVc324.kt` berubah vs push 1). Pesan: "vc324:
+  fix P10 1.1 — RustCore.kt coba 4 tingkat".
+- **CI ronde 2:** run
+  [#43879816951](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43879816951)
+  (push, head 8f93fd25) — **SUCCESS**. Semua step hijau:
+  cargo test, P1–P10 (termasuk P10 138/138: rust 88 + kotlin
+  50 — di CI loopback TIDAK terblokir, jadi cek live §3/§4
+  mode kotlin jalan normal di sana), N9, BR, IXL, R1, R2
+  (4.1 ditoleransi), C (termasuk cek slice 8 baru), D
+  (termasuk D14 baru), build APK senz+pure, verify, upload.
+- **Artifact CI** (`vc317-work/apk-vc324-ci/`,
+  `harness-vc317-apks.zip` 29.049.364 byte, artifact
+  14232222805):
+  - Main `DeepSeekHarness-v4.48.9.158.apk` — 14.642.284 byte,
+    MD5 `034fecd3f13f687c9073c062c007583b`,
+    SHA256 `d9c0d81d1f6be544d2b414fce1690ca40ead55ecb78d4b49a40f11614cb01d73`.
+  - Pure `Harness-v4.48.9.158-pure.apk` — 14.597.228 byte,
+    MD5 `48b247af8f00a1c71961a5c077e6983a`,
+    SHA256 `2df4032fed5a6faba0bf5f89204783cccb6ae58c6104483bb57b3d8ec2534db6`.
+  - Keduanya: aapt2 324/4.48.9.158, apksigner v2+v3, 1 signer,
+    `lib/arm64-v8a/libharness_core.so` ada (4.129.976 byte),
+    simbol `Java_harness_core_RustCore_httpJson` ADA, 26 simbol
+    JNI, `hsurr:` 0. Sidik jari CI BEDA (kunci runner debug:
+    Main `3edf1866…`, Pure `b40e45df…`) — EKSPEKTASI, bukan
+    kegagalan.
+- **Build VM** (`vc317-work/apk-vc324-vm/`, log build-senz.log +
+  build-pure.log; clang NDK 21.0.0 hidup, blok 0r jalan):
+  - Main `DeepSeekHarness-v4.48.9.158.apk` — 14.822.508 byte,
+    MD5 `ee55ac5ba0cbfeb09cf42fe50a7db990`,
+    SHA256 `952f226fe5a7b1b2edbff5161fc8415269e66b8eb0b3f61c59ded68d3b37d715`.
+  - Pure `Harness-v4.48.9.158-pure.apk` — 14.777.452 byte,
+    MD5 `f646e17e34ae4679a9f34cc803c15c10`,
+    SHA256 `7b9f073483272baabca8d2049d17c44c93e7c95bef39e70a20830ab2e2b036e7`.
+  - Keduanya: aapt2 324/4.48.9.158, apksigner v2+v3, 1 signer,
+    `libharness_core.so` ada (4.709.552 byte), simbol httpJson
+    ADA, 26 simbol JNI, `hsurr:` 0.
+  - **GERBANG SIDIK JARI LULUS:** Main
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    ✓, Pure
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    ✓ — sama seperti vc316, BISA menimpa.
+
+## §9. Tes perangkat (TES-VC324-SIAP-TEMPEL)
+
+Perilaku yang kelihatan di layar TIDAK berubah (porting murni).
+T1–T6 dari TES-VC322 TETAP BERLAKU semua. Tambahan vc324
+(T7–T11) ada di `vc317-work/TES-VC324-SIAP-TEMPEL.txt` (bahasa
+bayi): chat DeepSeek normal + streaming (OcClient/SlotClient/
+SSE Rust), sesi panjang berurutan (postCompletion), Gmail
+(decodeWord/fetchHeaders), MCP listTools/callTool, dan OAuth
+loopback (opsional, bila ada server MCP yang butuh login).

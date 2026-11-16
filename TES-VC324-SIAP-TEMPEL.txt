@@ -1,0 +1,75 @@
+TES-VC324-SIAP-TEMPEL — Slice 8: HTTP clients via Rust (vc324, 4.48.9.158)
+============================================================================
+
+CATATAN PENTING — BACA DULU:
+Versi ini TIDAK mengubah apa pun yang kelihatan di layar. Yang berubah
+hanya "mesin di dalam" yang ngobrol ke internet (ke DeepSeek, ke Gmail,
+ke server MCP): dulu mesin lama (Kotlin), sekarang mesin baru (Rust) —
+tapi caranya, isinya, dan hasilnya SAMA PERSIS. Kalau ada yang beda di
+layar, itu BUG — laporkan.
+
+Jadi: T1–T6 dari TES-VC322 TETAP BERLAKU semua (tes sesi DeepSeek:
+N perintah di 1 sesi "Utama" → target tetap 1 sesi baru di web
+DeepSeek). Di bawah ini hanya T TAMBAHAN untuk versi ini.
+
+--------------------------------------------------------------------------------
+T7 — CHAT DEEPSEEK NORMAL + JAWABAN MENGALIR (tes utama vc324)
+--------------------------------------------------------------------------------
+Tujuan: memastikan mesin baru ngobrol ke DeepSeek dengan benar
+(termasuk jawaban yang muncul sedikit demi sedikit / streaming).
+
+Langkah:
+  1. Buka app Harness (versi vc324).
+     LULUS bila: app terbuka normal, tidak force-close.
+  2. Buka chat "Utama", kirim 1 perintah biasa, misal: "cek skill lists".
+     LULUS bila: jawaban masuk normal dan muncul sedikit demi sedikit
+     seperti biasa (tidak putus di tengah, tidak kosong, tidak ada
+     kartu merah).
+  3. Kirim 1 perintah lagi di chat yang sama.
+     LULUS bila: jawaban ke-2 juga masuk normal.
+
+GAGAL bila: jawaban tidak masuk / kosong / putus di tengah / kartu
+merah / app crash. Catat di langkah mana + screenshot, kabari Jhon.
+JANGAN lanjut pakai versi ini untuk kerja penting sebelum Jhon bilang aman.
+
+--------------------------------------------------------------------------------
+T8 — SESI PANJANG BERURUTAN (5 perintah, 1 sesi)
+--------------------------------------------------------------------------------
+  1. Di chat "Utama" yang sama, kirim 5 perintah pendek satu per satu
+     (tunggu jawaban tiap perintah sebelum kirim berikutnya).
+     LULUS bila: kelima jawaban masuk normal, tidak ada yang hilang
+     atau tertukar.
+  2. Tutup app, buka lagi, buka chat "Utama".
+     LULUS bila: riwayat 5 perintah + jawabannya MASIH ADA.
+
+--------------------------------------------------------------------------------
+T9 — GMAIL MASIH BISA DIBACA (kalau kamu pakai fitur Gmail)
+--------------------------------------------------------------------------------
+  1. Minta app membaca email (misal perintah yang menampilkan email
+     terbaru / ringkasan inbox — sesuai yang biasa kamu pakai).
+     LULUS bila: daftar email tampil dengan pengirim + subjek yang
+     benar (tidak ada subjek aneh / huruf rusak / "(tanpa subjek)"
+     padahal subjeknya ada).
+  2. Kalau tidak ada fitur Gmail yang kamu pakai, T9 boleh dilewati
+     — tulis "T9 dilewati (tidak pakai Gmail)".
+
+--------------------------------------------------------------------------------
+T10 — TOOL MCP MASIH JALAN (kalau kamu pakai server MCP)
+--------------------------------------------------------------------------------
+  1. Pakai 1 tool dari server MCP seperti biasa (misal perintah yang
+     memanggil tool MCP).
+     LULUS bila: tool jalan dan hasilnya masuk seperti biasa.
+  2. Kalau tidak ada server MCP yang kamu pakai, T10 boleh dilewati
+     — tulis "T10 dilewati (tidak pakai MCP)".
+
+--------------------------------------------------------------------------------
+T11 — LOGIN OAUTH SERVER MCP (opsional, hanya bila ada)
+--------------------------------------------------------------------------------
+  1. Kalau kamu menambah server MCP yang minta login (muncul browser
+     untuk login lalu balik ke app), coba tambah / sambungkan 1 server itu.
+     LULUS bila: browser kebuka, login berhasil, app kembali dan
+     server terdaftar.
+  2. Kalau tidak ada, T11 dilewati — tulis "T11 dilewati".
+
+Selesai. Kalau T7 (+T8) LULUS, T9–T11 LULUS/dilewati beralasan, dan
+T1–T6 vc322 tetap LULUS, vc324 AMAN.
