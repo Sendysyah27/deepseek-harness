@@ -1235,6 +1235,28 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
         return "[LANJUTAN SISTEM — vc316 delta: JANGAN minta konteks diulang. System prompt, katalog tool, memori, dan riwayat giliran ini SUDAH kamu terima di pesan sebelumnya DALAM SESI SERVER YANG SAMA — semuanya masih berlaku. Perintah user giliran ini: \"$cmd\". Lanjutkan dari situ memakai JEJAK + HASIL TOOL di bawah. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]"
     }
 
+    /** vc322 SESI — prompt delta giliran 1-1: jangkar vc316 + perintah
+     *  user verbatim + work-notes segar (cap 5.000). Murni, tanpa
+     *  Context — bisa diuji di JVM. Dikirim HANYA ke wadah server yang
+     *  sudah primed (TurnMetrics.shouldSendDeltaVc322); wadah baru /
+     *  reset / pengganti selalu menerima prompt PENUH. System prompt,
+     *  katalog, memori, dan riwayat TIDAK diulang — semuanya sudah ada
+     *  di sesi server yang sama dari prompt penuh giliran pertama
+     *  (mekanisme yang sama seperti lanjutan tool vc316). Work-notes
+     *  dibawa segar karena isinya ("jangan ulangi") bisa berubah antar
+     *  giliran; digest TIDAK dibawa (ringkasan giliran lalu sudah ada
+     *  verbatim di sesi server). */
+    fun deltaTurnPromptVc322(userCommand: String, workNotes: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[USER — TUGAS 1-1 VERBATIM]:\n").append(userCommand).append("\n[/USER]")
+        val wn = workNotes.trim()
+        if (wn.isNotBlank()) {
+            sb.append("\n\n").append(if (wn.length > 5000) wn.take(5000) + "…(dipotong, sisa " + (wn.length - 5000) + " char)…" else wn)
+        }
+        return sb.toString()
+    }
+
 
     // vc272 O2: daftar nama tool VALID berasal dari ToolRegistry — sumber
     // yang sama dengan teks katalog (satu sumber, dua pemakaian). TIDAK ADA

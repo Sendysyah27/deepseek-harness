@@ -29,7 +29,7 @@ class DsApiClient(private val webView: WebView) {
 
     fun chat(prompt: String, thinking: Boolean, search: Boolean,
              onPartial: (String) -> Unit, onDone: (String, String) -> Unit, onError: (String) -> Unit,
-             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false) {
+             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false, deltaPrompt: String? = null) {
         val run: () -> Unit = {
             Thread {
                 // vc271 O5: Governor dihitung di pintu masuk EKSEKUSI request,
@@ -46,7 +46,7 @@ class DsApiClient(private val webView: WebView) {
                 // pada percobaan pertama. Panggilan biasa tidak berubah
                 // (forceFresh=false diteruskan apa adanya).
                 val res = try {
-                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
+                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
                 } catch (e: Exception) {
                     // vc316 P1: klasifikasi via DsFailure.classifyFailure —
                     // JANGAN lagi contains(...) manual di sini. Kode HTTP di-parse
@@ -65,7 +65,7 @@ class DsApiClient(private val webView: WebView) {
                         for (w in waits2) {
                             onPartial("⏳ Stream DeepSeek terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
-                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
                                 if (DsFailure.isSuspendSignal(m2)) throw e2
@@ -81,7 +81,7 @@ class DsApiClient(private val webView: WebView) {
                             // informatif (401 berarti auth, putus lagi
                             // berarti bukan sesi penyebabnya).
                             onPartial("⏳ Stream putus 2x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
-                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode) }
+                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt) }
                             catch (e3: Exception) { throw e3 }
                         }
                     } else if (DsFailure.isSuspendSignal(m)) {
@@ -96,7 +96,7 @@ class DsApiClient(private val webView: WebView) {
                         val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                         if (!switched) throw Exception((e.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         onPartial("⏳ Akun DeepSeek ter-suspended — pindah ke akun cadangan yang sehat, lanjut…")
-                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
+                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
                     } else when (failure.kind) {
                         FailureKind.RATE_LIMIT -> {
                             // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
@@ -109,7 +109,7 @@ class DsApiClient(private val webView: WebView) {
                             for (w in waits) {
                                 onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
                                 catch (e2: Exception) {
                                     if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
                                     lastErr = e2
@@ -119,7 +119,7 @@ class DsApiClient(private val webView: WebView) {
                                 val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                                 if (switched) {
                                     onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
-                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode) } catch (e4: Exception) { lastErr = e4 }
+                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt) } catch (e4: Exception) { lastErr = e4 }
                                 }
                             }
                             out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
@@ -134,7 +134,7 @@ class DsApiClient(private val webView: WebView) {
                             for (w in DsFailure.UPSTREAM_WAITS_MS) {
                                 onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
                                 catch (e2: Exception) {
                                     val k2 = DsFailure.classifyFailure(0, "", e2).kind
                                     if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
@@ -148,7 +148,7 @@ class DsApiClient(private val webView: WebView) {
                             // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
                             // sebelum menyerah ke jalur WebView.
                             Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
-                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
+                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
                         }
                         else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
@@ -165,7 +165,7 @@ class DsApiClient(private val webView: WebView) {
         if (!accepted) onError("Mode API: antrean penuh (maks 3 menunggu). Coba lagi sebentar lagi.")
     }
 
-    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false): Pair<String, String> {
+    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null): Pair<String, String> {
         val pooled = authOverride ?: try { AccountPool.resolve(webView.context) } catch (e: Exception) { null }
         val token = pooled?.first ?: extractToken() ?: throw Exception("token sesi tidak ditemukan di WebView (userToken kosong). Pastikan tab Web sudah LOGIN, lalu coba lagi.")
         val cookie = pooled?.second ?: (CookieManager.getInstance().getCookie("https://chat.deepseek.com") ?: "")
@@ -204,11 +204,24 @@ class DsApiClient(private val webView: WebView) {
         // vc321); tutup-buka app tidak membantu (kunci dsSrvSessId_
         // tersimpan di prefs "harness").
         val accumKeyVc321 = "dsSrvSessId_" + (storedPair?.first ?: fp) + "_" + harnessNo
-        if (stored != null && TurnMetrics.shouldResetServerSessionVc321(TurnMetrics.serverAccumVc321(ctx, accumKeyVc321), prompt.length)) {
-            val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+        // vc322 SESI — kirim DELTA bila wadah sudah ada DAN sudah primed
+        // (pernah menerima satu prompt penuh sukses): sesi server
+        // menyimpan konteks antar POST, jadi giliran lanjutan hanya
+        // membawa yang baru (~1-2k char, bukan ~90-150k). Prompt PENUH
+        // tetap dipakai bila wadah belum ada / baru di-reset / forceFresh.
+        // Guard reset vc321 TIDAK berubah: hanya berlaku untuk giliran
+        // yang mengirim prompt penuh (delta tidak pernah memicu reset —
+        // akumulasi + delta selalu di bawah cap bila shouldSendDelta
+        // benar, dan bila tidak, giliran ini mengirim penuh + guard
+        // jalan seperti biasa).
+        val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, false, false, TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321), accumVc321, deltaPrompt?.length ?: 0)
+        val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
+        if (!useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
             logSessEvent("Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
             clearServerSession(storedPair!!.first, harnessNo)
             TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+            TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
             storedPair = null
             stored = null
         }
@@ -216,13 +229,18 @@ class DsApiClient(private val webView: WebView) {
             val sid = stored ?: run {
                 val c = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, c)
+                // vc322 SESI: wadah baru belum primed (belum menerima
+                // prompt penuh sukses) + hitung kelahiran untuk
+                // penghitung sesi per akun (JEJAK SESI SERVER).
+                TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
+                val sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyVc321)
                 // v4.10.8: kelahiran wadah pertama untuk sesi harness yang
                 // SUDAH punya riwayat wajib terlihat — bukan kelahiran diam.
                 val hadHistory = try { MemoryDb.get(ctx).historyForSession(harnessNo, 1).isNotEmpty() } catch (e: Exception) { false }
                 if (forceFresh) {
-                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus 2x di sesi lama — coba sesi baru).")
+                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus 2x di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 } else {
-                    logSessEvent("Wadah BARU lahir untuk sesi harness " + sessLabel + (if (hadHistory) " (sesi lama, wadah pertamanya di rezim pemetaan)" else " (sesi baru)"))
+                    logSessEvent("Wadah BARU lahir untuk sesi harness " + sessLabel + (if (hadHistory) " (sesi lama, wadah pertamanya di rezim pemetaan)" else " (sesi baru)") + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                     if (hadHistory) {
                         val note4109 = "♻️ Sesi harness ini belum punya wadah server — membuat satu sekarang. Selanjutnya wadah ini dipakai ulang terus untuk sesi ini."
                         try { onPartial(note4109) } catch (e: Exception) {}
@@ -231,9 +249,12 @@ class DsApiClient(private val webView: WebView) {
                 }
                 c
             }
-            val res = completeWithSession(sid, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
-            // vc321 IXL: POST sukses menambah akumulasi wadah ini.
-            TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length)
+            val res = completeWithSession(sid, sendPromptVc322, thinking, search, token, cookie, ua, onPartial, fileIds)
+            // vc321 IXL: POST sukses menambah akumulasi wadah ini —
+            // vc322: yang dihitung panjang prompt YANG DIKIRIM (delta
+            // bila giliran ini delta). Prompt penuh sukses = wadah primed.
+            TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)
+            if (!useDeltaVc322) TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, true)
             // v4.14.2: satu sukses membuktikan token ini HIDUP — hapus
             // tanda matinya (sembuh otomatis sesudah login ulang/rotasi).
             try { AccountPool.clearDead(ctx, fp) } catch (e: Exception) {}
@@ -263,21 +284,27 @@ class DsApiClient(private val webView: WebView) {
                 // laju) TIDAK membakar sesi baru — error dilempar apa adanya
                 // dan tangga retry di chat() memakai ulang sesi yang sama.
                 val noteR = "♻️ " + (if (isSessionInvalidSignal(e.message)) "Sesi server tersimpan ditolak server (kemungkinan terhapus)" else "Sesi server tersimpan gagal dipakai setelah ganti akun/token") + " — membuat SATU sesi pengganti untuk sesi harness ini. (Alasan: " + (e.message ?: "").take(120) + ")"
-                logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " — " + (e.message ?: "").take(80))
                 try { onPartial(noteR) } catch (e3: Exception) {}
                 try { MemoryDb.get(ctx).addHistory("asisten", noteR, harnessNo) } catch (e3: Exception) {}
                 clearServerSession(fp, harnessNo)
                 if (storedPair != null && storedPair.first != fp) clearServerSession(storedPair.first, harnessNo)
                 val fresh = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, fresh)
+                // vc322 SESI: pengganti lahir = hitung + belum primed;
+                // JEJAK dicatat sesudah wadah benar-benar lahir (bila
+                // create gagal, tidak ada kelahiran untuk dicatat).
+                // Kunci akumulasi = sidik token saat ini (wadah baru
+                // disimpan di bawah fp, bukan sidik pemilik wadah lama).
+                val accumKeyFreshVc321 = "dsSrvSessId_" + fp + "_" + harnessNo
+                TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyFreshVc321, false)
+                val sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyFreshVc321)
+                logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " — " + (e.message ?: "").take(80) + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 try {
                     val res2 = completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
                     // vc321 IXL: wadah pengganti mulai dari 0 + prompt ini.
-                    // Kunci akumulasi = sidik token saat ini (wadah baru
-                    // disimpan di bawah fp, bukan sidik pemilik wadah lama).
-                    val accumKeyFreshVc321 = "dsSrvSessId_" + fp + "_" + harnessNo
                     TurnMetrics.resetServerAccumVc321(ctx, accumKeyFreshVc321)
                     TurnMetrics.addServerAccumVc321(ctx, accumKeyFreshVc321, prompt.length)
+                    TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyFreshVc321, true)
                     return res2
                 } catch (e2: Exception) {
                     if (isSuspendSignal(e2.message)) {

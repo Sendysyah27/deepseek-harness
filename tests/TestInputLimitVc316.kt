@@ -330,6 +330,12 @@ fun main(args: Array<String>) {
     // tetap dsSrvSessId_/dsSlotSrv_, forceFresh/freshEphemeral tetap
     // dihormati, tangga retry tetap di DsFailure) + guard vc321 ada
     // (keputusan + pencatatan akumulasi + reset).
+    // 7.5/7.6 (vc322): fix bocor sesi mengirim DELTA di giliran lanjutan —
+    // akumulasi kini menghitung panjang prompt YANG DIKIRIM
+    // (sendPromptVc322.length, bukan prompt.length) dan guard reset
+    // dilewati untuk giliran delta (SlotClient: !useDeltaVc322 di antara
+    // !freshEphemeral dan stored != null). Protokol + guard untuk
+    // prompt penuh TIDAK berubah.
     val dsSrc = File(tree, "DsApiClient.kt").readText()
     val slotSrc = File(tree, "SlotClient.kt").readText()
     check("7.5 DsApiClient.kt: protokol tidak berubah + guard vc321 ada (parent NULL, kunci dsSrvSessId_, forceFresh, reset proaktif)",
@@ -337,15 +343,15 @@ fun main(args: Array<String>) {
         dsSrc.contains("dsSrvSessId_\" + fp + \"_\" + harnessNo") &&
         dsSrc.contains("if (forceFresh) null else storedServerSessionAny") &&
         dsSrc.contains("shouldResetServerSessionVc321") &&
-        dsSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        dsSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)") &&
         dsSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
         dsSrc.contains("Wadah server di-reset proaktif vc321"))
     check("7.6 SlotClient.kt: protokol tidak berubah + guard vc321 ada (parent NULL, kunci dsSlotSrv_, freshEphemeral dilewati, reset proaktif)",
         slotSrc.contains(".put(\"parent_message_id\", JSONObject.NULL)") &&
         slotSrc.contains("\"dsSlotSrv_\" + slot + \"_\" + harnessNo") &&
-        slotSrc.contains("!freshEphemeral && stored != null") &&
+        slotSrc.contains("!freshEphemeral && !useDeltaVc322 && stored != null") &&
         slotSrc.contains("shouldResetServerSessionVc321") &&
-        slotSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        slotSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)") &&
         slotSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
         slotSrc.contains("Wadah server di-reset proaktif vc321"))
     check("7.7 Tangga retry utuh di DsFailure.RATE_LIMIT_WAITS_MS (10/20/35 dtk + stream-putus 2x)",

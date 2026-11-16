@@ -4,11 +4,11 @@
 # path repo). Dijalankan dari root repo, satu section per pemanggilan
 # (workflow CI memanggil per section sebagai step terpisah supaya langkah
 # yang gagal terlihat di API tanpa perlu log):
-#   bash tests/run-suite-ci.sh 0|P1|P2|P3|P4|P5|P6|P7|N9|BR|IXL|R1|R2|C|D|ALL
+#   bash tests/run-suite-ci.sh 0|P1|P2|P3|P4|P5|P6|P7|P8|N9|BR|IXL|R1|R2|C|D|ALL
 # Section 0 = kompilasi tree (prasyarat semua section tes).
-# Suite (garis paritas vc316 + P2 slice 2 + P3 slice 3 + P4 slice 4 + P5 slice 5 + P6 slice 6 + P7 fix vc321):
-# P1 103 + P2 36 + P3 94 + P4 235 + P5 157 + P6 155 + P7 52 + N9 46 + BR 45 + IXL 72 + R1 64
-# + R2 69 = 1128 cek; target 1127/1128 — R2-4.1 assert STRING PERSIS usang
+# Suite (garis paritas vc316 + P2 slice 2 + P3 slice 3 + P4 slice 4 + P5 slice 5 + P6 slice 6 + P7 fix vc321 + P8 fix vc322):
+# P1 103 + P2 36 + P3 94 + P4 235 + P5 157 + P6 155 + P7 52 + P8 73 + N9 46 + BR 45 + IXL 72 + R1 64
+# + R2 69 = 1201 cek; target 1200/1201 — R2-4.1 assert STRING PERSIS usang
 # warisan vc315 (dispatch vc314 direstruktur di vc315; perilaku sama),
 # ditoleransi eksplisit di run_r2 (bukan regresi).
 # Tiap section keluar 0 bila lulus, 1 bila gagal.
@@ -114,6 +114,21 @@ run_p7() {
   "$JAVA" -Xmx1g -cp "$OUT/test-p7.jar:$OUT/test-tree.jar:$CP" com.senzwh.deepharness.TestRoomIxlFixVc321Kt "$TREE"
 }
 
+run_p8() {
+  echo "== P8. TestSessFixVc322 (FIX BOCOR SESI SERVER vc322: delta giliran 1-1 + penghitung sesi + primed, 73 cek) =="
+  "$KOTLINC" -J-Xmx3g -jvm-target 17 "tests/TestSessFixVc322.kt" "tests/FakeCtxVc322.java" "tests/FakePrefsVc322.java" -cp "$OUT/test-tree.jar:$CP" -include-runtime -d "$OUT/test-p8.jar" || return 1
+  # kotlinc TIDAK meng-compile .java (hanya dipakai sebagai stub resolusi)
+  # -> FakeCtx/FakePrefs harus di-compile javac terpisah.
+  "$JAVA_HOME/bin/javac" -cp "$OUT/test-tree.jar:$CP" -d "$OUT/test-p8-fake-classes" "tests/FakeCtxVc322.java" "tests/FakePrefsVc322.java" || return 1
+  # Stub Context NON-LEMPAR: konstruktor android.jar melempar
+  # RuntimeException("Stub!") sehingga FakeCtx (subclass Context) tidak
+  # bisa di-instantiate di JVM. Stub di-compile terpisah dan HARUS
+  # didahulukan di classpath run (sebelum android.jar di $CP).
+  # Hanya untuk tes — TIDAK PERNAH masuk APK.
+  "$JAVA_HOME/bin/javac" -cp "$ANDROID_JAR" -d "$OUT/test-stubs-vc322-classes" "tests/stubs/android/content/Context.java" || return 1
+  "$JAVA" -Xmx1g -cp "$OUT/test-stubs-vc322-classes:$OUT/test-p8-fake-classes:$OUT/test-p8.jar:$OUT/test-tree.jar:$CP" com.senzwh.deepharness.TestSessFixVc322Kt "$TREE"
+}
+
 run_r2() {
   echo "== R2. TestConcatVc314Merge (69 cek; toleransi R2-4.1 usang) =="
   "$KOTLINC" -J-Xmx3g -jvm-target 17 "tests/TestConcatVc314Merge.kt" -cp "$OUT/test-tree.jar:$CP" -include-runtime -d "$OUT/test-r2.jar" || return 1
@@ -181,6 +196,7 @@ run_d() {
   if grep -q "private fun versionKotlin" "$TREE/ConcatApiClient.kt" && grep -q "private fun previewFrameKotlin" "$TREE/ConcatApiClient.kt" && grep -q "private fun applyEditKotlin" "$TREE/ConcatApiClient.kt" && grep -q "private fun createProjectKotlin" "$TREE/ConcatApiClient.kt" && grep -q "var rustConcatApiClient" "$TREE/ConcatApiClient.kt" && grep -q "external fun concatApiJson(request: String): String?" "$TREE_CORE/RustCore.kt" && grep -q "const val VERSION = 4" "$TREE_CORE/RustCore.kt"; then echo "LULUS D10: fallback Kotlin ConcatApiClient dipertahankan (21 *Kotlin + rustConcatApiClient + external fun concatApiJson) + RustCore.VERSION=4"; else echo "GAGAL D10: fallback ConcatApiClient hilang / seam concatApiJson hilang / VERSION bukan 4"; fail=1; fi
   if grep -q "private fun catalogSectionKotlin" "$TREE/ToolRegistry.kt" && grep -q "private fun namesKotlin" "$TREE/ToolRegistry.kt" && grep -q "private fun nearestNamesKotlin" "$TREE/ToolRegistry.kt" && grep -q "var rustToolRegistry" "$TREE/ToolRegistry.kt" && grep -q "private fun selectCatalogKotlin" "$TREE/AgentPrompt.kt" && grep -q "private fun applyDoublePassKotlin" "$TREE/AgentPrompt.kt" && grep -q "private fun stripRawToolMarkupForDisplayKotlin" "$TREE/AgentPrompt.kt" && grep -q "var rustAgentPrompt" "$TREE/AgentPrompt.kt" && grep -q "private fun splitDescrSectionsKotlin" "$TREE/SkillJudge.kt" && grep -q "private fun triggerScoreKotlin" "$TREE/SkillJudge.kt" && grep -q "var rustSkillTrigger" "$TREE/SkillJudge.kt" && grep -q "external fun toolRegistryJson(request: String): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun agentPromptJson(request: String): String" "$TREE_CORE/RustCore.kt" && grep -q "external fun skillTriggerJson(request: String): String" "$TREE_CORE/RustCore.kt" && grep -q "const val VERSION = 4" "$TREE_CORE/RustCore.kt"; then echo "LULUS D11: fallback Kotlin slice 6 dipertahankan (*Kotlin + 3 saklar rust + 3 external fun) + RustCore.VERSION=4"; else echo "GAGAL D11: fallback/seam slice 6 hilang / VERSION bukan 4"; fail=1; fi
   if grep -q "AgentPrompt.catalogForTask(app, userText)" "$TREE/GroupChat.kt" && grep -q "catSlimVc321.length > 30000" "$TREE/GroupChat.kt" && grep -q "private fun continuationPromptVc321(userText: String, suffix: String): String" "$TREE/GroupChat.kt" && grep -q "continuationPromptVc321(userText, BatchToolVc274.combinedMessage" "$TREE/GroupChat.kt" && grep -q "continuationPromptVc321(userText, AgentPrompt.EVIDENCE_GATE_NUDGE)" "$TREE/GroupChat.kt" && grep -q "fun shouldResetServerSessionVc321" "$TREE/TurnMetrics.kt" && grep -q "fun historyBudgetVc321" "$TREE/TurnMetrics.kt" && grep -q "shouldResetServerSessionVc321" "$TREE/SlotClient.kt" && grep -q "shouldResetServerSessionVc321" "$TREE/DsApiClient.kt" && grep -q "historyBudgetVc321" "$TREE/MainActivity.kt" && grep -q "RUST_CORE_VERSION: jint = 4" "harness-core/src/jni_glue.rs" && grep -q "const val VERSION = 4" "$TREE_CORE/RustCore.kt" && ! grep -q "Vc321\|vc321" "$TREE/Flavor.kt"; then echo "LULUS D12: fix vc321 ada (selectCatalog room + backstop 30k + anchor/delta room 3 situs + guard reset + riwayat adaptif 1-1) + RUST_CORE_VERSION tetap 4 + Flavor.kt tidak berubah"; else echo "GAGAL D12: cek fix vc321 / VERSION Rust / Flavor.kt"; fail=1; fi
+  if grep -q "fun deltaTurnPromptVc322" "$TREE/AgentPrompt.kt" && grep -q "fun shouldSendDeltaVc322" "$TREE/TurnMetrics.kt" && grep -q "fun noteServerSessionCreatedVc322" "$TREE/TurnMetrics.kt" && grep -q "fun isServerSessionPrimedVc322" "$TREE/TurnMetrics.kt" && grep -q "deltaVc322" "$TREE/MainActivity.kt" && grep -q "sendToAgent(toSendVc240, deltaVc322)" "$TREE/MainActivity.kt" && grep -q "val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322" "$TREE/DsApiClient.kt" && grep -q "val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322" "$TREE/SlotClient.kt" && grep -q "completeWithSession(fresh, prompt" "$TREE/DsApiClient.kt" && grep -q "completeWithSession(fresh, prompt" "$TREE/SlotClient.kt" && [ ! -f "$TREE/SqliteSeam.kt" ] && ! grep -rq "sqliteJson\|SqliteSeam\|rusqlite" "$TREE"/*.kt "$TREE_CORE"/*.kt && ! grep -q "sqlite" "harness-core/src/jni_glue.rs" && grep -q "RUST_CORE_VERSION: jint = 4" "harness-core/src/jni_glue.rs" && grep -q "const val VERSION = 4" "$TREE_CORE/RustCore.kt" && ! grep -q "Vc322\|vc322" "$TREE/Flavor.kt"; then echo "LULUS D13: fix sesi vc322 ada (delta 1-1 + counter/primed + pengganti penuh) + fallback slice 7 TIDAK ADA (slice 7 belum mendarat) + RUST_CORE_VERSION tetap 4 + Flavor.kt tidak berubah"; else echo "GAGAL D13: cek fix sesi vc322 / fallback slice 7 / VERSION Rust / Flavor.kt"; fail=1; fi
   return $fail
 }
 
@@ -194,6 +210,7 @@ case "$SECTION" in
   P5) run_p5;;
   P6) run_p6;;
   P7) run_p7;;
+  P8) run_p8;;
   N9) run_n9;;
   BR) run_br;;
   IXL) run_ixl;;
@@ -211,6 +228,7 @@ case "$SECTION" in
     run_p5 || FAIL=1
     run_p6 || FAIL=1
     run_p7 || FAIL=1
+    run_p8 || FAIL=1
     run_n9 || FAIL=1
     run_br || FAIL=1
     run_ixl || FAIL=1
@@ -221,5 +239,5 @@ case "$SECTION" in
     echo "OVERALL FAIL=$FAIL"
     exit $FAIL
     ;;
-  *) echo "section tidak dikenal: $SECTION (0|P1|P2|P3|P4|P5|P6|P7|N9|BR|IXL|R1|R2|C|D|ALL)"; exit 2;;
+  *) echo "section tidak dikenal: $SECTION (0|P1|P2|P3|P4|P5|P6|P7|P8|N9|BR|IXL|R1|R2|C|D|ALL)"; exit 2;;
 esac

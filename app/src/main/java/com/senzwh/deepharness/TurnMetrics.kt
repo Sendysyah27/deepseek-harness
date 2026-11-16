@@ -220,6 +220,61 @@ object TurnMetrics {
         try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_SRV_ACCUM_VC321 + key).apply() } catch (e: Exception) { }
     }
 
+    // ---- vc322 SESI (fix bocor sesi server: 1 giliran = 1 sesi baru) ----
+    // AKAR (diukur probe vc322, UKURAN-SESI-VC322.md): guard reset vc321
+    // bekerja benar, tapi prompt PENUH dikirim ulang tiap giliran —
+    // begitu prompt nyata >100.000 char (DB Sendy, bukan seed 60.500),
+    // accum + prompt berikut > 200.000 DI TIAP giliran: 4 perintah =
+    // 4 sesi server baru (ambang terukur persis: P=100.000 -> 2 sesi,
+    // P=100.001 -> 4 sesi). Memangkas riwayat saja TIDAK menolong
+    // (75.500 char tetap 5 sesi / 10 giliran, sama seperti 90.500).
+    // PERBAIKAN: giliran 1-1 lanjutan dikirim sebagai DELTA (jangkar
+    // vc316 + perintah user verbatim + work-notes segar, ~1-2k char)
+    // karena sesi server MENYIMPAN konteks antar POST — mekanisme yang
+    // sama sudah terbukti di lanjutan tool vc316 + delta room vc321.
+    // Prompt PENUH hanya dikirim bila wadah belum ada / baru lahir /
+    // baru di-reset / pengganti / forceFresh. "Primed" = wadah ini sudah
+    // menerima SATU prompt penuh yang sukses — delta HANYA boleh ke
+    // wadah primed (tanpanya, retry sesudah reset + stream putus bisa
+    // mengirim delta ke wadah kosong yang belum punya konteks).
+    /** Keputusan kirim delta (murni, tanpa Context). Delta hanya bila
+     *  ada wadah tersimpan YANG SUDAH primed, ada prompt delta, bukan
+     *  forceFresh / ephemeral / reviewer, dan akumulasi + delta tetap
+     *  di bawah DEFAULT_CAP. Semua kondisi lain -> prompt penuh. */
+    fun shouldSendDeltaVc322(hasStoredSession: Boolean, hasDeltaPrompt: Boolean, forceFresh: Boolean, freshEphemeral: Boolean, reviewer: Boolean, primed: Boolean, accumChars: Int, deltaLen: Int): Boolean =
+        hasStoredSession && hasDeltaPrompt && !forceFresh && !freshEphemeral && !reviewer && primed &&
+        deltaLen > 0 && accumChars + deltaLen <= DEFAULT_CAP
+
+    private const val KEY_SESS_CREATED_VC322 = "sessCreatedVc322_"
+    private const val KEY_PRIMED_VC322 = "srvPrimedVc322_"
+
+    /** Penghitung sesi server per (akun/slot, sesi harness) — jumlah
+     *  wadah server yang pernah lahir untuk sesi harness ini (reset /
+     *  forceFresh / invalid ikut dihitung; yang yatim TIDAK dikurangi,
+     *  karena server tidak memberi jalan menghapusnya). Disimpan di
+     *  prefs "turnMetrics" (bukan "harness"). */
+    fun serverSessionCountVc322(ctx: Context, key: String): Int = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_SESS_CREATED_VC322 + key, 0).coerceAtLeast(0)
+    } catch (e: Exception) { 0 }
+
+    /** Catat satu kelahiran wadah server; mengembalikan hitungan baru. */
+    fun noteServerSessionCreatedVc322(ctx: Context, key: String): Int = try {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val cur = p.getInt(KEY_SESS_CREATED_VC322 + key, 0).coerceAtLeast(0)
+        val next = (cur + 1).coerceAtMost(10_000_000)
+        p.edit().putInt(KEY_SESS_CREATED_VC322 + key, next).apply()
+        next
+    } catch (e: Exception) { 0 }
+
+    /** Apakah wadah kunci ini sudah menerima satu prompt penuh sukses. */
+    fun isServerSessionPrimedVc322(ctx: Context, key: String): Boolean = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PRIMED_VC322 + key, false)
+    } catch (e: Exception) { false }
+
+    fun setServerSessionPrimedVc322(ctx: Context, key: String, primed: Boolean) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_PRIMED_VC322 + key, primed).apply() } catch (e: Exception) { }
+    }
+
     /** vc278 O19(c): char yang dipangkas PEMANGKAS PROAKTIF per giliran
      *  — ikut snapshot JSON giliran ("char_dipangkas_proaktif") dan
      *  ikut char_terpotong (sama seperti guard darurat). */

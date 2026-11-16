@@ -1,0 +1,114 @@
+TES VC322 — APAKAH SESI SERVER MASIH BOCOR? (bahasa bayi)
+=============================================================
+Versi: vc322 (4.48.9.156). Install dulu APK vc322 (Main atau Pure),
+lalu tes di bawah ini. Siapkan: HP + buka web DeepSeek di browser HP
+(di tab lain) dengan akun yang sama (akun Eneng Sunarsih).
+
+KENAPA TES INI PENTING (1 menit baca):
+Di vc321, tiap perintah di 1 sesi Harness bikin 1 SESI BARU di web
+DeepSeek. 4 perintah = 4 sesi baru menumpuk di sidebar akun. Pola
+ini dulu bikin akun kena SUSPEND. vc322 memperbaikinya: perintah
+ke-2, ke-3, dst dikirim sebagai "delta" kecil ke sesi server yang
+SAMA — jadi tidak lahir sesi baru lagi.
+
+---------------------------------------------------------------
+TES 1 — 4 PERINTAH DI 1 SESI (TES UTAMA, 5 menit)
+---------------------------------------------------------------
+LANGKAH:
+1. Di HP, buka web DeepSeek di browser. Lihat sidebar kiri (daftar
+   chat/sesi). CATAT jumlah sesi yang ada sekarang. Tulis di kertas:
+   "SEBELUM: ___ sesi".
+   Cara lihat: buka https://chat.deepseek.com — di kiri ada daftar
+   percakapan. Kalau sidebar ketutup, ketuk ikon garis tiga (☰) di
+   pojok kiri atas.
+2. Buka Harness. Buka sesi "Utama" (chat 1-1 yang sudah panjang —
+   yang biasa dipakai, BUKAN sesi baru kosong).
+3. Kirim perintah 1: "cek skill lists"
+   Tunggu jawabannya selesai.
+4. Kirim perintah 2: "bro?"
+   Tunggu jawabannya selesai.
+5. Kirim perintah 3: "cek baterai"
+   Tunggu jawabannya selesai.
+6. Kirim perintah 4: "halo, tes sesi"
+   Tunggu jawabannya selesai.
+7. Kembali ke browser web DeepSeek. Refresh halaman (tarik ke bawah /
+   ketuk refresh). Hitung lagi jumlah sesi di sidebar.
+   Tulis: "SESUDAH: ___ sesi".
+
+LULUS kalau:
+  SESUDAH - SEBELUM = 0
+  (tidak ada sesi baru sama sekali — 4 perintah tetap 1 sesi)
+
+GAGAL kalau:
+  SESUDAH - SEBELUM = 1 atau lebih
+  (ada sesi baru lahir — bocor masih ada; catat berapa)
+
+CATATAN:
+- Jangan buka sesi Harness lain / room / sesi baru di tengah tes —
+  itu bikin sesi server sendiri, hitungannya jadi kacau.
+- Jangan kirim perintah "ingat: ..." di tengah tes (itu memang
+  sengaja kirim prompt penuh — bukan delta).
+
+---------------------------------------------------------------
+TES 2 — 10 PERINTAH (TES PANJANG, 10 menit, opsional)
+---------------------------------------------------------------
+Sama seperti TES 1, tapi kirim 10 perintah berturut-turut di sesi
+"Utama" yang sama (boleh perintah apa saja, pendek-pendek).
+LULUS kalau sesi baru = 0. Kalau 1, masih bisa diterima (mungkin
+ada 1x stream putus / sesi ditolak server — lihat TES 3 untuk
+memastikan jalurnya). Kalau 2 atau lebih = GAGAL.
+
+---------------------------------------------------------------
+TES 3 — LIHAT JEJAK SESI SERVER DI APLIKASI (2 menit)
+---------------------------------------------------------------
+LANGKAH:
+1. Di Harness, buka Profil (menu profil).
+2. Cari bagian "JEJAK SESI SERVER". Di sana ada daftar baris
+   (maksimal 30 baris terakhir).
+3. Cari baris yang ada tulisan "Wadah BARU lahir" — di ujungnya ada
+   "[Sesi server ke-N untuk sesi harness ini.]".
+
+LULUS kalau:
+  Selama TES 1 / TES 2, hanya ada SATU baris "Wadah BARU lahir"
+  (yang pertama, N=1). Tidak ada baris "Wadah PENGGANTI lahir" dan
+  tidak ada baris "Wadah server di-reset proaktif".
+
+KALAU ADA BARIS LAIN, ARTINYA:
+- "Wadah server di-reset proaktif vc321" = guard reset menembak
+  (akumulasi + prompt > 200.000 char). Di sesi normal seharusnya
+  TIDAK muncul lagi di vc322.
+- "Wadah PENGGANTI lahir ... stream putus 2x" = koneksi putus 2x,
+  aplikasi coba sesi baru 1x. Ini darurat, bukan bocor — boleh
+  terjadi sesekali kalau sinyal jelek.
+- "Wadah PENGGANTI lahir ... (pesan error)" = server menolak sesi
+  tersimpan. Juga darurat, bukan bocor.
+- Kalau ada "reset proaktif" di TES 1/2, LAPORKAN ke Jhon dengan
+  foto baris JEJAK-nya (itu data penting).
+
+---------------------------------------------------------------
+TES 4 — PASTIKAN JAWABAN TETAP NYAMBUNG (selama TES 1)
+---------------------------------------------------------------
+Perintah ke-2, ke-3, ke-4 harus dijawab dengan konteks percakapan
+yang sama (mis. kalau perintah 1 tanya skill, perintah 2 "bro?"
+tetap dijawab sebagai lanjutan, bukan seperti ngobrol baru).
+LULUS kalau jawaban nyambung seperti biasa.
+GAGAL kalau jawaban jadi ngaco / lupa konteks / seperti sesi baru
+— LAPORKAN, itu lebih penting dari hitungan sesi.
+
+---------------------------------------------------------------
+YANG TIDAK PERLU DITES:
+- Room (grup): fix ini khusus lane 1-1 ("Utama"). Room tidak
+  diubah di vc322.
+- Sesi baru kosong: perintah pertama di sesi baru memang selalu
+  kirim prompt penuh (1 sesi baru itu WAJAR — yang dilarang adalah
+  sesi baru di perintah ke-2, ke-3, dst).
+
+---------------------------------------------------------------
+LAPORAN KE JHON (copy-paste, isi angkanya):
+---------------------------------------------------------------
+TES VC322:
+- TES 1: SEBELUM ___ sesi, SESUDAH ___ sesi → LULUS / GAGAL
+- TES 2 (kalau dites): sesi baru ___ → LULUS / GAGAL
+- TES 3: baris "Wadah BARU lahir" ___ buah, "PENGGANTI" ___ buah,
+  "reset proaktif" ___ buah
+- TES 4: jawaban nyambung? YA / TIDAK

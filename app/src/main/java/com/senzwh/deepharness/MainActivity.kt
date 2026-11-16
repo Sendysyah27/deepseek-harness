@@ -11483,7 +11483,16 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    private fun sendToAgent(prompt: String) {
+    // vc322 SESI: deltaPrompt = prompt delta giliran 1-1 (jangkar +
+    // perintah user + work-notes) dari dispatchTurn — HANYA giliran
+    // pertama 1-1 yang membawa delta; semua pemanggil lain (lanjutan
+    // tool, verifikasi, tugas latar, rescue) memakai default null =
+    // prompt penuh seperti biasa. Klien (SlotClient/DsApiClient) yang
+    // memutuskan delta vs penuh dari keadaan wadah (tersimpan + primed
+    // + bukan reset/forceFresh). Jalur WebView di bawah SELALU memakai
+    // prompt penuh (bukan sesi API Internal). Governor tetap dihitung
+    // dari prompt penuh (konservatif — kuota tidak berubah).
+    private fun sendToAgent(prompt: String, deltaPrompt: String? = null) {
         statusTv.text = "DeepSeek: berpikir…"
         beginStreamBubble()
         val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode()
@@ -11521,11 +11530,11 @@ class MainActivity : Activity() {
                     // pilihan eksplisit; fallback akan memakai akun WebView
                     // utama yang berbeda.
                     addBubble("⚠️ $err", false, turn = true)
-                })
+                }, deltaPrompt = deltaPrompt)
                 return
             }
             val chatFn: (String, Boolean, Boolean, (String) -> Unit, (String, String) -> Unit, (String) -> Unit) -> Unit =
-                { p, t, s, op, od, oe -> apiClient.chat(p, t, s, op, od, oe) }
+                { p, t, s, op, od, oe -> apiClient.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt) }
             chatFn(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
                 // Giliran senyap (verifikasi/ekstraksi): JANGAN tampilkan teks mentah —
                 // proses mikir model bisa bocor jadi bubble sampah. Cukup label status.
@@ -11781,7 +11790,18 @@ class MainActivity : Activity() {
                 try { addMsg("⚠️ Guard ulang suffix: prompt + perintah user masih melebihi cap " + capVc240 + " char sebesar " + (toSendVc240.length - capVc240) + " char — rencana dan perintah user tidak dipangkas, prompt dikirim utuh.", "meta", turn = true) } catch (e: Exception) {}
             }
         }
-        sendToAgent(toSendVc240)
+        // vc322 SESI: giliran 1-1 lanjutan dikirim sebagai DELTA
+        // (jangkar + perintah user + work-notes segar) bila wadah server
+        // sudah ada + primed — klien yang memutuskan (sendToAgent ->
+        // SlotClient/DsApiClient). Prompt PENUH tetap dikirim bila ini
+        // giliran pertama di wadah baru / sesudah reset / forceFresh.
+        // PENGECUALIAN: giliran auto-save vc298 ("ingat:" / koreksi)
+        // memaksa prompt penuh — catatan "[SISTEM — AUTO-SAVE]" hanya
+        // ada di prompt penuh dan wajib dibaca model giliran ini
+        // (konfirmasi simpanan ke user); delta akan menghilangkannya.
+        val deltaVc322 = if (promptNoUser.contains("[SISTEM — AUTO-SAVE vc298")) null
+            else AgentPrompt.deltaTurnPromptVc322(rawUser, AgentPrompt.workNotesBlockVc302(this, currentSessionId))
+        sendToAgent(toSendVc240, deltaVc322)
     }
 
 

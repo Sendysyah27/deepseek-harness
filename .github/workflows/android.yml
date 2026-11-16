@@ -3,7 +3,7 @@ name: Android vc317
 # CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
 # Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
 # (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
-# Job: cargo test -> suite JVM 1127/1128 (R2-4.1 = assert usang warisan vc315,
+# Job: cargo test -> suite JVM 1200/1201 (R2-4.1 = assert usang warisan vc315,
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
@@ -19,6 +19,10 @@ name: Android vc317
 # continuationPromptVc321 (delta), 1-1 riwayat adaptif + guard reset sesi
 # server proaktif (SlotClient + DsApiClient via TurnMetrics); P7 52 cek;
 # RUST_CORE_VERSION tetap 4 (tidak ada fungsi JNI baru).
+# Fix vc322 (BUKAN slice 7 — rusqlite DI-PAUSE, lanjut vc323): bocor sesi
+# server DeepSeek — giliran 1-1 lanjutan dikirim DELTA (bukan prompt penuh)
+# + penghitung sesi + primed-flag; P8 73 cek; suite 1200/1201 (R2-4.1
+# ditoleransi); RUST_CORE_VERSION tetap 4.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -114,6 +118,9 @@ jobs:
 
       - name: Suite P7 RoomLane IXL fix vc321 (52 cek)
         run: bash tests/run-suite-ci.sh P7
+
+      - name: Suite P8 SessFix vc322 (73 cek)
+        run: bash tests/run-suite-ci.sh P8
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

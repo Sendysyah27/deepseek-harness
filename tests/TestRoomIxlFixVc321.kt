@@ -189,15 +189,15 @@ fun main(args: Array<String>) {
         !mainSrc.contains("historyTranscriptVc230(60, 60000, currentSessionId)"))
     check("5.3 SlotClient: guard reset + catat akumulasi + kunci dsSlotSrv_ utuh",
         slotSrc.contains("shouldResetServerSessionVc321") &&
-        slotSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        slotSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)") &&
         slotSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
         slotSrc.contains("\"dsSlotSrv_\" + slot + \"_\" + harnessNo") &&
         slotSrc.contains("Wadah server di-reset proaktif vc321"))
     check("5.4 SlotClient: sesi ephemeral reviewer dilewati guard (tidak ada akumulasi)",
-        slotSrc.contains("!freshEphemeral && stored != null"))
+        slotSrc.contains("!freshEphemeral && !useDeltaVc322 && stored != null"))
     check("5.5 DsApiClient: guard reset + catat akumulasi + kunci dsSrvSessId_ utuh",
         dsSrc.contains("shouldResetServerSessionVc321") &&
-        dsSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        dsSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)") &&
         dsSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
         dsSrc.contains("dsSrvSessId_\" + fp + \"_\" + harnessNo") &&
         dsSrc.contains("Wadah server di-reset proaktif vc321"))

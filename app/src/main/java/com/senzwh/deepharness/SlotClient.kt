@@ -79,7 +79,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
      *  sebagai reviewer (Governor.bumpReviewer) dan antrean reviewer
      *  tetap didahulukan — sama seperti freshEphemeral dulu. */
     fun chat(prompt: String, thinking: Boolean, search: Boolean,
-             onPartial: (String) -> Unit, onDone: (String, String) -> Unit, onError: (String) -> Unit, freshEphemeral: Boolean = false, reviewer: Boolean = false) {
+             onPartial: (String) -> Unit, onDone: (String, String) -> Unit, onError: (String) -> Unit, freshEphemeral: Boolean = false, reviewer: Boolean = false, deltaPrompt: String? = null) {
         val run: () -> Unit = {
             Thread {
                 // vc271 O5: Governor dihitung di pintu masuk EKSEKUSI request,
@@ -97,7 +97,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 // segar-ephemeral sebelum vc298), juga pada retry,
                 // bukan cuma pada percobaan pertama.
                 val res = try {
-                    runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer)
+                    runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt)
                 } catch (e: Exception) {
                     // vc316 P1: klasifikasi via DsFailure.classifyFailure —
                     // SAMA dengan DsApiClient (hapus duplikasi string-matching).
@@ -112,7 +112,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                         for (w in waits2) {
                             onPartial("⏳ Stream Browser $slot terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
-                            try { out2 = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
+                            try { out2 = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
                                 if (DsFailure.isSuspendSignal(m2)) throw e2
@@ -122,7 +122,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                         }
                         out2 ?: run {
                             onPartial("⏳ Stream putus 2x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
-                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, freshEphemeral = freshEphemeral, reviewer = reviewer) }
+                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt) }
                             catch (e3: Exception) { throw e3 }
                         }
                     } else if (DsFailure.isSuspendSignal(m)) {
@@ -139,7 +139,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                             for (w in waits) {
                                 onPartial("⏳ Browser $slot kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt); break }
                                 catch (e2: Exception) {
                                     if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
                                     lastErr = e2
@@ -155,7 +155,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                             for (w in DsFailure.UPSTREAM_WAITS_MS) {
                                 onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt); break }
                                 catch (e2: Exception) {
                                     val k2 = DsFailure.classifyFailure(0, "", e2).kind
                                     if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
@@ -166,7 +166,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                         }
                         FailureKind.TIMEOUT, FailureKind.UNAVAILABLE -> {
                             Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
-                            runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer)
+                            runChat(prompt, thinking, search, onPartial, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt)
                         }
                         else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
@@ -195,7 +195,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         throw Exception(err ?: "Browser $slot: tidak ada jawaban (timeout 240 detik).")
     }
 
-    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, forceFresh: Boolean = false, freshEphemeral: Boolean = false, reviewer: Boolean = false): Pair<String, String> {
+    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, forceFresh: Boolean = false, freshEphemeral: Boolean = false, reviewer: Boolean = false, deltaPrompt: String? = null): Pair<String, String> {
         val ua = SLOT_UA
         val f = fp()
         // PEMUTUS ARUS (sama seperti jalur utama): akun slot yang sudah
@@ -216,11 +216,19 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         // memang dibuang tiap panggilan, tidak ada akumulasi.
         val accumKeyVc321 = if (reviewer) reviewerSessKey(harnessNo) else sessKey(harnessNo)
         var stored = if (forceFresh || freshEphemeral) null else storedServerSession(f, harnessNo, reviewer)
-        if (!freshEphemeral && stored != null && TurnMetrics.shouldResetServerSessionVc321(TurnMetrics.serverAccumVc321(ctx, accumKeyVc321), prompt.length)) {
-            val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+        // vc322 SESI — sama seperti DsApiClient: kirim DELTA bila wadah
+        // sudah ada DAN sudah primed; prompt PENUH bila wadah belum ada
+        // / baru di-reset / forceFresh. Ephemeral + reviewer TIDAK PERNAH
+        // delta (ephemeral memang dibuang tiap panggilan; reviewer
+        // memakai prompt konteks-nol sendiri yang wajib utuh).
+        val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, freshEphemeral, reviewer, TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321), accumVc321, deltaPrompt?.length ?: 0)
+        val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
+        if (!freshEphemeral && !useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
             logSessEvent("[Browser $slot] ♻️ Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
             clearServerSession(f, harnessNo, reviewer)
             TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+            TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
             stored = null
         }
         try {
@@ -233,15 +241,23 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 // reviewer (reviewerSessKey) — dipakai ulang antar review,
                 // dan TIDAK PERNAH menyentuh kunci giliran agen.
                 if (!freshEphemeral) storeServerSession(f, harnessNo, c, reviewer)
+                // vc322 SESI: wadah tersimpan baru belum primed + hitung
+                // kelahiran (ephemeral TIDAK dihitung — bukan wadah sesi
+                // harness yang dipakai ulang).
+                var sessNvc322 = 0
+                if (!freshEphemeral) {
+                    TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
+                    sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyVc321)
+                }
                 val hadHistory = try { MemoryDb.get(ctx).historyForSession(harnessNo, 1).isNotEmpty() } catch (e: Exception) { false }
                 if (forceFresh) {
-                    logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo (stream putus 2x di sesi lama — coba sesi baru).")
+                    logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo (stream putus 2x di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 } else {
                     // vc298: kelahiran wadah REVIEWER dicatat sebagai
                     // reviewer (bukan wadah giliran) dan TIDAK menulis
                     // catatan ke riwayat chat — reviewer tidak boleh
                     // mencemari riwayat dengan urusan sesinya sendiri.
-                    logSessEvent("[Browser $slot] " + (if (reviewer) "Wadah REVIEWER BARU lahir untuk sesi harness #$harnessNo (dipakai ulang antar review)" else "Wadah BARU lahir untuk sesi harness #$harnessNo") + (if (hadHistory && !reviewer) " (sesi lama, wadah pertamanya di rezim slot)" else if (!reviewer) " (sesi baru)" else ""))
+                    logSessEvent("[Browser $slot] " + (if (reviewer) "Wadah REVIEWER BARU lahir untuk sesi harness #$harnessNo (dipakai ulang antar review)" else "Wadah BARU lahir untuk sesi harness #$harnessNo") + (if (hadHistory && !reviewer) " (sesi lama, wadah pertamanya di rezim slot)" else if (!reviewer) " (sesi baru)" else "") + (if (!freshEphemeral) " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]" else ""))
                     if (hadHistory && !reviewer) {
                         val note = "♻️ [Browser $slot] Sesi harness ini belum punya wadah server — membuat satu sekarang. Selanjutnya wadah ini dipakai ulang terus untuk sesi ini."
                         try { onPartial(note) } catch (e: Exception) {}
@@ -250,9 +266,12 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 }
                 c
             }
-            val res = completeWithSession(sid, prompt, thinking, search, token, cookie, ua, onPartial)
-            // vc321 IXL: POST sukses menambah akumulasi wadah ini.
-            if (!freshEphemeral) TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length)
+            val res = completeWithSession(sid, sendPromptVc322, thinking, search, token, cookie, ua, onPartial)
+            // vc321 IXL: POST sukses menambah akumulasi wadah ini —
+            // vc322: yang dihitung panjang prompt YANG DIKIRIM (delta
+            // bila giliran ini delta). Prompt penuh sukses = wadah primed.
+            if (!freshEphemeral) TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)
+            if (!freshEphemeral && !useDeltaVc322) TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, true)
             try { AccountPool.clearDead(ctx, f) } catch (e: Exception) {}
             return res
         } catch (e: Exception) {
@@ -266,7 +285,6 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
             }
             if (stored != null && isSessionInvalidSignal(e.message)) {
                 val noteR = "♻️ [Browser $slot] Sesi server tersimpan ditolak server (kemungkinan terhapus) — membuat SATU sesi pengganti untuk sesi harness ini. (Alasan: " + (e.message ?: "").take(120) + ")"
-                logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo — " + (e.message ?: "").take(80) + (if (reviewer) " (wadah reviewer)" else ""))
                 if (!reviewer) {
                     try { onPartial(noteR) } catch (e3: Exception) {}
                     try { MemoryDb.get(ctx).addHistory("asisten", noteR, harnessNo) } catch (e3: Exception) {}
@@ -274,10 +292,15 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 clearServerSession(f, harnessNo, reviewer)
                 val fresh = createServerSession(token, cookie, ua)
                 storeServerSession(f, harnessNo, fresh, reviewer)
+                // vc322 SESI: pengganti lahir = hitung + belum primed;
+                // JEJAK dicatat sesudah wadah benar-benar lahir.
+                TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
+                val sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyVc321)
+                logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo — " + (e.message ?: "").take(80) + (if (reviewer) " (wadah reviewer)" else "") + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 try {
                     val res2 = completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial)
                     // vc321 IXL: wadah pengganti mulai dari 0 + prompt ini.
-                    if (!freshEphemeral) { TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321); TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length) }
+                    if (!freshEphemeral) { TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321); TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length); TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, true) }
                     return res2
                 } catch (e2: Exception) {
                     if (isSuspendSignal(e2.message)) {
