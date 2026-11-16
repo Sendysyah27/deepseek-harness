@@ -1,0 +1,97 @@
+TES VC328 — APAKAH APLIKASI MASIH JALAN NORMAL? (bahasa bayi)
+=====================================================================
+Versi: vc328 (4.48.9.162). Install dulu APK vc328 (Main atau Pure),
+lalu tes di bawah ini.
+
+KENAPA TES INI PENTING (1 menit baca):
+vc328 adalah "pindah mesin" di dalam aplikasi: bagian yang
+menghubungi server DeepSeek (kirim perintah, terima jawaban,
+upload file) dipindahkan dari bahasa Kotlin ke bahasa Rust.
+Perilaku yang terlihat user HARUS SAMA PERSIS dengan vc327 —
+tidak ada fitur baru, tidak ada yang berubah di layar.
+Tes ini cuma memastikan pindahan mesin itu tidak merusak apa-apa.
+
+YANG TETAP BERLAKU:
+- TES-VC327 tetap berlaku penuh (tes kartu merah + sesi baru
+  di web DeepSeek). Kerjakan TES-VC327 seperti biasa.
+- T1–T6 vc322 tetap berlaku (tes bocor sesi server).
+Kalau TES-VC327 atau T1–T6 vc322 GAGAL di vc328, itu REGRESI —
+laporkan ke Jhon, jangan lanjut pakai vc328 untuk kerja penting.
+
+ISTILAH (biar tidak bingung):
+- "Sesi Harness" = chat di aplikasi Harness (mis. "Utama").
+- "Sesi server" = percakapan di web DeepSeek (sidebar kiri).
+- "Stream" = jawaban yang muncul huruf demi huruf (bukan
+  langsung utuh sekaligus).
+- "Upload file" = kirim file (mis. foto / dokumen) ke agen
+  supaya dibaca.
+
+---------------------------------------------------------------
+TES 1 — TES ASAP: KIRIM 2 PERINTAH (3 menit, WAJIB)
+---------------------------------------------------------------
+LANGKAH:
+1. Buka Harness. Buka sesi "Utama" (chat 1-1 yang sudah panjang
+   — yang biasa dipakai, BUKAN sesi baru kosong).
+2. Kirim perintah pendek: "bro?"
+   Tunggu jawabannya selesai.
+3. Kirim perintah panjang: "cek skill lists, lalu jelaskan
+   singkat skill #6 dan #8"
+   Tunggu jawabannya selesai.
+
+LULUS kalau:
+  - Kedua jawaban muncul huruf demi huruf (stream jalan), DAN
+  - Jawabannya nyambung dengan percakapan (bukan seperti
+    ngobrol baru), DAN
+  - TIDAK ADA kartu merah / pesan error.
+
+GAGAL kalau:
+  - Jawaban tidak muncul / macet di tengah / kartu merah muncul,
+    ATAU
+  - Jawaban jadi ngaco / lupa konteks.
+
+---------------------------------------------------------------
+TES 2 — UPLOAD FILE (2 menit, WAJIB)
+---------------------------------------------------------------
+LANGKAH:
+1. Di sesi "Utama" yang sama, kirim 1 file (foto atau dokumen
+   apa saja dari HP).
+2. Sesudah file terkirim, tanya agen: "apa isi file yang baru
+   saya kirim?"
+   Tunggu jawabannya selesai.
+
+LULUS kalau:
+  - File terkirim tanpa error, DAN
+  - Agen bisa menjawab isi file itu (tanda file terbaca server).
+
+GAGAL kalau:
+  - File gagal terkirim / muncul pesan error, ATAU
+  - Agen bilang tidak ada file / tidak bisa membaca file.
+
+---------------------------------------------------------------
+TES 3 — PERINTAH PANJANG + LANJUTAN (5 menit, opsional)
+---------------------------------------------------------------
+Sama seperti TES 1, tapi lanjutkan dengan perintah yang memicu
+langkah Browser 2 / slot (mis. minta agen membuka / memeriksa
+sesuatu lewat Browser 2). Tunggu sampai selesai.
+LULUS kalau tidak ada kartu merah "Browser 2 gagal" /
+"Content is too long" dan jawaban tetap nyambung.
+Ini memastikan jalur slot (yang juga memakai mesin baru)
+tidak rusak.
+
+---------------------------------------------------------------
+YANG TIDAK PERLU DITES:
+- Room (grup): slice ini tidak mengubah room. (Slice 12 nanti
+  yang mengurus otak latar/room.)
+- Sesi baru kosong: perintah pertama di sesi baru memang selalu
+  kirim prompt penuh (1 sesi baru itu WAJAR).
+- Login / panen cookie: tidak diubah di vc328 (tetap Kotlin).
+
+---------------------------------------------------------------
+LAPORAN KE JHON (copy-paste, isi angkanya):
+---------------------------------------------------------------
+TES VC328:
+- TES 1 (2 perintah): LULUS / GAGAL (kalau GAGAL, tulis pesannya)
+- TES 2 (upload file): LULUS / GAGAL (kalau GAGAL, tulis pesannya)
+- TES 3 (Browser 2, kalau dites): LULUS / GAGAL
+- TES-VC327: LULUS / GAGAL (lihat file TES-VC327-SIAP-TEMPEL.txt)
+- T1–T6 vc322: LULUS / GAGAL
