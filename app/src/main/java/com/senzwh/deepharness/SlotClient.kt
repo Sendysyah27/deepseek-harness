@@ -202,7 +202,27 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         // ditandai suspend TIDAK dihubungi lagi sama sekali.
         if (AccountPool.isDead(ctx, f)) throw Exception("AKUN BROWSER $slot DITANDAI TIDAK AKTIF oleh pemutus arus lokal (dari respons server sebelumnya) — tidak ada panggilan yang dikirim untuk akun ini. Bila akun sebenarnya sehat (token mungkin kedaluwarsa): buka Browser $slot di Setup, login ulang, lalu kirim ulang.")
         val harnessNo = try { hprefs().getLong("currentSession", 1L) } catch (e: Exception) { 1L }
-        val stored = if (forceFresh || freshEphemeral) null else storedServerSession(f, harnessNo, reviewer)
+        // vc321 IXL — RESET PROAKTIF wadah server: akumulasi per sesi
+        // server (char prompt sukses) + prompt berikut yang akan menembus
+        // DEFAULT_CAP (200.000 char ~= 58.800 token, di bawah buffer
+        // server ~64.000 token) = wadah lama dibuang SEBELUM POST, wadah
+        // baru lahir; prompt awal giliran ini membawa ulang system prompt
+        // + riwayat penuh, jadi tidak ada konteks yang hilang permanen.
+        // Tanpa ini, sesi panjang "Utama" pasti menabrak
+        // input_exceeds_limit (kumulatif ~90.500 char/giliran menembus
+        // buffer di giliran ke-3, terukur probe vc321) — dan tutup-buka
+        // app TIDAK membantu karena kunci dsSlotSrv_ tersimpan di prefs.
+        // Sesi ephemeral reviewer (freshEphemeral) dilewati: wadahnya
+        // memang dibuang tiap panggilan, tidak ada akumulasi.
+        val accumKeyVc321 = if (reviewer) reviewerSessKey(harnessNo) else sessKey(harnessNo)
+        var stored = if (forceFresh || freshEphemeral) null else storedServerSession(f, harnessNo, reviewer)
+        if (!freshEphemeral && stored != null && TurnMetrics.shouldResetServerSessionVc321(TurnMetrics.serverAccumVc321(ctx, accumKeyVc321), prompt.length)) {
+            val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+            logSessEvent("[Browser $slot] ♻️ Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
+            clearServerSession(f, harnessNo, reviewer)
+            TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+            stored = null
+        }
         try {
             val sid = stored ?: run {
                 val c = createServerSession(token, cookie, ua)
@@ -231,6 +251,8 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 c
             }
             val res = completeWithSession(sid, prompt, thinking, search, token, cookie, ua, onPartial)
+            // vc321 IXL: POST sukses menambah akumulasi wadah ini.
+            if (!freshEphemeral) TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length)
             try { AccountPool.clearDead(ctx, f) } catch (e: Exception) {}
             return res
         } catch (e: Exception) {
@@ -253,7 +275,10 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 val fresh = createServerSession(token, cookie, ua)
                 storeServerSession(f, harnessNo, fresh, reviewer)
                 try {
-                    return completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial)
+                    val res2 = completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial)
+                    // vc321 IXL: wadah pengganti mulai dari 0 + prompt ini.
+                    if (!freshEphemeral) { TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321); TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length) }
+                    return res2
                 } catch (e2: Exception) {
                     if (isSuspendSignal(e2.message)) {
                         try { AccountPool.markDeadSmart(ctx, f, e2.message) } catch (e3: Exception) {}

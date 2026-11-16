@@ -192,8 +192,26 @@ class DsApiClient(private val webView: WebView) {
         // v4.43.17: forceFresh melewati sesi tersimpan sepenuhnya (dipakai
         // chat() sesudah stream putus 2x di sesi yang sama — sesi lama
         // diduga beracun, jangan dipakai lagi untuk percobaan ini).
-        val storedPair = if (forceFresh) null else storedServerSessionAny(fp, harnessNo)
-        val stored = storedPair?.second
+        var storedPair = if (forceFresh) null else storedServerSessionAny(fp, harnessNo)
+        var stored = storedPair?.second
+        // vc321 IXL — RESET PROAKTIF wadah server (mirror SlotClient):
+        // akumulasi + prompt berikut akan menembus DEFAULT_CAP =
+        // wadah lama dibuang SEBELUM POST. Kunci akumulasi = kunci sesi
+        // yang tersimpan (sidik pemilik wadah, bukan sidik token saat
+        // ini — samakan dengan storedServerSessionAny). Tanpa ini, sesi
+        // panjang menabrak input_exceeds_limit walau tiap prompt di
+        // bawah cap (akumulasi ~90.500 char/giliran, terukur probe
+        // vc321); tutup-buka app tidak membantu (kunci dsSrvSessId_
+        // tersimpan di prefs "harness").
+        val accumKeyVc321 = "dsSrvSessId_" + (storedPair?.first ?: fp) + "_" + harnessNo
+        if (stored != null && TurnMetrics.shouldResetServerSessionVc321(TurnMetrics.serverAccumVc321(ctx, accumKeyVc321), prompt.length)) {
+            val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+            logSessEvent("Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
+            clearServerSession(storedPair!!.first, harnessNo)
+            TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+            storedPair = null
+            stored = null
+        }
         try {
             val sid = stored ?: run {
                 val c = createServerSession(token, cookie, ua)
@@ -214,6 +232,8 @@ class DsApiClient(private val webView: WebView) {
                 c
             }
             val res = completeWithSession(sid, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+            // vc321 IXL: POST sukses menambah akumulasi wadah ini.
+            TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, prompt.length)
             // v4.14.2: satu sukses membuktikan token ini HIDUP — hapus
             // tanda matinya (sembuh otomatis sesudah login ulang/rotasi).
             try { AccountPool.clearDead(ctx, fp) } catch (e: Exception) {}
@@ -251,7 +271,14 @@ class DsApiClient(private val webView: WebView) {
                 val fresh = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, fresh)
                 try {
-                    return completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+                    val res2 = completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+                    // vc321 IXL: wadah pengganti mulai dari 0 + prompt ini.
+                    // Kunci akumulasi = sidik token saat ini (wadah baru
+                    // disimpan di bawah fp, bukan sidik pemilik wadah lama).
+                    val accumKeyFreshVc321 = "dsSrvSessId_" + fp + "_" + harnessNo
+                    TurnMetrics.resetServerAccumVc321(ctx, accumKeyFreshVc321)
+                    TurnMetrics.addServerAccumVc321(ctx, accumKeyFreshVc321, prompt.length)
+                    return res2
                 } catch (e2: Exception) {
                     if (isSuspendSignal(e2.message)) {
                         try { AccountPool.markDeadSmart(ctx, fp, e2.message) } catch (e3: Exception) {}

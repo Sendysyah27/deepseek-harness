@@ -5784,7 +5784,15 @@ class MainActivity : Activity() {
         retriedTools.clear()
         autoRetryTools.clear()
         val mdb = MemoryDb.get(this)
-        val transcript = mdb.historyTranscriptVc230(60, 60000, currentSessionId)
+        // vc321 IXL: anggaran [RIWAYAT] prompt awal ADAPTIF — sesi panjang
+        // (>=40 pesan user sebelumnya) memakai 30 pesan/30.000 char, hemat
+        // 30.000 char per POST (prompt awal lama ~90.500 char; baru
+        // ~60.500 char, terukur probe vc321). Sesi normal/pendek TIDAK
+        // berubah (60/60.000, vc230). Hitungan diambil SEBELUM giliran
+        // ini (msgCount_<sesi> di prefs "harness", belum termasuk pesan
+        // ini — sama seperti sessMsgCountVc235 di bawah).
+        val (histNVc321, histCapVc321) = TurnMetrics.historyBudgetVc321(getSharedPreferences("harness", MODE_PRIVATE).getInt("msgCount_" + currentSessionId, 0))
+        val transcript = mdb.historyTranscriptVc230(histNVc321, histCapVc321, currentSessionId)
         mdb.addHistory("user", text, currentSessionId)
         if (mdb.sessionTitle(currentSessionId) == "Sesi baru") {
             mdb.renameSession(currentSessionId, text.take(32))

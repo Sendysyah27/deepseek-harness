@@ -323,20 +323,44 @@ fun main(args: Array<String>) {
         bytesEqual(File(tree, "Governor.kt"), File(merge, "Governor.kt")))
     check("7.4 ToolGate.kt byte-identik baseline (gerbang tidak berubah)",
         bytesEqual(File(tree, "ToolGate.kt"), File(merge, "ToolGate.kt")))
-    check("7.5 DsApiClient.kt byte-identik versi P1 (tidak disentuh IXL; tangga pindah ke DsFailure)",
-        bytesEqual(File(tree, "DsApiClient.kt"), File(p1dir, "DsApiClient.kt")))
-    check("7.6 SlotClient.kt byte-identik versi P1 (tidak disentuh IXL)",
-        bytesEqual(File(tree, "SlotClient.kt"), File(p1dir, "SlotClient.kt")))
+    // 7.5/7.6 (vc321): bukan lagi byte-identik P1 — fix IXL vc321 menambah
+    // guard reset sesi server proaktif (akumulasi + prompt berikut >
+    // DEFAULT_CAP) di kedua klien. Yang dikunci sejak vc321: protokol
+    // TIDAK berubah (parent_message_id tetap NULL, kunci sesi server
+    // tetap dsSrvSessId_/dsSlotSrv_, forceFresh/freshEphemeral tetap
+    // dihormati, tangga retry tetap di DsFailure) + guard vc321 ada
+    // (keputusan + pencatatan akumulasi + reset).
+    val dsSrc = File(tree, "DsApiClient.kt").readText()
+    val slotSrc = File(tree, "SlotClient.kt").readText()
+    check("7.5 DsApiClient.kt: protokol tidak berubah + guard vc321 ada (parent NULL, kunci dsSrvSessId_, forceFresh, reset proaktif)",
+        dsSrc.contains(".put(\"parent_message_id\", JSONObject.NULL)") &&
+        dsSrc.contains("dsSrvSessId_\" + fp + \"_\" + harnessNo") &&
+        dsSrc.contains("if (forceFresh) null else storedServerSessionAny") &&
+        dsSrc.contains("shouldResetServerSessionVc321") &&
+        dsSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        dsSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
+        dsSrc.contains("Wadah server di-reset proaktif vc321"))
+    check("7.6 SlotClient.kt: protokol tidak berubah + guard vc321 ada (parent NULL, kunci dsSlotSrv_, freshEphemeral dilewati, reset proaktif)",
+        slotSrc.contains(".put(\"parent_message_id\", JSONObject.NULL)") &&
+        slotSrc.contains("\"dsSlotSrv_\" + slot + \"_\" + harnessNo") &&
+        slotSrc.contains("!freshEphemeral && stored != null") &&
+        slotSrc.contains("shouldResetServerSessionVc321") &&
+        slotSrc.contains("addServerAccumVc321(ctx, accumKeyVc321, prompt.length)") &&
+        slotSrc.contains("resetServerAccumVc321(ctx, accumKeyVc321)") &&
+        slotSrc.contains("Wadah server di-reset proaktif vc321"))
     check("7.7 Tangga retry utuh di DsFailure.RATE_LIMIT_WAITS_MS (10/20/35 dtk + stream-putus 2x)",
         File(tree, "DsFailure.kt").readText().contains("longArrayOf(10_000L, 20_000L, 35_000L)"))
     check("7.8 Cap langkah 50 tidak berubah (MAXSTEPS default + AgentPrompt)",
         agentSrc.contains("__MAXSTEPS__") && !agentSrc.contains("MAXSTEPS__\", \"51\""))
-    check("7.9 Hanya 4 file yang berubah vs baseline merge",
+    check("7.9 File IXL (4) + vc321 (GroupChat/DsApiClient/SlotClient) berubah vs baseline merge",
         listOf("AgentPrompt.kt", "MainActivity.kt", "BgBrain.kt", "TurnMetrics.kt").all { File(tree, it).exists() } &&
             !bytesEqual(File(tree, "AgentPrompt.kt"), File(merge, "AgentPrompt.kt")) &&
             !bytesEqual(File(tree, "MainActivity.kt"), File(merge, "MainActivity.kt")) &&
             !bytesEqual(File(tree, "BgBrain.kt"), File(merge, "BgBrain.kt")) &&
-            !bytesEqual(File(tree, "TurnMetrics.kt"), File(merge, "TurnMetrics.kt")))
+            !bytesEqual(File(tree, "TurnMetrics.kt"), File(merge, "TurnMetrics.kt")) &&
+            !bytesEqual(File(tree, "GroupChat.kt"), File(merge, "GroupChat.kt")) &&
+            !bytesEqual(File(tree, "DsApiClient.kt"), File(merge, "DsApiClient.kt")) &&
+            !bytesEqual(File(tree, "SlotClient.kt"), File(merge, "SlotClient.kt")))
     check("7.10 TurnMetrics.kt: tidak ada lagi 400000", !tmSrc.contains("400000"))
     check("7.11 Tidak ada secret/token di file IXL (sapu hsurr:)",
         !agentSrc.contains("hsurr:") && !mainSrc.contains("hsurr:") && !bgSrc.contains("hsurr:") && !tmSrc.contains("hsurr:"))

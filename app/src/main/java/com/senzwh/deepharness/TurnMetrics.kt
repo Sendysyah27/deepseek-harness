@@ -152,6 +152,74 @@ object TurnMetrics {
      *  supaya ambangnya selaras. */
     fun proactiveThreshold(cap: Int): Int = (cap * 4) / 5
 
+    // ---- vc321 IXL (fix room-lane + sesi panjang 1-1) ----
+    // AKAR (diukur probe vc321, default/seed): parent_message_id SELALU
+    // NULL + sesi server dipakai ulang per (akun/slot, sesi harness) —
+    // konteks server tumbuh ~1 prompt penuh per POST. Prompt awal 1-1
+    // sesi panjang ~90.500 char (~26.600 token) sehingga kumulatif
+    // menembus buffer server ~64.000 token (~217.600 char) di giliran
+    // ke-3, bahkan untuk tool sepele ("cek skill lists"). Kunci sesi
+    // tersimpan di SharedPreferences "harness" (dsSrvSessId_<fp>_<no> /
+    // dsSlotSrv_<slot>_<no>) — bertahan melewati tutup-buka app, itu
+    // kenapa keluar-masuk app TIDAK me-reset akumulasi.
+    // PERBAIKAN: (a) akumulasi per sesi server dihitung (char prompt
+    // sukses) dan sesi di-reset PROAKTIF sebelum POST yang akan
+    // menembus cap — prompt awal 1-1/room SELALU membawa ulang system
+    // prompt + riwayat, jadi wadah baru tidak kehilangan konteks yang
+    // tidak bisa dikirim ulang; (b) riwayat awal sesi panjang dipangkas
+    // lebih keras (30 pesan/30.000 char bila sesi sudah >=40 pesan).
+    /** Ambang sesi panjang: jumlah pesan user sesi ini SEBELUM giliran ini. */
+    const val LONG_SESSION_MSG_THRESHOLD_VC321 = 40
+    /** Anggaran riwayat awal sesi panjang (vs normal 60 pesan/60.000 char). */
+    const val HISTORY_LONG_N_VC321 = 30
+    const val HISTORY_LONG_CHARS_VC321 = 30000
+    /** Anggaran riwayat awal sesi normal/pendek — TIDAK berubah dari vc230. */
+    const val HISTORY_NORMAL_N_VC321 = 60
+    const val HISTORY_NORMAL_CHARS_VC321 = 60000
+
+    /** Anggaran [RIWAYAT] prompt awal dari jumlah pesan user sesi ini
+     *  sebelum giliran ini. Murni, tanpa Context — bisa diuji di JVM.
+     *  Sesi pendek/normal: (60, 60000) persis seperti vc230; sesi
+     *  panjang (>=40 pesan): (30, 30000) — hemat 30.000 char per POST. */
+    fun historyBudgetVc321(priorMsgCount: Int): Pair<Int, Int> =
+        if (priorMsgCount >= LONG_SESSION_MSG_THRESHOLD_VC321) Pair(HISTORY_LONG_N_VC321, HISTORY_LONG_CHARS_VC321)
+        else Pair(HISTORY_NORMAL_N_VC321, HISTORY_NORMAL_CHARS_VC321)
+
+    /** Keputusan reset sesi server (murni, tanpa Context). Reset bila
+     *  akumulasi yang sudah terkirim + prompt berikut akan menembus
+     *  DEFAULT_CAP (200.000 char ~= 58.800 token, di bawah buffer
+     *  server ~64.000 token). accum==0 tidak pernah reset (prompt
+     *  tunggal di bawah cap selalu lolos — sesi baru tidak dibakar
+     *  untuk satu POST besar). Batas atas laju reset: satu wadah baru
+     *  per giliran bila tiap prompt di cap; tipikal ~1 reset per 3-5
+     *  giliran sesi panjang (prompt awal baru ~60.500 char). */
+    fun shouldResetServerSessionVc321(accumChars: Int, nextPromptChars: Int): Boolean =
+        accumChars > 0 && accumChars + nextPromptChars > DEFAULT_CAP
+
+    private const val KEY_SRV_ACCUM_VC321 = "srvAccumVc321_"
+
+    /** Estimasi akumulasi server sesi ini (jumlah char prompt sukses
+     *  yang sudah dikirim ke wadah server yang sama). 0 = belum ada /
+     *  sesudah reset. Disimpan di prefs "turnMetrics" (bukan "harness")
+     *  supaya tidak ikut tersalin BrainBackup/sync_memory. */
+    fun serverAccumVc321(ctx: Context, key: String): Int = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_SRV_ACCUM_VC321 + key, 0).coerceAtLeast(0)
+    } catch (e: Exception) { 0 }
+
+    fun addServerAccumVc321(ctx: Context, key: String, chars: Int) {
+        if (chars <= 0) return
+        try {
+            val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val cur = p.getInt(KEY_SRV_ACCUM_VC321 + key, 0).coerceAtLeast(0)
+            // Jepit 10 juta supaya tidak overflow bila prefs korup.
+            p.edit().putInt(KEY_SRV_ACCUM_VC321 + key, (cur + chars).coerceAtMost(10_000_000)).apply()
+        } catch (e: Exception) { }
+    }
+
+    fun resetServerAccumVc321(ctx: Context, key: String) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_SRV_ACCUM_VC321 + key).apply() } catch (e: Exception) { }
+    }
+
     /** vc278 O19(c): char yang dipangkas PEMANGKAS PROAKTIF per giliran
      *  — ikut snapshot JSON giliran ("char_dipangkas_proaktif") dan
      *  ikut char_terpotong (sama seperti guard darurat). */

@@ -334,7 +334,9 @@ object GroupChat {
                                     if (oc.prereqFailed) "" else stuckWatchGrpVc263.observe(oc.tool, oc.args, oc.result)
                                 }
                             )
-                            prompt = buildPrompt(app, m, userText, memories, execMode) + "\n\n" + BatchToolVc274.combinedMessage("grup", reportGrpVc274)
+                            // vc321 IXL: lanjutan batch = delta (jangkar +
+                            // pesan gabungan), bukan rebuild prompt penuh.
+                            prompt = continuationPromptVc321(userText, BatchToolVc274.combinedMessage("grup", reportGrpVc274))
                             val stopGrpVc274 = reportGrpVc274.outcomes.firstOrNull { AgentPrompt.StuckWatch.isStop(it.stuckText) }
                             if (stopGrpVc274 != null) {
                                 turnLockedGrpVc277 = true
@@ -370,7 +372,9 @@ object GroupChat {
                                 val allMemGrpVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(visible), pinnedGrpVc266.lines(), userText)
                                 if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(visible) && roundToolsVc249.isNotEmpty() && !allMemGrpVc266 && !AgentPrompt.evidenceMarkerPresent(visible)) {
                                     gateRetriedVc249 = true
-                                    prompt = buildPrompt(app, m, userText, memories, execMode) + "\n\n" + AgentPrompt.EVIDENCE_GATE_NUDGE
+                                    // vc321 IXL: nudge gate bukti = delta,
+                                    // bukan rebuild prompt penuh.
+                                    prompt = continuationPromptVc321(userText, AgentPrompt.EVIDENCE_GATE_NUDGE)
                                     continue
                                 }
                                 finalText = visible.trim(); break
@@ -427,10 +431,14 @@ object GroupChat {
                             val toolText = ActivityTitle.formatText(tool, args, RedactSecrets.redact(result), msGrpVc254, !WorkLog.isFailed(result))
                             try { mdb.addGroupMsg("tool", m.name, toolText) } catch (e: Exception) {}
                             listener.onTool(m.name, m.accent, toolText)
-                            prompt = buildPrompt(app, m, userText, memories, execMode) +
-                                "\n\nHasil tool $tool" + (if (grpId != null) " [id=$grpId, total $grpTotal char]" else "") + ":\n${RedactSecrets.redact(result).take(8000)}\n" +
+                            // vc321 IXL: lanjutan sesudah tool = delta
+                            // (jangkar + hasil tool + ucapan + instruksi
+                            // lanjut), bukan rebuild prompt penuh. Isi
+                            // suffix byte-identik dengan versi lama.
+                            prompt = continuationPromptVc321(userText,
+                                "Hasil tool $tool" + (if (grpId != null) " [id=$grpId, total $grpTotal char]" else "") + ":\n${RedactSecrets.redact(result).take(8000)}\n" +
                                 (if (proseBeforeTool.isNotBlank()) "\nUcapanmu sebelum tool tadi: ${proseBeforeTool.take(2000)}\n" else "") +
-                                "\nLanjutkan: bila butuh tool lain keluarkan blok json tool (boleh sampai 4 blok sekaligus bila independen, maks 4 per respons), bila selesai jawab final TANPA blok json." + stuckSuffixGrpVc263
+                                "\nLanjutkan: bila butuh tool lain keluarkan blok json tool (boleh sampai 4 blok sekaligus bila independen, maks 4 per respons), bila selesai jawab final TANPA blok json." + stuckSuffixGrpVc263)
                         }
                         val cleanRaw = (finalText ?: "").trim()
                         // vc246 GELOMBANG 5 (K-07): strip blok ask dari teks
@@ -592,6 +600,20 @@ object GroupChat {
             .take(10).map { it.take(1000) }
     }
 
+    /** vc321 IXL — lanjutan DELTA room (mirror sendContinuation 1-1
+     *  vc316): ronde lanjutan anggota yang sama TIDAK lagi membangun
+     *  ulang prompt penuh (base + katalog + transkrip ~70.000 char)
+     *  — cukup jangkar delta (~503 char) + isi baru (hasil tool /
+     *  pesan gabungan / nudge). Server sudah menyimpan prompt penuh
+     *  ronde pertama di sesi server slot ini (kunci
+     *  dsSlotSrv_<slot>_<harnessNo>, dipakai ulang). Bila wadah
+     *  server ternyata di-reset guard vc321 di tengah ronde, jangkar
+     *  membawa jalan keluar list_tools {} seperti 1-1. Ronde pertama
+     *  tiap anggota tetap kirim prompt penuh (buildPrompt). */
+    private fun continuationPromptVc321(userText: String, suffix: String): String {
+        return AgentPrompt.continuationAnchorVc316(userText) + "\n\n" + suffix
+    }
+
     /** Grup Matang F1: prompt penuh — persona user + pak perilaku anggota +
      *  blok otaknya sendiri + keadaan sekarang + cuplikan otak kedua
      *  berlabel + transkrip grup. Anggaran: total maks 200000 karakter;
@@ -599,7 +621,10 @@ object GroupChat {
      *  baris transkrip tertua dipotong dulu (minimal 5 baris dipertahankan).
      *  History 1-1 TIDAK disalin mentah — jembatan satu-satunya adalah
      *  cuplikan retrieval berlabel di bawah. toolsEnabled=true menyertakan
-     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog. */
+     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog.
+     *  vc321: katalog lewat selectCatalog (bukan penuh dicap 30.000);
+     *  lanjutan ronde memakai continuationPromptVc321 (delta), bukan
+     *  rebuild buildPrompt. */
     private fun buildPrompt(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
         val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "senz" } catch (e: Exception) { "senz" }
         val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
@@ -637,12 +662,16 @@ object GroupChat {
         // tool ronde sebelumnya walau sudah keluar dari 30 pesan terakhir.
         run { val wbGrpVc303 = WorkNotesVc301.blockForKey(app, WorkNotesVc301.groupNotesKey()); if (wbGrpVc303.isNotBlank()) base.append("[CATATAN KERJA GRUP]\n").append(wbGrpVc303).append("\n\n") }
         if (toolsEnabled) {
-            // vc240 M18: cap base ditegakkan dengan memangkas katalog
-            // (bukan hanya transkrip) — katalog penuh dicap 6000 char
-            // dengan penanda sisa, agar base + transkrip minimal 5 baris
-            // tidak lagi fail-open diam-diam di atas 200000.
-            val catFullVc240 = AgentPrompt.toolCatalog(app)
-            val catVc240 = if (catFullVc240.length > 30000) catFullVc240.take(30000) + "\n…(katalog grup dipotong, sisa " + (catFullVc240.length - 30000) + " char)…" else catFullVc240
+            // vc321 IXL: katalog room kini lewat selectCatalog (pola vc316
+            // 1-1) — katalog penuh 94.809 char selama ini dicap 30.000,
+            // tapi tiap ronde rebuild + POST parent NULL mengakumulasi
+            // konteks server; slim ~12-22k char per tugas ("cek skill
+            // lists" 22.429 vs 30.000, "bro?" 13.726). Backstop 30.000
+            // dipertahankan (tugas kosong -> katalog penuh, kontrak lama).
+            // Trade-off sama seperti vc316: tool di luar seleksi didapat
+            // lewat list_tools {} (catatan fallback di tiap slim).
+            val catSlimVc321 = AgentPrompt.catalogForTask(app, userText)
+            val catVc240 = if (catSlimVc321.length > 30000) catSlimVc321.take(30000) + "\n…(katalog grup dipotong, sisa " + (catSlimVc321.length - 30000) + " char)…" else catSlimVc321
             base.append("KATALOG TOOL (sama seperti chat 1-1 — pakai bila tugas butuh aksi HP):\n").append(catVc240).append("\n\n")
             // vc262 N-m23: teruskan teks tugas sebagai query agar ranking
             // relevansi skill hidup (tanpa query semua skor 0).

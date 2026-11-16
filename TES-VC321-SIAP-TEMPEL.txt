@@ -1,0 +1,56 @@
+TES VC321 — FIX KARTU MERAH DI SESI PANJANG (4.48.9.155)
+Bahasa bayi: tiap langkah ada LULUS / GAGAL. Kalau ada yang GAGAL,
+tulis nomor langkahnya + foto layarnya, jangan lanjut dulu.
+
+CARA BACA:
+- "Kartu merah" = kartu error merah "input_exceeds_limit" / "Content is too long".
+- "Utama" = chat 1-1 yang paling atas (judulnya "Utama").
+- "Room" = tab Grup (bukan chat Utama).
+
+PERSIAPAN (sekali saja):
+P1. Install APK vc321 (Main atau Pure, yang biasa dipakai) — harus bisa
+    menimpa app lama tanpa hapus data. Kalau minta hapus dulu, BERHENTI,
+    itu GAGAL (sidik jari beda) — kabari Jhon.
+P2. Buka app, pastikan login DeepSeek masih aktif (satu jawaban biasa
+    jalan). Kalau belum login, login dulu seperti biasa.
+
+T-BARU 1 — SESI PANJANG DI "UTAMA" (ini bug yang dilaporkan Sendy):
+T1. Buka chat "Utama". Kirim: "cek skill lists"
+    (Perintah ini persis yang dulu kena kartu merah.)
+    LULUS bila: jawaban muncul normal, ada daftar skill, TIDAK ada kartu merah.
+    GAGAL bila: kartu merah muncul lagi.
+T2. Lanjutkan ngobrol di chat "Utama" yang sama sampai total sudah
+    panjang (kirim 5-10 pesan biasa, mis. tanya jam, tanya baterai,
+    minta ringkasan, apa saja — yang penting chatnya makin panjang).
+    Lalu kirim lagi: "cek skill lists"
+    LULUS bila: tetap jawab normal, TIDAK ada kartu merah.
+    GAGAL bila: kartu merah muncul.
+T3. (Opsional, bukti paling kuat) Di chat "Utama" yang sudah sangat
+    panjang itu, kirim: "cek baterai"
+    LULUS bila: jawab normal (angka baterai muncul).
+    GAGAL bila: kartu merah muncul.
+
+T-BARU 2 — RONDE ROOM (Grup):
+T4. Buka tab Grup. Kirim satu pesan yang minta aksi, mis.:
+    "cek baterai" (atau tugas grup biasa yang pakai tool).
+    LULUS bila: anggota grup menjawab + tool jalan, TIDAK ada kartu merah.
+T5. Di grup yang sama, lanjutkan tugasnya supaya anggotanya pakai tool
+    lagi di ronde berikut (mis. balas: "lanjutkan, cek juga jam
+    sekarang" / "buatkan ringkasan hasilnya").
+    LULUS bila: ronde lanjutan tetap jawab normal, TIDAK ada kartu merah.
+    GAGAL bila: kartu merah muncul di ronde lanjutan.
+
+T-LAMA (tetap harus jalan — sesi pendek tidak boleh rusak):
+T6. Buka chat baru (atau chat pendek lain), kirim: "halo"
+    LULUS bila: jawab normal seperti biasa.
+T7. Di chat pendek, kirim: "kita tes concat"
+    LULUS bila: agen menawarkan/menjalankan concat_version tanpa kartu merah.
+    (Ini skenario vc316 yang dulu sudah dibetulkan — harus tetap jalan.)
+
+CATATAN:
+- Kalau T1-T3 LULUS, fix 1-1 TERBUKTI di perangkat: sesi panjang tidak
+  lagi menabrak batas, dan keluar-masuk app tidak lagi dibutuhkan.
+- Kalau T4-T5 LULUS, fix room TERBUKTI: ronde lanjutan tidak lagi
+  mengirim ulang prompt penuh.
+- Perilaku lain (jawaban, tool, tampilan) harus SAMA seperti vc320 —
+  kalau ada yang berubah aneh, kabari Jhon dengan nomor langkahnya.
