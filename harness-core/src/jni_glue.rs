@@ -11,6 +11,7 @@
 
 use crate::ds_failure;
 use crate::pow_solver;
+use crate::redact_secrets;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
@@ -20,7 +21,8 @@ use std::sync::Once;
 
 /// Versi seam JNI. Naikkan tiap kali signature berubah; Kotlin cek
 /// saat load (`RustCore.available` false bila mismatch -> fallback).
-/// v2 = slice 2 (pow_solver): +6 fungsi PoW.
+/// v2 = slice 2 (pow_solver): +8 fungsi PoW; slice 3 (redact_secrets):
+/// +1 fungsi redactSecrets. TETAP 2 — jangan naikkan di slice 3/4.
 pub const RUST_CORE_VERSION: jint = 2;
 
 static PANIC_HOOK: Once = Once::new();
@@ -71,6 +73,24 @@ where
         Ok(Ok(s)) => return_string(&mut env, &s),
         Ok(Err(_)) => return_string(&mut env, &error_json()),
         Err(_) => return_string(&mut env, &error_json()),
+    }
+}
+
+/// Seperti `guarded_string`, tapi kembalikan `null` ke JVM bila panic
+/// atau error — dipakai `redactSecrets`: string polos (bukan JSON),
+/// jadi JSON error tidak boleh bocor sebagai "teks ter-redaksi".
+/// Kotlin memperlakukan `null` sebagai "Rust gagal" -> fallback ke
+/// implementasi Kotlin lama + matikan saklar Rust slice itu.
+fn guarded_string_nullable<F>(mut env: JNIEnv, f: F) -> jstring
+where
+    F: FnOnce(&mut JNIEnv) -> Option<String>,
+{
+    install_panic_hook();
+    let result = catch_unwind(AssertUnwindSafe(|| f(&mut env)));
+    match result {
+        Ok(Some(s)) => return_string(&mut env, &s),
+        Ok(None) => std::ptr::null_mut(),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -141,10 +161,10 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
     guarded_string(env, |_| {
         Ok(serde_json::json!({
             "version": RUST_CORE_VERSION,
-            "functions": ["rustCoreVersion", "rustCoreCapabilities", "echo", "classifyFailureJson",
+            "functions": ["rustCoreVersion", "rustCoreCapabilities", "echo", "classifyFailureJson", "redactSecrets",
                 "powSha3Hex", "powDsHashV1Hex", "powSha3Bytes", "powDsHashV1Bytes",
                 "powSolveDeepSeekJson", "powSolveFastJson", "powSolveFmtJson", "powSolveJson"],
-            "modules": ["ds_failure", "pow_solver"]
+            "modules": ["ds_failure", "pow_solver", "redact_secrets"]
         })
         .to_string())
     })
@@ -314,5 +334,23 @@ pub extern "C" fn Java_harness_core_RustCore_powSolveJson(
         Ok(pow_result_json(pow_solver::solve(
             &challenge, &salt, difficulty, max_tries,
         )))
+    })
+}
+
+// ------------------------------------------------------------- Slice 3: RedactSecrets --
+//
+// String polos in/out (bukan JSON: payload-nya teks presentasi;
+// envelope JSON akan memaksa Kotlin meng-unescape string). Sukses ->
+// teks ter-redaksi; panic/error -> `null` (Kotlin fallback ke
+// implementasi Kotlin lama + matikan saklar rustRedactSecrets).
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_redactSecrets(
+    env: JNIEnv,
+    _class: JClass,
+    input: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let s = jstring_to_rust(env, &input);
+        Some(redact_secrets::redact(&s))
     })
 }

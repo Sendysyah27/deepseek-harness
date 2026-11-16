@@ -35,6 +35,14 @@ object RustCore {
     external fun echo(input: String): String
     external fun classifyFailureJson(code: Int, body: String, exceptionMessage: String): String
 
+    // ---- Slice 3: RedactSecrets (redaksi kredensial) ----
+    /**
+     * Redaksi kredensial (String polos in/out, bukan JSON).
+     * Sukses -> teks ter-redaksi; `null` -> Rust gagal (panic/error di
+     * boundary) -> pemanggil WAJIB fallback ke implementasi Kotlin lama.
+     */
+    external fun redactSecrets(input: String): String?
+
     // ---- Slice 2: PowSolver (PoW DeepSeekHashV1) ----
     /** SHA3-256 sebagai 64 digit hex lowercase; "" / bukan-hex = gagal. */
     external fun powSha3Hex(input: String): String

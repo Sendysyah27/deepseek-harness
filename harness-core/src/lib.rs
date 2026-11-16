@@ -20,6 +20,7 @@
 
 pub mod ds_failure;
 pub mod pow_solver;
+pub mod redact_secrets;
 
 mod jni_glue;
 

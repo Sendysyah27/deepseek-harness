@@ -163,3 +163,115 @@ Quirk yang DIREPLIKASI (bukan diperbaiki — porting murni, PATCH-S2.md §4.2):
 - Tes perangkat: `vc317-work/TES-VC318-SIAP-TEMPEL.txt` (T1–T6, bahasa
   bayi; T2/T3 membuktikan PoW Rust jalan di perangkat — tiap chat baru
   harus menyelesaikan PoW sebelum server menjawab).
+
+## 8. Slice 3: RedactSecrets.kt → Rust (vc318 / 4.48.9.152)
+
+**Tanggal:** 16 Nov 2026 · **Integrator:** subagent slice 3 (koordinator: Jhon)
+· **Status:** (diisi setelah langkah 7–9).
+
+Versi TETAP 318/4.48.9.152; `RUST_CORE_VERSION` TETAP 2 (slice 2+3+4
+semua ke 2 — JANGAN naikkan). Branch tetap `vc317-rust`. Main TIDAK
+disentuh. Patch set: `vc317-work/work-s3/` (PATCH-S3.md, cargo-verified
+113/113 standalone).
+
+### 8.1 Isi slice 3 (porting murni — perilaku TIDAK diubah)
+
+Merge TIGA ARAH (bukan timpa — file work-s3 diturunkan dari basis slice
+0+1, sedangkan live sudah berisi slice 2; menimpa akan menghilangkan
+fungsi PoW). Hanya perubahan S3 yang diambil:
+
+| # | File | Sifat |
+|---|---|---|
+| 1 | `harness-core/src/redact_secrets.rs` — BARU, 448 baris | Port Rust modul `redact_secrets` + 10 tes; `#![forbid(unsafe_code)]`, tanpa `unwrap()`/`expect()` di jalur produksi; 6 regex, `OnceLock` cache |
+| 2 | `harness-core/src/lib.rs` | +1 baris: `pub mod redact_secrets;` (`ds_failure`/`pow_solver` dipertahankan) |
+| 3 | `harness-core/src/jni_glue.rs` (318 → 356 baris) | +`guarded_string_nullable` + fungsi JNI `redactSecrets`; capabilities += `redactSecrets`/`redact_secrets`; SEMUA fungsi lama dipertahankan (classifyFailureJson + 8 PoW + helpers); VERSION TETAP 2 |
+| 4 | `harness-core/Cargo.toml` + `Cargo.lock` | +`regex = "1"` (1.13.1) + deps (`regex-automata` 0.4.18, `regex-syntax` 0.8.11, `aho-corasick` 1.1.5); lock hasil merge == lock s3 byte-identik (43 paket) |
+| 5 | `app/src/main/java/harness/core/RustCore.kt` (57 → 65 baris) | +`external fun redactSecrets(input: String): String?`; VERSION TETAP 2 + 8 fn PoW dipertahankan |
+| 6 | `app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt` (86 → 151 baris) | Wrapper: API publik TETAP, implementasi lama → privat `redactKotlin()`/`countMatchesKotlin()`, seam Rust + fallback + saklar `rustRedactSecrets`; `selfTest()` TIDAK diubah |
+
+Simbol JNI baru (1): `redactSecrets` — seam String polos in/out
+(BUKAN JSON — deviasi desain PATCH-S3.md §5: payload-nya teks
+presentasi; envelope JSON memaksa Kotlin unescape). Sukses → teks
+ter-redaksi; panic/error di boundary (`guarded_string_nullable`,
+`catch_unwind`) → **`null`** → Kotlin fallback + matikan saklar.
+
+Lookahead (PATCH-S3.md §4, keputusan B2 — restrukturisasi, DIPAKAI):
+separator KEYVAL LAZY (`["'=:]+?`); guard lookahead diganti cek manual
+`starts_with("[REDAKSI]")`. `fancy-regex` DITOLAK (gagal ketahanan
+273 KB: `BacktrackLimitExceeded`, ~20–160x lebih lambat).
+
+Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S3.md §4):
+- Guard lookahead praktis mati (memeriksa literal `"[REDAKSI]"`,
+  sementara semua marker `"[REDAKSI: ...]"`).
+- BEARER `(?i)` me-match "bearer" DI DALAM marker →
+  `"Bearer [REDAKSI: bearer token]"` di-redact lagi jadi ganda.
+- Idempotence Kotlin HANYA berlaku untuk sampel self-test;
+  `redact(redact(x)) != redact(x)` untuk teks ter-redaksi (E3/E4/E6/
+  E7/E8/E13/E17/E29) — dikunci tes Rust
+  `kotlin_original_is_not_idempotent_on_pre_redacted_text`.
+- `\s`/`\S` ditulis eksplisit ASCII (beda NBSP, dibuktikan E18/E19).
+
+### 8.2 Verifikasi basis (langkah 0 — semua LULUS)
+
+- (a) `diff -rq --exclude=target harness-core/ vc317-work/branch-stage/harness-core/`
+  → IDENTIK (sebelum patch); live == vc318 pasca-slice-2.
+- (b) Live `RedactSecrets.kt` vs `vc317-work/merge/RedactSecrets.kt` →
+  IDENTIK (asli vc316, 86 baris) sebelum ditimpa wrapper.
+- (c) Diff S3 vs basis slice 0+1: tepat file di §8.1; `Cargo.lock` s3
+  vs live hanya 4 paket regex + 1 baris dep `regex`.
+
+### 8.3 Angka tes
+
+#### cargo test (live tree)
+- Perintah: `cargo test --offline --manifest-path harness-core/Cargo.toml`
+- **149/149 lulus, 0 gagal** (103 slice 1 + 36 slice 2 + 10 baru
+  `redact_secrets`).
+
+#### Suite JVM lokal (VM, `vc317-work/work-impl/run-tests-vc318-s3-coord.sh`)
+- **528/529** — P1 103/103 + P2 36/36 + **P3 94/94 (BARU: paritas
+  wrapper RedactSecrets)** + N9 46/46 + BR 45/45 + IXL 72/72 (varian
+  CI-adapt) + R1 64/64 + R2 68/69 + C (tepat 3 file .kt berubah + 0 baru)
+  + D1–D8 (D8 BARU: fallback RedactSecrets dipertahankan).
+- Satu-satunya gagal = **R2-4.1** (assert STRING PERSIS usang warisan
+  vc315 — SAMA seperti vc317/vc318-slice-2, ditoleransi eksplisit;
+  bukan regresi).
+- Tes P3 baru: `vc317-work/work-s3/TestRedactSecretsVc318.kt` (94 cek:
+  32 self-test + idempotence sampel (once==twice + titik-tetap
+  `"password=[REDAKSI: password] bearer token]") + 38 ekstra output
+  persis + diskriminator F1–F5 + countMatches/containsSecret +
+  seam VERSION 2 + fallback `redactKotlin` dipertahankan +
+  `selfTest()` 33/33 PASS). Juga masuk CI
+  (`tests/TestRedactSecretsVc318.kt` + step P3 di workflow + D8 di
+  `run-suite-ci.sh`).
+- Log: `vc317-work/work-impl/run-tests-vc318-s3-coord.log`.
+
+### 8.4 Deviasi / temuan selama integrasi (jujur)
+
+1. **Merge `Cargo.lock` sempat rusak (bug skrip saya, bukan kode):**
+   skrip Python pertama merge lock dengan dict keyed nama paket saja —
+   `Cargo.lock` punya paket NAMA SAMA versi beda (mis. `jni-sys`,
+   `syn`, `windows-sys`) sehingga blok duplikat tertimpa/hilang.
+   Terdeteksi LANGSUNG dari `diff` vs lock s3 (blok hilang terlihat).
+   Perbaikan: lock live direkonstruksi dari lock s3 minus 4 paket
+   regex (diff awal 42 baris TERCAPAI LAGI persis), lalu merge ulang
+   dengan kunci (nama, versi) — hasil akhir byte-identik lock s3
+   (43 paket, 0 duplikat nama+versi) + `cargo test --locked`-setara
+   lolos 149/149. Pelajaran: JANGAN merge lock dengan dict per nama;
+   kunci (nama, versi) atau salin dari patch set yang diff-nya sudah
+   terbukti bersih.
+2. **Live tree TIDAK punya `tests/` / `.github/` di root** (keduanya
+   hanya ada di `branch-stage/` = cermin push). Wire P3 CI dilakukan
+   langsung di `branch-stage/tests/run-suite-ci.sh` +
+   `branch-stage/.github/workflows/android.yml` (pola yang sama seperti
+   slice 2 — P2 juga hanya ada di branch-stage).
+3. **Section C CI diperkuat:** `run-suite-ci.sh` run_c kini juga
+   mengecek `RedactSecrets.kt` berubah vs main + `redact_secrets.rs`
+   file baru vs main (selain cek slice 1+2 yang sudah ada).
+
+### 8.5 Push branch vc317-rust
+
+(diisi setelah langkah 6)
+
+### 8.6 CI + APK slice 3
+
+(diisi setelah langkah 7–9)
