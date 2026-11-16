@@ -401,13 +401,19 @@ fun main(args: Array<String>) {
     cek("12.4 GraphDb: public fun + *Kotlin + saklar", gr.contains("fun getOrCreateNode(") && gr.contains("private fun getOrCreateNodeKotlin(") && gr.contains("var rustGraphDb") && gr.contains("private fun searchFactsKotlin(") && gr.contains("private fun rewireNodeEdgesKotlin("))
     cek("12.5 SqliteSeam ada (ensure/query/exec/tx)", seam.contains("fun ensure(") && seam.contains("fun query(") && seam.contains("fun exec(") && seam.contains("fun tx("))
     cek("12.6 MemoryDb TIDAK tersentuh Rust", !mem.contains("rustMemoryDb") && !mem.contains("SqliteSeam") && !mem.contains("sqliteJson"))
-    val rc1 = File(treeDir, "harness/core/RustCore.kt")
-    val rc2 = File(treeDir, "../harness/core/RustCore.kt")
-    val rcText = when {
-        rc1.exists() -> rc1.readText()
-        rc2.exists() -> rc2.readText()
-        else -> ""
-    }
+    // RustCore.kt: di tree lokal (work-impl/integrated) ada di
+    // <tree>/harness/core/; di repo/CI tree = .../deepharness sehingga
+    // RustCore ada di <naik-3>/harness/core/ (deepharness -> senzwh
+    // -> com -> java). Coba semua tingkat.
+    // (Koreksi CI ronde 1 vc323: naik 0 dan 1 tingkat SALAH di layout
+    // CI — akar yang sama dengan P8 5.18 vc322, yang sudah mencoba
+    // 4 tingkat. 12.7 ini hanya mencoba 2 tingkat.)
+    val rcText = listOf(
+        "harness/core/RustCore.kt",
+        "../harness/core/RustCore.kt",
+        "../../harness/core/RustCore.kt",
+        "../../../harness/core/RustCore.kt"
+    ).map { File(treeDir, it) }.firstOrNull { it.exists() }?.readText().orEmpty()
     cek("12.7 RustCore.kt VERSION 5 + sqliteJson", rcText.contains("const val VERSION = 5") && rcText.contains("external fun sqliteJson"))
     // Identitas SQL: SQL wrapper == SQL di tes (diwakili string kunci).
     cek("12.8 SQL EventDb identik (latest)", ev.contains("SELECT ts,type,pkg,text FROM events ORDER BY id DESC LIMIT ?"))
