@@ -460,6 +460,75 @@ hanya blok 0r yang berubah):**
   `SQLite format 3` + tabel pesan error SQLite lengkap + 74 string
   `sqlite` (rusqlite 0.32.1). Ronde perbaikan loop 0r: 1 dari maks 2.
 
+## §8.2 Push 3 + CI ronde 3 + APK (16 Nov ~19:11–19:35 WIB)
+
+- **Pra-cek drift (sebelum push 3):** remote HEAD 8c8f809d
+  terverifikasi; selisih remote tree vs staging tepat 2 berubah,
+  0 baru, 0 remote-only: `build.py` + `BUILD-VC323.md` (§8.1).
+  android.yml TIDAK berubah (validasi `yaml.safe_load` tetap OK).
+- **Push 3:** 16 Nov 2026 ~19:11 WIB, branch `vc317-rust`, commit
+  `5af5c91a8702ec8bff46b69f1a877541f13de6d9`, 478 file via `gh.py
+  push-tree` (528 dtk). Verifikasi: remote HEAD = 5af5c91a
+  (parent 8c8f809d); remote tree 478 blob == staging 478 file,
+  0 beda. Main tidak disentuh (tetap 2e6245e3 = vc309).
+- **CI ronde 3:** run [#43864275007](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43864275007)
+  (push, head 5af5c91a) — **SUCCESS** (12:11:15Z → 12:18:16Z,
+  ~7 mnt; job `build` success). Semua langkah hijau: cargo test,
+  suite P1–P9 + N9/BR/IXL/R1/R2/C/D, build APK Main + Pure,
+  Verify, Upload. Perbaikan CC/CXX/AR TERBUKTI di NDK CI yang
+  fresh.
+- **APK CI** (`vc317-work/apk-vc323-ci/`): artifact
+  `harness-vc317-apks` 27.656.935 byte (zip MD5
+  `f05b998e3b99c199bd9f2a024b148cde`, SHA256
+  `7bac875bd62d5d96fc1d6f81b1c943f8ccfff65988381eb5b4d38929351c6c12`).
+  - Main `DeepSeekHarness-v4.48.9.157.apk` 13.945.964 B, MD5
+    `7d3b3cd99aa1a511ddebe0aa7fc98b78`, SHA256
+    `7aeb86da8bcb4527ad48beab62b0eb99921158003211d45fda0cc04dbcc3e51c`;
+    aapt2 323/4.48.9.157, `com.senzwh.deepharness`, `S&Harness`;
+    apksigner Verifies, v2+v3, 1 signer, cert SHA-256
+    `aa5324495a12782e40cb37e6b8b8d7431f32a0f162b5d297c5a8142f40c45eec`
+    (BEDA dari VM — kunci runner, EKSPEKTASI).
+  - Pure `Harness-v4.48.9.157-pure.apk` 13.896.812 B, MD5
+    `7038246e69c3523caab3e7a880bc5166`, SHA256
+    `97b8b9da2ee866ef1aa6047193fa8fc1b8f934e4ca8eaa1e330459d4eeab695e`;
+    aapt2 323/4.48.9.157, `com.harness.app`, `Harness`;
+    apksigner Verifies, v2+v3, 1 signer, cert SHA-256
+    `1c8d536673a798956e96f4cff0aa8acf8321459d89dc1e7a2e19b8c94a800549`
+    (BEDA — kunci runner, EKSPEKTASI).
+  - Kedua APK: `libharness_core.so` 2.953.472 B di lib/arm64-v8a
+    (CI lebih kecil dari VM — pola yang sama seperti slice
+    sebelumnya); `sqliteJson` ADA, 25 simbol JNI; `hsurr:` 0;
+    arm64-only (tanpa ABI lain).
+- **cargo test (dijalankan ulang integrator, VM): 287/287, 0 failed.**
+  Suite lokal TIDAK dijalankan ulang penuh (angka koordinator
+  1334/1335 ronde 2 masih berlaku — perubahan push 3 hanya
+  infra build.py 0r + doc, tanpa sentuhan kode slice 7 / Kotlin /
+  Rust; bukti pengganti: cargo test 287/287 + 0r + CI ronde 3
+  SUCCESS yang menjalankan suite penuh di CI).
+- **BUILD VM + VERIFIKASI MANDIRI** (`python3 build.py --flavor
+  senz` lalu `--flavor pure`, JH `~/jdk-21-sys`, sekuensial):
+  - Main `DeepSeekHarness-v4.48.9.157.apk` 14.027.884 B, MD5
+    `f84c97ca3bee5c2a81ef34aa35171312`, SHA256
+    `3d30e902b1330924871eb31394b01339795a8dffdb4b45f5f9050b933f2d80f5`.
+  - Pure `Harness-v4.48.9.157-pure.apk` 13.982.828 B, MD5
+    `031203118f0902b5bb11f794f8a2b22a`, SHA256
+    `c86cbe89bc6d29a9d17a41d5bae990795deb01617bbd22a9c17b21dedbc0f2cc`.
+  - Keduanya di `vc317-work/apk-vc323-vm/`; aapt2 323/4.48.9.157;
+    apksigner Verifies, v2+v3, 1 signer;
+    `libharness_core.so` 3.235.040 B di lib/arm64-v8a;
+    `sqliteJson` ADA, 25 simbol JNI; `hsurr:` 0; arm64-only.
+  - **GERBANG SIDIK JARI LULUS — BISA MENIMPA:** Main
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`,
+    Pure
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    (sama persis seperti vc316).
+- **TES-VC323-SIAP-TEMPEL.txt:** final, tidak berubah sejak push 1
+  (sudah di remote; T1–T6 vc322 + T-baru minimal slice 7, lihat §9).
+- **SLICE 7 / vc323 SELESAI PENUH** (kode + tes + CI hijau + APK VM
+  + APK CI terverifikasi). APK VM kanonis vc323 =
+  `vc317-work/apk-vc323-vm/` (upload = tugas Jhon; JANGAN upload
+  sendiri ke HP).
+
 ## §9. Tes perangkat (TES-VC323-SIAP-TEMPEL)
 
 Lihat `vc317-work/TES-VC323-SIAP-TEMPEL.txt` — perilaku user-visible
