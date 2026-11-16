@@ -270,8 +270,72 @@ Quirk yang DIREPLIKASI 1:1 (bukan diperbaiki — PATCH-S3.md §4):
 
 ### 8.5 Push branch vc317-rust
 
-(diisi setelah langkah 6)
+- Remote HEAD sebelum push: `fdb741695cce8f2e3be1dba53e44995dfb3ec0d4`
+  (tree `c9290d465728a410eb0331c05a7d7f823e5d5326`) — BUKAN
+  `7339c730` dari §6 slice 2: remote sudah bergerak sesudah push slice
+  2 (staging == remote di luar delta, terverifikasi check — tidak ada
+  drift).
+- Push: delta via Git Data API (`base_tree` = tree HEAD remote) —
+  file yang diubah: crate (5: `redact_secrets.rs` baru + `lib.rs` +
+  `jni_glue.rs` + `Cargo.toml` + `Cargo.lock`) + Kotlin (2:
+  `RedactSecrets.kt` + `RustCore.kt`) + `tests/
+  TestRedactSecretsVc318.kt` (baru) + `tests/run-suite-ci.sh` +
+  `.github/workflows/android.yml` + `BUILD-VC318.md` (baru §8).
+- Commit baru: `c207878f9d7ffc53b3b545631fff744ae663a687` (tree
+  `aa5528d76eca31f33726e5d2fbba18ca124a8d2e`).
+- Verifikasi: remote tree == staging (11/11 file delta SHA cocok).
 
 ### 8.6 CI + APK slice 3
 
-(diisi setelah langkah 7–9)
+- CI run: **#14 (43788476990, commit c207878f) — SUCCESS**
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43788476990
+  (cargo test + suite 0/P1 103/P2 36/**P3 94**/N9 46/BR 45/IXL 72/R1 64/R2 69
+  dengan R2-4.1 ditoleransi/C/D + build APK Main + Pure + Verify + Upload —
+  semua langkah hijau).
+- APK CI (`vc317-work/apk-vc318-s3-ci/`, zip 26.019.989 B, MD5
+  `8b96bfb77eeaf020a6a8e502dfc5771e`, SHA256
+  `ab545586c99c07f516f3e0267793e1c732474d87b9f586c7ef4bee82e34bd8ed`):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 13.126.764 B, MD5
+    `4ff5604abb6dad222867b960389b4301`, SHA256
+    `003c22c7ac1f6db9afa43c08ca185ba5d4ad5baef04a1a8946c84f781549074b`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Android Debug —
+    kunci runner CI); libharness_core.so 1.435.080 B di lib/arm64-v8a;
+    simbol `redactSecrets` ADA; hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    13.077.612 B, MD5 `815c436e66d4e7e971e9d004ef8a09ab`, SHA256
+    `38d555e8109b781f38a644aa7271a1bd4c06c7ce6243795a81be0997b48c36cf`;
+    apksigner Verifies, v2=true, v3=true, 1 signer (CN=Harness — kunci
+    runner CI); libharness_core.so 1.435.080 B; simbol `redactSecrets`
+    ADA; hsurr 0.
+  - Sidik jari CI AKAN beda dari VM (kunci runner) — BUKAN kegagalan.
+    Gerbang sidik jari hanya berlaku untuk APK VM (§ bawah).
+  - CATATAN UKURAN: `.so` CI membesar 336.376 B (slice 2) → 1.435.080 B
+    (slice 3) — crate `regex` + tabel Unicode (`(?i)` case folding,
+    kelas karakter) ikut ter-link; pola sama di VM (423.688 →
+    1.672.504 B). Bukan anomali; APK total hanya +~400 KB vs slice 2.
+- APK VM (`vc317-work/apk-vc318-s3-vm/`, build `build.py --flavor senz/pure`,
+  log `build-senz.log`/`build-pure.log`, .so 1.672.504 B):
+  - Main `DeepSeekHarness-v4.48.9.152.apk` — com.senzwh.deepharness
+    318/4.48.9.152, 13.196.396 B, MD5
+    `761894d2215a105792607d2b6ae5d249`, SHA256
+    `e15a3cbbafcfc84760b6377a344bb547974c387945c5b276a6fc73d77d2dd5ba`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    — **COCOK gerbang vc316**; libharness_core.so 1.672.504 B di
+    lib/arm64-v8a (arm64-only); hsurr 0.
+  - Pure `Harness-v4.48.9.152-pure.apk` — com.harness.app 318/4.48.9.152,
+    13.151.340 B, MD5 `967d81c8973fa8cb1837d61303add118`, SHA256
+    `bd2f0ec8ba112e954315bb74f5079719a33b2a07e0eda2c028bb4a0a6032f4b2`;
+    apksigner Verifies, v2=true, v3=true, 1 signer; sidik jari
+    `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f`
+    — **COCOK gerbang vc316**; libharness_core.so 1.672.504 B; hsurr 0.
+  - Bukti isi `.so` (strings di `libharness_core.so` APK VM + CI):
+    **13/13 simbol JNI ADA** (4 basis: rustCoreVersion,
+    rustCoreCapabilities, echo, classifyFailureJson; 8 PoW slice 2;
+    `redactSecrets` slice 3).
+- Tes perangkat: `vc317-work/TES-VC318-SIAP-TEMPEL.txt` — slice 3
+  TIDAK membawa perubahan perilaku yang terlihat user (redaksi
+  kredensial bekerja sama seperti sebelumnya, hanya mesinnya pindah
+  ke Rust); T1–T6 slice 2 tetap berlaku apa adanya, dengan catatan
+  slice 3 di kepala file. Tidak ada T-baru.
