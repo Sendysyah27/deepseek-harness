@@ -1,4 +1,4 @@
-// CI-ADAPT (vc317): 2 path absolut vc316-work diganti ke tests/baseline-vc316 + tests/work-P1 (path saja, assert tidak berubah).
+// CI-ADAPT (vc317): path absolut vc316-work diganti ke tests/baseline-vc315 (merge PRA-IXL) + tests/work-P1 (path saja, assert tidak berubah). ALASAN: vc316-work/merge ternyata snapshot PASCA-IXL (sudah berisi selectCatalog/delta), bukan baseline pra-IXL yang cek 7.9 maksud; baseline pra-IXL yang benar = vc315-work/merge (selectCatalog 0, DEFAULT_CAP 400000). P1 tetap pakai tests/baseline-vc316 (sudah lulus).
 package com.senzwh.deepharness
 
 import java.io.File
@@ -99,7 +99,7 @@ private fun bodyOf(src: String, signature: String, nextSig: String): String {
 
 fun main(args: Array<String>) {
     val tree = File(if (args.isNotEmpty()) args[0] else "merge")
-    val merge = File("tests/baseline-vc316")
+    val merge = File("tests/baseline-vc315")
     // P1 mengubah DsApiClient/SlotClient (tangga pindah ke DsFailure) — 7.5/7.6
     // membandingkan ke versi P1, BUKAN baseline (diperbaiki koordinator vc316
     // saat integrasi; perilaku tangga dibuktikan P1 §5 di tree yang sama).
