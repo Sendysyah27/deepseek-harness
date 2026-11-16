@@ -40,6 +40,11 @@ name: Android vc317
 # worker_endpoint.rs (sha2, tanpa tokio/dep baru); P11 302 cek
 # (rust 151 + kotlin 151 fallback); suite 1774/1775 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION 6->7; loop accept/dispatch/token/kuota tetap Kotlin;
+# Slice 10 vc326: daun murni Tools.kt via toolsLeavesJson — parse DDG,
+# klaster parse YouTube, stripHtml, truncateMarkedVc230 via seam
+# tools_leaves.rs (regex + serde_json, tanpa dep baru); P12 172 cek
+# (rust 86 + kotlin 86 fallback); suite 1946/1947 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 7->8; dispatcher + daun Android + jaringan tetap Kotlin.
 # WorkerLogic/WorkerQueue/WorkerJanitorLogic/WorkerRegistry TIDAK disentuh.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
@@ -148,6 +153,9 @@ jobs:
 
       - name: Suite P11 Server :4198 vc325 (302 cek, rust 151 + kotlin 151)
         run: bash tests/run-suite-ci.sh P11
+
+      - name: Suite P12 Daun Tools.kt vc326 (172 cek, rust 86 + kotlin 86)
+        run: bash tests/run-suite-ci.sh P12
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

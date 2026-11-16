@@ -669,7 +669,12 @@ object Tools {
 
     // vc230 R-07(a): penanda pemotongan pola proot untuk semua take(N)
     // yang sampai ke model — hasil tool, dokumen, evidence.
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun truncateMarkedVc230(text: String, cap: Int, resultId: String): String {
+        return ToolsLeavesSeam.truncateMarked(text, cap, resultId) ?: truncateMarkedVc230Kotlin(text, cap, resultId)
+    }
+
+    private fun truncateMarkedVc230Kotlin(text: String, cap: Int, resultId: String): String {
         if (text.length <= cap) return text
         val rest = text.length - cap
         val idPart = if (resultId.isNotBlank()) ", pakai get_result[$resultId] untuk sisanya" else ""
@@ -3425,7 +3430,12 @@ object Tools {
         } catch (e: Exception) { "Kalender tidak terbaca: ${e.message} (izin READ_CALENDAR — Setup tombol 18)." }
     }
 
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun stripHtml(html: String): String {
+        return ToolsLeavesSeam.stripHtml(html) ?: stripHtmlKotlin(html)
+    }
+
+    private fun stripHtmlKotlin(html: String): String {
         var t = html
         t = t.replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
         t = t.replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
@@ -4039,14 +4049,24 @@ object Tools {
         } catch (e: Exception) { "Gagal mengambil $urlStr: ${e.message}" }
     }
 
+    // Slice 10 (vc326): parse DDG ke Rust; GET tetap Kotlin.
     private fun webSearch(query: String): String {
         if (query.isBlank()) return "web_search butuh query."
         return try {
             val html = httpGet("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"))
-            val results = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>").findAll(html)
-                .take(6).map { "- " + stripHtml(it.groupValues[2]) + "\n  " + it.groupValues[1] }.toList()
-            if (results.isEmpty()) "Tidak ada hasil terbaca untuk '$query' (coba web_fetch langsung ke situsnya)." else results.joinToString("\n")
+            parseDdg(html, query)
         } catch (e: Exception) { "Pencarian gagal: ${e.message}" }
+    }
+
+    /** Parse hasil DuckDuckGo (badan `webSearch` sesudah `httpGet`). */
+    private fun parseDdg(html: String, query: String): String {
+        return ToolsLeavesSeam.parseDdg(html, query) ?: parseDdgKotlin(html, query)
+    }
+
+    private fun parseDdgKotlin(html: String, query: String): String {
+        val results = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>").findAll(html)
+            .take(6).map { "- " + stripHtmlKotlin(it.groupValues[2]) + "\n  " + it.groupValues[1] }.toList()
+        return if (results.isEmpty()) "Tidak ada hasil terbaca untuk '$query' (coba web_fetch langsung ke situsnya)." else results.joinToString("\n")
     }
 
     // vc219: YouTube finder khusus. Tanpa API key, tanpa login, tanpa cookie:
@@ -4055,7 +4075,43 @@ object Tools {
     // TIDAK mengunduh video, TIDAK mengambil transkrip, TIDAK memutar video.
     private data class YtHit(val id: String, val title: String, val channel: String, val meta: String)
 
+    // Slice 10 (vc326): konversi YtHit <-> JSON untuk seam Rust
+    // (YtHit private di object ini — seam mengembalikan teks JSON).
+    private fun ytHitFromJson(json: String): YtHit? {
+        return try {
+            val o = JSONObject(json)
+            YtHit(o.optString("id"), o.optString("title"), o.optString("channel"), o.optString("meta"))
+        } catch (e: Exception) { null }
+    }
+
+    private fun ytHitsFromJsonArray(json: String?): List<YtHit> {
+        if (json == null) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            val out = ArrayList<YtHit>()
+            for (i in 0 until arr.length()) {
+                val h = arr.optJSONObject(i) ?: continue
+                out.add(YtHit(h.optString("id"), h.optString("title"), h.optString("channel"), h.optString("meta")))
+            }
+            out
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun ytHitsToJsonArray(hits: List<YtHit>): String {
+        val arr = JSONArray()
+        for (h in hits) {
+            arr.put(JSONObject().put("id", h.id).put("title", h.title).put("channel", h.channel).put("meta", h.meta))
+        }
+        return arr.toString()
+    }
+
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun ytRunsText(o: JSONObject?): String {
+        if (o == null) return ""
+        return ToolsLeavesSeam.ytRunsText(o.toString()) ?: ytRunsTextKotlin(o)
+    }
+
+    private fun ytRunsTextKotlin(o: JSONObject?): String {
         if (o == null) return ""
         val runs = o.optJSONArray("runs")
         if (runs == null) return o.optString("simpleText", "")
@@ -4066,11 +4122,17 @@ object Tools {
     }
 
     private fun ytParseVideoRenderer(vr: JSONObject, forceMeta: String?): YtHit? {
+        val hitJson = ToolsLeavesSeam.ytParseVideoRenderer(vr.toString(), forceMeta)
+        if (hitJson != null) return ytHitFromJson(hitJson) ?: ytParseVideoRendererKotlin(vr, forceMeta)
+        return ytParseVideoRendererKotlin(vr, forceMeta)
+    }
+
+    private fun ytParseVideoRendererKotlin(vr: JSONObject, forceMeta: String?): YtHit? {
         val id = vr.optString("videoId", "")
         if (id.isBlank()) return null
-        val title = ytRunsText(vr.optJSONObject("title")).ifBlank { "-" }
-        var channel = ytRunsText(vr.optJSONObject("longBylineText"))
-        if (channel.isBlank()) channel = ytRunsText(vr.optJSONObject("ownerText"))
+        val title = ytRunsTextKotlin(vr.optJSONObject("title")).ifBlank { "-" }
+        var channel = ytRunsTextKotlin(vr.optJSONObject("longBylineText"))
+        if (channel.isBlank()) channel = ytRunsTextKotlin(vr.optJSONObject("ownerText"))
         if (channel.isBlank()) channel = "-"
         if (forceMeta != null) return YtHit(id, title, channel, forceMeta)
         var meta = ""
@@ -4089,6 +4151,20 @@ object Tools {
     }
 
     private fun extractBalancedJson(text: String, startBrace: Int): String? {
+        // Guard batas DI WRAPPER (bukan di *Kotlin): badan asli vc316
+        // TIDAK punya guard ini — start<0 melempar
+        // StringIndexOutOfBoundsException di `text[startBrace]`.
+        // Pemanggil produksi selalu menjaga (brace >= 0, lihat
+        // ytScanRenderersKotlin/parseYtSearchKotlin), jadi guard ini
+        // TIDAK mengubah perilaku yang terjangkau; ia hanya membuat
+        // mode rust dan mode kotlin SEPAKAT (keduanya null) alih-alih
+        // mode kotlin crash sementara mode rust null. *Kotlin tetap
+        // byte-identik merge/ (dikunci P12 §12.5).
+        if (startBrace < 0 || startBrace >= text.length) return null
+        return ToolsLeavesSeam.extractBalancedJson(text, startBrace) ?: extractBalancedJsonKotlin(text, startBrace)
+    }
+
+    private fun extractBalancedJsonKotlin(text: String, startBrace: Int): String? {
         var depth = 0
         var inStr = false
         var esc = false
@@ -4110,6 +4186,12 @@ object Tools {
     }
 
     private fun ytWalkResults(root: JSONObject): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.ytWalkResults(root.toString())
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return ytWalkResultsKotlin(root)
+    }
+
+    private fun ytWalkResultsKotlin(root: JSONObject): List<YtHit> {
         val out = ArrayList<YtHit>()
         val seen = HashSet<String>()
         fun add(h: YtHit?) { if (h != null && seen.add(h.id)) out.add(h) }
@@ -4120,14 +4202,14 @@ object Tools {
                 for (j in 0 until itemSection.length()) {
                     val item = itemSection.optJSONObject(j) ?: continue
                     try {
-                        if (item.has("videoRenderer")) add(ytParseVideoRenderer(item.getJSONObject("videoRenderer"), null))
+                        if (item.has("videoRenderer")) add(ytParseVideoRendererKotlin(item.getJSONObject("videoRenderer"), null))
                         else if (item.has("reelItemRenderer")) {
                             val rr = item.getJSONObject("reelItemRenderer")
                             val id = rr.optString("videoId", "")
                             if (id.isNotBlank()) {
-                                val title = ytRunsText(rr.optJSONObject("headline")).ifBlank { "-" }
-                                var ch = ytRunsText(rr.optJSONObject("longBylineText"))
-                                if (ch.isBlank()) ch = ytRunsText(rr.optJSONObject("shortBylineText"))
+                                val title = ytRunsTextKotlin(rr.optJSONObject("headline")).ifBlank { "-" }
+                                var ch = ytRunsTextKotlin(rr.optJSONObject("longBylineText"))
+                                if (ch.isBlank()) ch = ytRunsTextKotlin(rr.optJSONObject("shortBylineText"))
                                 if (ch.isBlank()) ch = "-"
                                 add(YtHit(id, title, ch, "Short"))
                             }
@@ -4140,6 +4222,12 @@ object Tools {
     }
 
     private fun ytScanRenderers(html: String): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.ytScanRenderers(html)
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return ytScanRenderersKotlin(html)
+    }
+
+    private fun ytScanRenderersKotlin(html: String): List<YtHit> {
         val out = ArrayList<YtHit>()
         val seen = HashSet<String>()
         var idx = 0
@@ -4147,10 +4235,10 @@ object Tools {
             val k = html.indexOf("\"videoRenderer\":{", idx)
             if (k < 0) break
             val brace = html.indexOf('{', k)
-            val json = if (brace >= 0) extractBalancedJson(html, brace) else null
+            val json = if (brace >= 0) extractBalancedJsonKotlin(html, brace) else null
             if (json != null) {
                 try {
-                    val h = ytParseVideoRenderer(JSONObject(json), null)
+                    val h = ytParseVideoRendererKotlin(JSONObject(json), null)
                     if (h != null && seen.add(h.id)) out.add(h)
                 } catch (e: Exception) { }
             }
@@ -4161,18 +4249,41 @@ object Tools {
     }
 
     private fun parseYtSearch(html: String): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.parseYtSearch(html)
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return parseYtSearchKotlin(html)
+    }
+
+    private fun parseYtSearchKotlin(html: String): List<YtHit> {
         val marker = html.indexOf("ytInitialData")
         if (marker >= 0) {
             val brace = html.indexOf('{', marker)
-            val json = if (brace >= 0) extractBalancedJson(html, brace) else null
+            val json = if (brace >= 0) extractBalancedJsonKotlin(html, brace) else null
             if (json != null) {
                 try {
-                    val walked = ytWalkResults(JSONObject(json))
+                    val walked = ytWalkResultsKotlin(JSONObject(json))
                     if (walked.isNotEmpty()) return walked
                 } catch (e: Exception) { }
             }
         }
-        return ytScanRenderers(html)
+        return ytScanRenderersKotlin(html)
+    }
+
+    /** Format hasil `searchYoutube` (ekor murni sesudah HTTP). */
+    private fun formatYtResults(results: List<YtHit>, maxResults: Int): String {
+        return ToolsLeavesSeam.formatYtResults(ytHitsToJsonArray(results), maxResults) ?: formatYtResultsKotlin(results, maxResults)
+    }
+
+    private fun formatYtResultsKotlin(results: List<YtHit>, maxResults: Int): String {
+        val limit = maxResults.coerceIn(1, 10)
+        val sb = StringBuilder()
+        results.take(limit).forEachIndexed { i, r ->
+            // vc246 GELOMBANG 5 (FT-m10): label Shorts bila meta
+            // menyebut shorts (hasil Shorts vs video panjang).
+            val shortsVc246 = if (r.meta.lowercase().contains("short")) " [Shorts]" else ""
+            sb.append("${i + 1}. ${r.title}$shortsVc246\n   Channel: ${r.channel} | ${r.meta}\n   https://www.youtube.com/watch?v=${r.id}\n")
+        }
+        return sb.toString().trim()
     }
 
     // vc246 GELOMBANG 5 (FT-M2): fallback pencarian gagal kini pesan
@@ -4181,7 +4292,6 @@ object Tools {
     // dilabeli Shorts.
     private fun searchYoutube(query: String, maxResults: Int): String {
         if (query.isBlank()) return "search_youtube butuh query."
-        val limit = maxResults.coerceIn(1, 10)
         var conn: HttpURLConnection? = null
         try {
             val urlStr = "https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8")
@@ -4201,14 +4311,9 @@ object Tools {
             }
             val results = parseYtSearch(html)
             if (results.isEmpty()) return "Pencarian YouTube GAGAL untuk '$query' (tidak ada video ter-parse; struktur halaman mungkin berubah) - ini BUKAN klaim tidak ada video tentang topik itu. COBA LAGI: kirim ulang perintah pencarian yang sama persis, atau coba kata kunci lain / web_search biasa sebagai alternatif."
-            val sb = StringBuilder()
-            results.take(limit).forEachIndexed { i, r ->
-                // vc246 GELOMBANG 5 (FT-m10): label Shorts bila meta
-                // menyebut shorts (hasil Shorts vs video panjang).
-                val shortsVc246 = if (r.meta.lowercase().contains("short")) " [Shorts]" else ""
-                sb.append("${i + 1}. ${r.title}$shortsVc246\n   Channel: ${r.channel} | ${r.meta}\n   https://www.youtube.com/watch?v=${r.id}\n")
-            }
-            return sb.toString().trim()
+            // Slice 10 (vc326): format hasil ke Rust (parse sudah di
+            // atas); `limit` di-coerceIn di `formatYtResultsKotlin`.
+            return formatYtResults(results, maxResults)
         } catch (e: Exception) {
             return "Pencarian YouTube gagal (jaringan): ${e.message}. Coba lagi, atau pakai web_search biasa sebagai alternatif."
         } finally {

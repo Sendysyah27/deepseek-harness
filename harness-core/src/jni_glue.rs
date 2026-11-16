@@ -25,6 +25,7 @@ use crate::skill_trigger;
 use crate::sqlite;
 use crate::system_bar_spec;
 use crate::tool_registry;
+use crate::tools_leaves;
 use crate::worker_endpoint;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
@@ -45,7 +46,11 @@ use std::sync::Once;
 /// v7 = slice 9 (worker_endpoint): +1 fungsi `workerEndpointJson`
 /// (routing/auth/HMAC/framing/idempotensi server :4198 — TANPA tokio;
 /// loop server hidup tetap Kotlin, BUILD-VC325.md §2.2).
-pub const RUST_CORE_VERSION: jint = 7;
+/// v8 = slice 10 (tools_leaves): +1 fungsi `toolsLeavesJson`
+/// (parse DuckDuckGo + parse YouTube + stripHtml + truncateMarked
+/// Tools.kt — dispatcher + daun Android + daun jaringan tetap
+/// Kotlin, BUILD-VC326.md §2).
+pub const RUST_CORE_VERSION: jint = 8;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -192,7 +197,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "toolRegistryJson", "agentPromptJson", "skillTriggerJson",
                 "sqliteJson",
                 "httpJson",
-                "workerEndpointJson"],
+                "workerEndpointJson",
+                "toolsLeavesJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
@@ -200,7 +206,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "tool_registry", "agent_prompt", "skill_trigger",
                 "sqlite", "sqlite_schema",
                 "http", "sse",
-                "worker_endpoint"]
+                "worker_endpoint",
+                "tools_leaves"]
         })
         .to_string())
     })
@@ -878,5 +885,24 @@ pub extern "C" fn Java_harness_core_RustCore_workerEndpointJson(
     guarded_string_nullable(env, |env| {
         let req = jstring_to_rust(env, &request);
         worker_endpoint::worker_endpoint_json(&req).ok()
+    })
+}
+
+// Slice 10: daun murni Tools.kt — `{"op":"strip_html"|"parse_ddg"|
+// "truncate_marked"|"yt_runs_text"|"yt_parse_video_renderer"|
+// "extract_balanced_json"|"yt_walk_results"|"yt_scan_renderers"|
+// "parse_yt_search"|"format_yt_results",...}`.
+// Respons `{"ok":true,...}` / `{"ok":false,...}`; `null` = Rust gagal
+// (panic/error di boundary) -> pemanggil Kotlin WAJIB fallback ke
+// implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_toolsLeavesJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        tools_leaves::tools_leaves_json(&req).ok()
     })
 }

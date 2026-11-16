@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 7
+    const val VERSION = 8
 
     val available: Boolean
 
@@ -146,4 +146,17 @@ object RustCore {
      * fallback ke implementasi Kotlin lama.
      */
     external fun workerEndpointJson(request: String): String?
+
+    // ---- Slice 10: Daun murni Tools.kt (parse DDG + YouTube) ----
+    /**
+     * Daun murni Tools.kt. Request JSON `{"op":...}`:
+     * `strip_html`, `parse_ddg`, `truncate_marked`, `yt_runs_text`,
+     * `yt_parse_video_renderer`, `extract_balanced_json`,
+     * `yt_walk_results`, `yt_scan_renderers`, `parse_yt_search`,
+     * `format_yt_results`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama.
+     */
+    external fun toolsLeavesJson(request: String): String?
 }

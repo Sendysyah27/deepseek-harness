@@ -23,7 +23,7 @@
 //       lain (WorkerLogic/WorkerQueue/WorkerJanitorLogic/
 //       WorkerRegistry) tanpa Rust, Flavor.kt + DsApiClient.kt tanpa
 //       sentuhan slice 9.
-//   (e) STRUKTUR: RUST_CORE_VERSION 7 + 27 simbol JNI +
+//   (e) STRUKTUR: RUST_CORE_VERSION 8 + 28 simbol JNI +
 //       workerEndpointJson + modul worker_endpoint, TANPA tokio dan
 //       TANPA dependensi Cargo baru.
 //
@@ -152,15 +152,15 @@ fun main(args: Array<String>) {
         val f = java.io.File(treeDir, rel)
         if (f.exists()) f.readText() else null
     }.firstOrNull() ?: ""
-    cek("1.1 RustCore.kt VERSION 7 + workerEndpointJson", rcSrc.contains("const val VERSION = 7") && rcSrc.contains("external fun workerEndpointJson(request: String): String?"))
+    cek("1.1 RustCore.kt VERSION 7 + workerEndpointJson", rcSrc.contains("const val VERSION = 8") && rcSrc.contains("external fun workerEndpointJson(request: String): String?"))
     if (rust) {
         cek("1.2 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
         val caps = harness.core.RustCore.rustCoreCapabilities()
-        cek("1.3 capabilities: version 7 + workerEndpointJson + modul worker_endpoint", caps.contains("\"version\":7") && caps.contains("workerEndpointJson") && caps.contains("\"worker_endpoint\""))
+        cek("1.3 capabilities: version 7 + workerEndpointJson + modul worker_endpoint", caps.contains("\"version\":8") && caps.contains("workerEndpointJson") && caps.contains("\"worker_endpoint\""))
         cek("1.4 WorkerEndpointSeam.rustWorkerEndpoint true (mode rust)", WorkerEndpointSeam.rustWorkerEndpoint)
         val glue = srcCore(coreDir, "src/jni_glue.rs")
         val nSym = glue.split("pub extern \"C\" fn Java_harness_core_RustCore_").size - 1
-        cek("1.5 27 simbol JNI (26 lama + workerEndpointJson)", nSym == 27)
+        cek("1.5 28 simbol JNI (27 lama + toolsLeavesJson)", nSym == 28)
     } else {
         cek("1.2 RustCore.available false (mode kotlin, tanpa .so)", !harness.core.RustCore.available)
         cek("1.3 WorkerEndpointSeam.rustWorkerEndpoint false (mode kotlin)", !WorkerEndpointSeam.rustWorkerEndpoint)
@@ -412,7 +412,7 @@ fun main(args: Array<String>) {
     cek("12.9 Cargo.toml tanpa tokio + tanpa dep baru", !cargoToml.contains("tokio") && !cargoToml.contains("hmac") && cargoToml.contains("sha2 = \"0.10\""))
     cek("12.10 WorkerQueue tetap panggil WorkerEndpointLogic.signQueueText", src(treeDir, "WorkerQueue.kt").contains("WorkerEndpointLogic.signQueueText(signKey, rawBody)") && src(treeDir, "WorkerQueue.kt").contains("WorkerEndpointLogic.verifyQueueText(verifyKey, content)"))
     cek("12.11 PORT 4198 + MAX_BODY_BYTES 1 MB tidak berubah", logicSrc.contains("const val PORT = 4198") && logicSrc.contains("const val MAX_BODY_BYTES = 1024 * 1024"))
-    cek("12.12 RUST_CORE_VERSION 7 di jni_glue.rs", srcCore(coreDir, "src/jni_glue.rs").contains("RUST_CORE_VERSION: jint = 7"))
+    cek("12.12 RUST_CORE_VERSION 8 di jni_glue.rs", srcCore(coreDir, "src/jni_glue.rs").contains("RUST_CORE_VERSION: jint = 8"))
 
     println("TOTAL $total LULUS $lulus GAGAL $gagal")
     if (gagal > 0) kotlin.system.exitProcess(1)

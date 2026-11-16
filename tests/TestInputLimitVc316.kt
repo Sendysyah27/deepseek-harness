@@ -314,11 +314,56 @@ fun main(args: Array<String>) {
     // Rust di ToolRegistry.kt. Yang dikunci: DEFINISI tool tidak berubah:
     // hash 188 nama + hash catalogSection sama persis dengan probe JVM
     // atas kode asli vc319 (nilai yang sama dipakai P6 1.2/1.7).
+    // 7.2 (vc326): Tools.kt juga TIDAK lagi byte-identik baseline —
+    // slice 10 (vc326) membungkus 10 daun murni ke Rust (seam
+    // toolsLeavesJson + fallback *Kotlin). Yang dikunci sebagai
+    // pengganti: badan dispatcher `execute` byte-identik baseline
+    // (nama tool -> fun tidak berubah) + wrapper slice 10 hadir;
+    // HASIL tool tidak berubah dikunci P12 TestToolsLeavesVc326
+    // (172 cek rust==kotlin). funBody: ekstraktor badan fungsi
+    // (hitung kurung, lewati string + komentar baris — pola P12).
+    fun funBody(srcText: String, sig: String): String {
+        val i = srcText.indexOf(sig)
+        if (i < 0) return ""
+        val open = srcText.indexOf('{', i)
+        if (open < 0) return ""
+        var depth = 0
+        var j = open
+        var inStr = false
+        var inLineComment = false
+        while (j < srcText.length) {
+            val c = srcText[j]
+            if (inLineComment) {
+                if (c == '\n') inLineComment = false
+                j++
+                continue
+            }
+            if (inStr) {
+                if (c == '\\') { j += 2; continue }
+                if (c == '"') inStr = false
+                j++
+                continue
+            }
+            if (c == '/' && j + 1 < srcText.length && srcText[j + 1] == '/') { inLineComment = true; j += 2; continue }
+            if (c == '"') { inStr = true; j++; continue }
+            if (c == '{') depth++
+            if (c == '}') {
+                depth--
+                if (depth == 0) return srcText.substring(open, j + 1)
+            }
+            j++
+        }
+        return ""
+    }
     check("7.1 Definisi tool tidak berubah (188 nama + catalogSection hash-identik probe vc319)",
         sha256Hex(names.joinToString(",")) == "38ee24a6c668b3171ed0b017456f9a1cf15525aa5b8a12a70a0fdee63912a912" &&
         sha256Hex(section) == "c3357c572acdcd593e23ca15b40169dca431ca6cc1f30f250db1e4c5d3fe3668")
-    check("7.2 Tools.kt byte-identik baseline (dispatch + hasil tool tidak berubah)",
-        bytesEqual(File(tree, "Tools.kt"), File(merge, "Tools.kt")))
+    check("7.2 Tools.kt: dispatcher execute byte-identik baseline + slice 10 hanya wrapper daun (paritas hasil tool dikunci P12)",
+        funBody(File(tree, "Tools.kt").readText(), "fun execute(") == funBody(File(merge, "Tools.kt").readText(), "fun execute(") &&
+        File(tree, "Tools.kt").readText().contains("ToolsLeavesSeam.parseDdg") &&
+        File(tree, "Tools.kt").readText().contains("private fun parseDdgKotlin") &&
+        File(tree, "Tools.kt").readText().contains("private fun formatYtResultsKotlin") &&
+        File(tree, "Tools.kt").readText().contains("ToolsLeavesSeam.formatYtResults"))
     check("7.3 Governor.kt byte-identik baseline (kuota/cap langkah tidak berubah)",
         bytesEqual(File(tree, "Governor.kt"), File(merge, "Governor.kt")))
     check("7.4 ToolGate.kt byte-identik baseline (gerbang tidak berubah)",

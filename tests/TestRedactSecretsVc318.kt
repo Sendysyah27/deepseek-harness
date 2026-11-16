@@ -16,7 +16,7 @@
 //  5. API containsSecret / countMatches (port count_matches_api +
 //     contains_secret_api Rust).
 //  6. Seam + fallback dipertahankan: rustRedactSecrets default true,
-//     RustCore.VERSION == 7, external fun redactSecrets ada,
+//     RustCore.VERSION == 8, external fun redactSecrets ada,
 //     redactKotlin/countMatchesKotlin dipertahankan di sumber,
 //     .so absen di JVM -> RustCore.available false (jalur fallback
 //     teruji), selfTest() 33/33 PASS.
@@ -208,7 +208,7 @@ fun main(args: Array<String>) {
 
     // ================= 6. Seam + fallback dipertahankan =================
     check("6.1 rustRedactSecrets default true", RedactSecrets.rustRedactSecrets)
-    check("6.2 RustCore.VERSION == 7", RustCore.VERSION == 7, "VERSION=${RustCore.VERSION}")
+    check("6.2 RustCore.VERSION == 8", RustCore.VERSION == 8, "VERSION=${RustCore.VERSION}")
     check(
         "6.3 fallback Kotlin dipertahankan (redactKotlin + countMatchesKotlin + saklar)",
         redactSrc.contains("private fun redactKotlin") && redactSrc.contains("private fun countMatchesKotlin") &&
