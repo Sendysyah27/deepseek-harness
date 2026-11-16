@@ -307,10 +307,158 @@ menguji seam + identitas sumber; wrapper end-to-end di perangkat
    di-port wrapper-nya; DDL + migrasi v6→v7 + lazy onOpen sudah
    direplikasi di `sqlite_schema.rs` dan dibuktikan tes Rust + P9
    atas fixture v6.
+9. **CI ronde 2 gagal di BUILD APK, bukan di tes — dan VM ikut
+   terblokir (lihat §8).** Akar: `libsqlite3-sys` (rusqlite
+   `bundled`) mengkompilasi C SQLite dan butuh
+   `aarch64-linux-android-clang`; build.py langkah 0r tidak pernah
+   men-set `CC_aarch64_linux_android` / PATH NDK bin untuk cc-rs
+   (slice lama Rust murni, tanpa C — masalah ini baru muncul di
+   slice 7). VM: biner clang NDK HILANG (`bin/clang -> clang-21`
+   dangling; semua wrapper `*-clang` memanggilnya; tidak ada
+   clang sistem, hanya gcc). Perbaikan CI yang jelas: set
+   `CC_aarch64_linux_android` ke wrapper berversi
+   `aarch64-linux-android26-clang` di build.py 0r. Perbaikan VM:
+   butuh keputusan koordinator (unduh ulang NDK / sumber clang
+   lain) — integrator BERHENTI di sini, tidak push ronde 3.
 
 ## §8. Push + CI + APK
 
-_(diisi sesudah push/CI/APK)_
+- **Pra-cek drift (sebelum push 1):** remote HEAD 2920e3d5
+  terverifikasi (cocok basis vc322); selisih remote tree vs staging
+  tepat 6 baru + 18 berubah, 0 remote-only:
+  baru = BUILD-VC323.md, TES-VC323-SIAP-TEMPEL.txt, SqliteSeam.kt,
+  sqlite.rs, sqlite_schema.rs, TestRusqliteVc323.kt;
+  berubah = android.yml, 4 wrapper, RustCore.kt, build.py,
+  Cargo.lock, Cargo.toml, jni_glue.rs, lib.rs, 6 file tes
+  (assert VERSION 4→5), run-suite-ci.sh.
+- **Push 1:** 16 Nov 2026 ~18:32 WIB, branch `vc317-rust`, commit
+  `2afd9ab3e533f010e18b2ab68e54dd3479c57b84`, 478 file via `gh.py
+  push-tree`. Verifikasi: remote HEAD = 2afd9ab3 (parent 2920e3d5);
+  remote tree 478 blob == staging 478 file, 0 beda; 24/24 file
+  delta SHA cocok. Main tidak disentuh (tetap 2e6245e3 = vc309).
+- **CI ronde 1:** run [#43858687962](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43858687962)
+  (push, head 2afd9ab3) — **FAILURE**, job `build`. Log (trik 302):
+  P1–P8 semua HIJAU; satu-satunya gagal = **P9 mode rust 106/107,
+  cek 12.7** ("RustCore.kt VERSION 5 + sqliteJson"). Akar: tes
+  12.7 hanya mencoba 2 lokasi RustCore.kt (tree + naik-1); di
+  layout CI tree = `.../deepharness` sehingga RustCore ada di
+  naik-3 (`deepharness → senzwh → com → java`) — akar yang SAMA
+  dengan P8 5.18 vc322. Perbaikan: 12.7 mencoba 4 tingkat
+  (0/1/2/3). Diverifikasi lokal di KEDUA layout SEBELUM re-push:
+  integrated 107/107 + 27/27, layout CI (app dir) 107/107 +
+  27/27 (`work-impl/run-p9-ci-layout.log`; 2 run integrated
+  pertama di log itu SALAH path relatif dari CWD yang keliru —
+  tidak valid, diulang dengan path benar dan lulus).
+- **Push 2 (fix CI):** 16 Nov 2026 ~19:00 WIB, branch `vc317-rust`,
+  commit `8c8f809dcfec338d5fdf0050568b628a574f4505`, 478 file via
+  `gh.py push-tree` (hanya `tests/TestRusqliteVc323.kt` berubah vs
+  push 1; SHA remote cocok staging; 478/478, 0 beda; main utuh).
+  Pesan: "fix P9 12.7 — RustCore naik 4 tingkat di layout CI".
+- **CI ronde 2:** run [#43860941939](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43860941939)
+  (push, head 8c8f809d) — **FAILURE**, job `build`. SEMUA langkah
+  suite HIJAU (cargo test, P1–P9 termasuk P9 134/134, N9, BR,
+  IXL, R1, R2, C, D); gagal di **"Build APK Main (senz)"**:
+  `GAGAL 0r: cargo build libharness_core.so` —
+  `libsqlite3-sys v0.30.1: failed to find tool
+  "aarch64-linux-android-clang"`. Akar (dua lapis):
+  (1) build.py langkah 0r tidak men-set `CC_aarch64_linux_android`
+  atau PATH NDK bin untuk cc-rs — slice 0–6 Rust murni (tanpa C)
+  sehingga tidak pernah dibutuhkan; rusqlite `bundled` adalah
+  modul pertama yang mengkompilasi C (amalgamasi SQLite).
+  (2) **VM ikut terblokir:** biner clang NDK VM HILANG —
+  `toolchains/llvm/prebuilt/linux-x86_64/bin/clang -> clang-21`
+  (symlink menggantung, target tidak ada); semua wrapper
+  `aarch64-linux-android*-clang` memanggilnya dan gagal;
+  `lib/clang/21/` ada tapi hanya berisi lib; tidak ada clang
+  sistem (hanya `/usr/bin/gcc`). Jadi perbaikan build.py saja
+  memperbaiki CI (NDK fresh, clang utuh) tapi TIDAK memperbaiki
+  build VM (langkah 7) — VM butuh biner clang dipulihkan dulu
+  (unduh ulang NDK / sumber lain).
+- **STOP — tidak ada push 3.** Integrator berhenti sesuai aturan
+  (laporkan kegagalan SEBELUM ronde perbaikan berikutnya).
+  Yang belum: perbaikan `CC_aarch64_linux_android` di build.py
+  0r (+ android.yml bila perlu), pemulihan clang NDK VM,
+  artifact CI, build VM + gerbang sidik jari, doc-sync §8 ini
+  ke remote (BELUM di-push — supaya tidak memicu run CI yang
+  pasti gagal lagi di langkah yang sama).
+
+## §8.1 UNBLOCK — pemulihan clang + perbaikan build.py 0r (integrator vc323, 16 Nov ~19:00 WIB)
+
+**0. VERIFIKASI BLOKIR (ketiganya terverifikasi langsung, bukan klaim laporan):**
+- (a) VM 0r direproduksi persis seperti build.py (`build.build_rust_so()`):
+  `error occurred in cc-rs: failed to find tool "aarch64-linux-android-clang":
+  No such file or directory (os error 2)` — EXIT 1.
+  `CC_aarch64_linux_android = None` di stdout build-script libsqlite3-sys.
+- (b) NDK VM: `bin/clang -> clang-21` symlink menggantung; `clang-21`,
+  `lld`, `llvm-bolt` TIDAK ADA (8 symlink menggantung: clang, clang++,
+  ld, ld.lld, ld64.lld, lld-link, wasm-ld, perf2bolt); wrapper
+  `aarch64-linux-android21-clang` gagal "No such file or directory";
+  `llvm-ar` ADA (16.473.560 byte); hanya `/usr/bin/gcc` (host).
+  `apt-cache policy clang` keluar KOSONG (package lists kosong) — apt
+  tidak dipakai.
+- (c) Log job CI ronde 2 diunduh via trik 302
+  (`work-impl/log-ci-r2-43860941939.txt`, 263.723 byte; job
+  133277280418): baris 3020 error PERSIS sama (`failed to find tool
+  "aarch64-linux-android-clang"`), step `python3 build.py --flavor senz`,
+  `ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/30.0.16248370`;
+  D10–D13 LULUS sebelum step build; P9 sudah jalan (baris 2407).
+  Jadi CI gagal di NDK-nya yang SEHAT — akar lapis ke-2 (CC tidak
+  di-set), bukan NDK CI yang rusak.
+
+**1. PULIHKAN CLANG VM — opsi (a) BERHASIL, tanpa unduh/apt:**
+- Zip NDK ter-cache ditemukan di VM: `~/workspace/tmp/android-ndk-r30-linux.zip`
+  (738.633.529 byte, MD5 `b773f7838b227639a4bb6195045916d4`, `unzip -t`
+  OK, 0 error) — berisi `clang-21` (153.783.400 byte) + `lld`
+  (75.955.976 byte) NDK r30 yang sama persis.
+- Perbaikan SURGICAL: hanya 2 file yang hilang itu disalin ke
+  `.../toolchains/llvm/prebuilt/linux-x86_64/bin/` (tidak ada file
+  lama yang ditimpa/dihapus — backup dir NDK tidak diperlukan;
+  symlink menggantung kini ter-resolve). MD5 sesudah salin:
+  clang-21 `f97adccf61cac55b8fc28dcc23eb40ed`,
+  lld `a4d008d38e8cb592d6edaf4f62e0b21b`.
+- Verifikasi: `clang --version` = Android clang 21.0.0;
+  `aarch64-linux-android26-clang --version` target
+  `aarch64-unknown-linux-android26`; hello-world C → objek
+  `ELF 64-bit LSB relocatable, ARM aarch64`. Sisa 1 symlink
+  menggantung: `perf2bolt -> llvm-bolt` (tool perf tak terpakai —
+  dibiarkan).
+- Bukti 2 lapis TERPISAH (diagnosa, bukan tebak): sesudah clang
+  pulih tapi SEBELUM perbaikan build.py, 0r TETAP gagal dengan
+  error yang sama persis (`CC_aarch64_linux_android = None`) —
+  jadi pemulihan clang saja TIDAK cukup; perbaikan CC di build.py
+  memang dibutuhkan.
+
+**2. PERBAIKAN build.py 0r (live DAN branch-stage, masing-masing
+diterapkan setara — isi keduanya memang beda, tidak saling ditimpa;
+hanya blok 0r yang berubah):**
+- `CC_aarch64_linux_android` = `<NDK>/toolchains/llvm/prebuilt/
+  linux-x86_64/bin/aarch64-linux-android26-clang` (path lengkap dari
+  lokasi NDK yang sudah dikenal build.py; wrapper API 26 = minSdk 26,
+  wrapper sudah membawa `--target=aarch64-linux-android26` + sysroot).
+  Alasan: NDK TIDAK PERNAH menyediakan `aarch64-linux-android-clang`
+  tanpa versi (hanya wrapper berversi 21..37 — terverifikasi dari
+  isi NDK 30.0.16248370 yang SAMA dengan yang diinstal CI oleh
+  workflow `ndk;30.0.16248370`), jadi cc-rs tidak akan pernah
+  menemukannya sendiri meski NDK sehat.
+- `CXX_aarch64_linux_android` = wrapper `...26-clang++` yang sama
+  (preventif; libsqlite3-sys murni C, tapi cc-rs C++ memakai var ini).
+- `AR_aarch64_linux_android` = `<NDK>/.../bin/llvm-ar` — ditemukan
+  ronde perbaikan 1: sesudah CC di-set, 0r gagal berikutnya di
+  `failed to find tool "aarch64-linux-android-ar"` (cc-rs butuh
+  archiver untuk arsip statis `.a` SQLite; ia TIDAK membaca
+  `CARGO_TARGET_*_AR` yang sudah di-set build.py sejak vc317).
+- Guard `os.path.isfile(...)` di tiap var (bila wrapper hilang,
+  var tidak di-set — cc-rs gagal dengan pesannya sendiri, bukan
+  diam-diam). android.yml TIDAK berubah (workflow sudah menginstal
+  NDK 30 yang benar; tidak ada langkah setup yang salah).
+
+**3. VERIFIKASI LOKAL 0r (VM, sesudah perbaikan): SUKSES.**
+- `libharness_core.so` 3.235.040 byte (vc322: 2.119.656 — membesar
+  karena amalgamasi SQLite, wajar), ELF 64-bit aarch64, stripped.
+- Simbol: JNI `Java_harness_core_RustCore_sqliteJson` ADA (nm -D);
+  total 25 simbol JNI (24 lama + 1 baru); strings memuat header
+  `SQLite format 3` + tabel pesan error SQLite lengkap + 74 string
+  `sqlite` (rusqlite 0.32.1). Ronde perbaikan loop 0r: 1 dari maks 2.
 
 ## §9. Tes perangkat (TES-VC323-SIAP-TEMPEL)
 

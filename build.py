@@ -297,6 +297,20 @@ def build_rust_so():
     llvm_ar = os.path.join(prebuilt, "bin", "llvm-ar")
     if os.path.isfile(llvm_ar):
         env["CARGO_TARGET_AARCH64_LINUX_ANDROID_AR"] = llvm_ar
+        # cc-rs tidak membaca CARGO_TARGET_*_AR; ia mencari
+        # `aarch64-linux-android-ar` untuk arsip statis (.a) SQLite.
+        env["AR_aarch64_linux_android"] = llvm_ar
+    # vc323 slice 7: rusqlite `bundled` mengkompilasi C (amalgamasi SQLite)
+    # via cc-rs; cc-rs mencari `aarch64-linux-android-clang` (tanpa versi)
+    # yang TIDAK ADA di NDK (hanya wrapper berversi 21..37) -> arahkan
+    # eksplisit ke wrapper API 26 (minSdk 26; wrapper sudah membawa
+    # --target + sysroot). Tanpa ini 0r gagal di CI (NDK fresh) + VM.
+    cc = os.path.join(prebuilt, "bin", "aarch64-linux-android26-clang")
+    if os.path.isfile(cc):
+        env["CC_aarch64_linux_android"] = cc
+    cxx = os.path.join(prebuilt, "bin", "aarch64-linux-android26-clang++")
+    if os.path.isfile(cxx):
+        env["CXX_aarch64_linux_android"] = cxx
     env["CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS"] = (
         "-C linker-flavor=ld.lld "
         f"-C link-arg=-L{sysroot_lib} -C link-arg=-L{clang_lib}")
