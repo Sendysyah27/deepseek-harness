@@ -411,11 +411,98 @@ tes memang VERSION 4.
     §6). Ambang 100.001 char adalah hasil simulasi, bukan
     pengukuran perangkat. Ground truth adalah JEJAK SESI SERVER di
     perangkat + hitungan sesi baru di web DeepSeek (TES-VC322).
+12. **CI ronde 1 GAGAL hanya di P8 5.18 (jalur RustCore salah
+    hitung).** Di layout CI, tree = `app/src/main/java/com/senzwh/
+    deepharness` — RustCore ada 3 tingkat di atasnya (deepharness
+    → senzwh → com → java), bukan 1 tingkat seperti asumsi awal
+    saya. Perbaikan pertama (naik 2 tingkat) juga salah — baru naik
+    3 tingkat yang benar. Diverifikasi lokal di KEDUA layout
+    (integrated + live app dir) 73/73 sebelum re-push; CI ronde 2
+    SUCCESS dengan P8 73/73 di CI. Pelajaran: hitung kedalaman path
+    dari struktur direktori nyata (probe `ProbePath.java`), jangan
+    dari ingatan.
 
 ## §8. Push + CI + APK
 
-(BELUM — diisi sesudah push + CI + APK VM, lalu doc-sync ke remote
-seperti pola vc321.)
+- **Pra-cek drift (sebelum push):** remote HEAD 15b96c1 terverifikasi
+  (cocok basis restore koordinator); selisih remote tree vs staging
+  tepat 10 berubah + 6 baru, 0 remote-only: 5 file fix + build.py +
+  TestInputLimitVc316.kt + TestRoomIxlFixVc321.kt + run-suite-ci.sh +
+  android.yml (berubah) + BUILD-VC322.md + TES-VC322-SIAP-TEMPEL.txt
+  + TestSessFixVc322.kt + FakeCtxVc322.java + FakePrefsVc322.java +
+  tests/stubs/android/content/Context.java (baru).
+  - Temuan pra-cek: staging `BUILD-VC321.md` masih versi pra-doc-sync
+    (§8 placeholder "(BELUM...)") — restore koordinator memakai versi
+    lama. Dipulihkan dari remote (isi §8 vc321) SEBELUM push supaya
+    push-tree tidak me-regresikannya.
+- **Push 1:** 16 Nov 2026 ~10:04 WIB, branch `vc317-rust`, commit
+  `26f6cad61d3c4cdb3eebb83a38190d699e3883ec`, 472 file via `gh.py
+  push-tree`. Pesan: "vc322 (4.48.9.156): fix bocor sesi server
+  DeepSeek — delta 1-1 + penghitung sesi + primed-flag (P8 73 cek,
+  suite 1200/1201)".
+- **Verifikasi pasca-push 1:** remote HEAD = 26f6cad6; remote tree 472
+  blob == staging 472 file, 0 beda; 16/16 file delta SHA cocok
+  (termasuk BUILD-VC322.md + TES-VC322-SIAP-TEMPEL.txt yang ikut
+  ter-push). Main tidak disentuh (tetap 2e6245e3 = vc309).
+- **CI ronde 1:** run [#43845524586](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43845524586)
+  (push, head 26f6cad6) — **FAILURE**, job `build`. Log (trik 302):
+  satu-satunya gagal = **P8 5.18** ("RUST_CORE_VERSION tetap 4") —
+  jalur RustCore di layout CI salah (naik 1 tingkat; parent CI =
+  `.../com/senzwh`). Semua section lain lulus (P1–P7, dst. — workflow
+  berhenti di step P8 sehingga N9/BR/IXL/R1/R2/C/D/APK tidak jalan).
+  Akar: hitungan kedalaman direktori dari ingatan, bukan dari struktur
+  nyata. Perbaikan: coba naik 0/1/2/3 tingkat (file
+  `tests/TestSessFixVc322.kt` saja); perbaikan pertama (naik 2) juga
+  salah — baru naik 3 yang benar (deepharness → senzwh → com → java).
+  Diverifikasi lokal di KEDUA layout (integrated + live app dir)
+  73/73 sebelum re-push.
+- **Push 2 (fix CI):** 16 Nov 2026 ~10:20 WIB, branch `vc317-rust`,
+  commit `9cc48f1f1ec2fb3c10a75efa4d893fe8ab77903f`, 472 file via `gh.py
+  push-tree` (hanya `tests/TestSessFixVc322.kt` berubah vs push 1;
+  SHA remote 136c23faac851c8f2026e52ffa5bc7102299658d cocok staging).
+  Pesan: "vc322 (4.48.9.156): fix P8 5.18 — RustCore naik 3 tingkat
+  di layout CI (CI ronde 1 gagal di 5.18 saja)".
+- **CI ronde 2:** run [#43847898379](https://github.com/Sendysyah27/deepseek-harness/actions/runs/43847898379)
+  (push, head 9cc48f1f, dibuat 10:20:07Z) — **SUCCESS**, job `build`
+  completed/success. Suite CI: P1 103, P2 36, P3 94, P4 235, P5 157,
+  P6 155, P7 52, **P8 73/73**, N9 46, BR 45, IXL 72, R1 64, R2 68/69
+  (4.1 ditoleransi), C LULUS, D1–D13 LULUS (D13 di CI). Artifact
+  `harness-vc317-apks` (nama belum diganti dari vc320) 26.409.419 byte.
+- **APK CI** (`vc317-work/apk-vc322-ci/`): zip MD5
+  b20deb0d00dad797a596f5819afe7914.
+  - Main `DeepSeekHarness-v4.48.9.156.apk` 13.319.276 B, MD5
+    cec7b2287ea70ce61e4ac64f030ab45c, SHA256
+    c00986896e902ce4aa25181f64b5a930e6b8020a4ee2670d8d29898ca1665a4f;
+    v2+v3 true, 1 signer (kunci runner
+    2a38b765b226630e7fc3a32a6276c7eff88e42d625b5cd4c4f6f76759a534786 —
+    beda dari VM, EKSPEKTASI).
+  - Pure `Harness-v4.48.9.156-pure.apk` 13.274.220 B, MD5
+    7ffe36ec64217cae03c64d97ef4e712b, SHA256
+    f928f04828fd2b6b36dc35017410f3277d61927264347a0e246ff8dfcc49485c;
+    v2+v3 true, 1 signer (kunci runner
+    c733f11108cce378157022d1fdcc3a88e6531e9120569c124476ff61ed7b9fd7).
+  - Keduanya 322/4.48.9.156, libharness_core.so di lib/arm64-v8a
+    (1.854.424 B), hsurr: 0, hanya arm64.
+- **APK VM** (`vc317-work/apk-vc322-vm/`, build `python3 -u build.py`
+  senz lalu pure; log `/tmp/build-vc322-senz.log`,
+  `/tmp/build-vc322-pure.log`):
+  - Main `DeepSeekHarness-v4.48.9.156.apk` 13.401.196 B, MD5
+    ffcf2b238614ec1d8615cd7f3b0c264b, SHA256
+    99d2d9b4a6e85bcde3b2d2fa6eb02c9990a2e6b7b47fc405ba894f7195d88b18;
+    v2+v3 true, 1 signer, **sidik jari
+    e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177 —
+    COCOK gerbang vc316** (bisa menimpa).
+  - Pure `Harness-v4.48.9.156-pure.apk` 13.356.140 B, MD5
+    1e5a0aeb941ad31e260fcb7003920939, SHA256
+    36e07643a5888fabb6d1a0c4590dbd7b53cdd7db29c038b0ed8025e90a45b043;
+    v2+v3 true, 1 signer, **sidik jari
+    f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f —
+    COCOK gerbang vc316** (bisa menimpa).
+  - Keduanya 322/4.48.9.156, libharness_core.so di lib/arm64-v8a
+    (2.119.656 B), hsurr: 0, hanya arm64.
+- **Doc-sync:** BUILD-VC322.md diperbarui (§7.12 + §8 ini) via `gh.py
+  put-file` sesudah CI/APK (commit terpisah, isi §7.12+§8 saja yang
+  berubah vs versi ter-push).
 
 ## §9. Tes perangkat (TES-VC322-SIAP-TEMPEL)
 
