@@ -145,14 +145,16 @@ const METHODS: [&str; 8] = [
     "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE",
 ];
 
-fn valid_header_name(name: &str) -> bool {
+/// Dipakai ulang `ds_api` (upload multipart): nama header valid.
+pub(crate) fn valid_header_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
-fn valid_header_value(value: &str) -> bool {
+/// Dipakai ulang `ds_api` (upload multipart): nilai header valid.
+pub(crate) fn valid_header_value(value: &str) -> bool {
     // Header value tidak boleh mengandung CTL / CR / LF (ureq juga
     // menolaknya; validasi di sini supaya gagal rapi, bukan panic).
     !value.chars().any(|c| (c as u32) < 0x20 || (c as u32) == 0x7F)

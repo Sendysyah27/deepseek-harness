@@ -23,11 +23,12 @@
 //   (d) SUMBER: 6 wrapper berisi public fun + *Kotlin + saklar rust;
 //       *Kotlin = body lama (fragmen kunci dari merge/ vc316 — untuk
 //       mesin SSE SlotClient, fragmen dicek sesudah rename 4 nama fun);
-//       DsApiClient.kt TIDAK tersentuh Rust (slice 11); Flavor.kt
-//       tidak berubah; transport yang SENGAJA tetap Kotlin
+//       DsApiClient.kt disentuh Rust BARU di slice 11 vc328 (HttpSeam
+//       reuse + DsApiSeam, dicek §10.1); Flavor.kt tidak berubah;
+//       transport yang SENGAJA tetap Kotlin
 //       (openEventStream, IMAP/SMTP Gmail, listener McpOAuth,
 //       postCompletion SlotClient) masih ada.
-//   (e) STRUKTUR: RUST_CORE_VERSION 8 + 28 simbol JNI + ureq/sha2
+//   (e) STRUKTUR: RUST_CORE_VERSION 9 + 29 simbol JNI + ureq/sha2
 //       di Cargo.toml/lock.
 //
 // CATATAN JUJUR: `applyChunkKotlin` dkk TIDAK bisa dipanggil langsung
@@ -303,11 +304,11 @@ fun main(args: Array<String>) {
         val f = java.io.File(treeDir, rel)
         if (f.exists()) f.readText() else null
     }.firstOrNull() ?: ""
-    cek("1.1 RustCore.kt VERSION 7 + httpJson", rcSrc.contains("const val VERSION = 8") && rcSrc.contains("external fun httpJson(request: String): String?"))
+    cek("1.1 RustCore.kt VERSION 9 + httpJson", rcSrc.contains("const val VERSION = 9") && rcSrc.contains("external fun httpJson(request: String): String?"))
     if (rust) {
         cek("1.2 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
         val caps = harness.core.RustCore.rustCoreCapabilities()
-        cek("1.3 capabilities: version 7 + httpJson + modul http/sse", caps.contains("\"version\":8") && caps.contains("httpJson") && caps.contains("\"http\"") && caps.contains("\"sse\""))
+        cek("1.3 capabilities: version 9 + httpJson + modul http/sse", caps.contains("\"version\":9") && caps.contains("httpJson") && caps.contains("\"http\"") && caps.contains("\"sse\""))
         cek("1.4 HttpSeam.rustHttp true (mode rust)", HttpSeam.rustHttp)
     } else {
         cek("1.2 RustCore.available false (mode kotlin, tanpa .so)", !harness.core.RustCore.available)
@@ -539,7 +540,7 @@ fun main(args: Array<String>) {
 
     // ---- §10. Batas slice 8 dijaga ----
     val dsSrc = src(treeDir, "DsApiClient.kt")
-    cek("10.1 DsApiClient.kt TIDAK tersentuh Rust slice 8", !dsSrc.contains("HttpSeam") && !dsSrc.contains("httpJson") && !dsSrc.contains("rustSlotClient"))
+    cek("10.1 DsApiClient.kt Rust HANYA slice 11 (HttpSeam reuse + DsApiSeam; tanpa rustSlotClient)", dsSrc.contains("HttpSeam.request") && dsSrc.contains("DsApiSeam.") && dsSrc.contains("var rustDsApi") && !dsSrc.contains("rustSlotClient") && !dsSrc.contains("ToolsLeavesSeam"))
     cek("10.2 Flavor.kt tidak berubah (deferred)", !src(treeDir, "Flavor.kt").contains("RustCore") && !src(treeDir, "Flavor.kt").contains("HttpSeam"))
     cek("10.3 SlotClient: logika sesi vc321/vc322 dipertahankan", slSrc.contains("shouldResetServerSessionVc321") && slSrc.contains("shouldSendDeltaVc322") && slSrc.contains("deltaPrompt"))
     cek("10.4 Gmail transport + McpOAuth listener tetap Kotlin", gmSrc.contains("SSLSocketFactory") && oaSrc.contains("ServerSocket(REDIRECT_PORT"))
@@ -547,11 +548,11 @@ fun main(args: Array<String>) {
 
     // ---- §11. Struktur Rust ----
     val glue = srcCore(coreDir, "src/jni_glue.rs")
-    cek("11.1 RUST_CORE_VERSION 8 di jni_glue.rs", glue.contains("RUST_CORE_VERSION: jint = 8"))
+    cek("11.1 RUST_CORE_VERSION 9 di jni_glue.rs", glue.contains("RUST_CORE_VERSION: jint = 9"))
     // Jumlah definisi JNI (bukan kemunculan mentah: baris komentar 3
     // jni_glue.rs juga mengandung prefix ini).
     val jniCount = "pub extern \"C\" fn Java_harness_core_RustCore_".toRegex().findAll(glue).count()
-    cek("11.2 28 simbol JNI (27 lama + toolsLeavesJson)", jniCount == 28)
+    cek("11.2 29 simbol JNI (28 lama + dsApiJson)", jniCount == 29)
     val cargo = srcCore(coreDir, "Cargo.toml")
     cek("11.3 Cargo.toml: ureq 2.12 tls + sha2 0.10", cargo.contains("ureq") && cargo.contains("2.12") && cargo.contains("sha2") && cargo.contains("0.10"))
     val lock = srcCore(coreDir, "Cargo.lock")

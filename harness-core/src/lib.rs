@@ -22,6 +22,7 @@ pub mod agent_prompt;
 pub mod behaviors;
 pub mod chat_theme;
 pub mod concat_api_client;
+pub mod ds_api;
 pub mod ds_failure;
 pub mod ds_safety_strip;
 pub mod http;

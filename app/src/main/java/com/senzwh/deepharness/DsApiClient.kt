@@ -5,6 +5,7 @@ import android.os.Looper
 import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.WebView
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -20,8 +21,18 @@ import java.util.concurrent.TimeUnit
  * Tiap completion: create session -> create_pow_challenge -> solve PoW (DeepSeekHashV1)
  * -> POST completion (SSE, format JSON-Patch difragments) dengan header x-ds-pow-response.
  * Token TIDAK pernah disimpan ke disk oleh kelas ini; dibaca segar dari WebView tiap panggilan.
+ * Slice 11 (vc328): transport JSON (postJson/getJson) + parse stream SSE
+ * + PoW -> Rust (seam httpJson slice 8 + dsApiJson slice 11 + pow_solver
+ * slice 2); panen cookie/token (WebView/CookieManager) + mesin sesi
+ * (runChat/chat, guard/primed/cooldown) + loop baca stream + onPartial
+ * tetap Kotlin.
  */
 class DsApiClient(private val webView: WebView) {
+
+    // Slice 11 (vc328): saklar seam Rust — default ikut `RustCore.available`.
+    // Bila .so absen/rusak atau seam mati, semua wrapper di bawah memakai
+    // implementasi Kotlin lama (`*Kotlin`).
+    var rustDsApi = RustCore.available
 
     private val main = Handler(Looper.getMainLooper())
     // vc271 O5: antrean FIFO ganti penolakan busy (lihat ApiRequestQueue).
@@ -517,19 +528,65 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun headers(conn: HttpURLConnection, token: String, cookie: String, ua: String, powHeader: String?) {
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        if (cookie.isNotBlank()) conn.setRequestProperty("Cookie", cookie)
-        conn.setRequestProperty("User-Agent", ua)
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "*/*")
-        conn.setRequestProperty("Origin", "https://chat.deepseek.com")
-        conn.setRequestProperty("Referer", "https://chat.deepseek.com/")
-        conn.setRequestProperty("x-client-platform", "web")
-        conn.setRequestProperty("x-client-locale", "id_ID")
-        if (powHeader != null) conn.setRequestProperty("x-ds-pow-response", powHeader)
+        for ((k, v) in headersMap(token, cookie, ua, powHeader)) conn.setRequestProperty(k, v)
+    }
+
+    /** Header yang sama dengan `headers(conn, ...)` — sebagai map untuk seam Rust. */
+    private fun headersMap(token: String, cookie: String, ua: String, powHeader: String?): Map<String, String> {
+        val h = mutableMapOf<String, String>()
+        h["Authorization"] = "Bearer $token"
+        if (cookie.isNotBlank()) h["Cookie"] = cookie
+        h["User-Agent"] = ua
+        h["Content-Type"] = "application/json"
+        h["Accept"] = "*/*"
+        h["Origin"] = "https://chat.deepseek.com"
+        h["Referer"] = "https://chat.deepseek.com/"
+        h["x-client-platform"] = "web"
+        h["x-client-locale"] = "id_ID"
+        if (powHeader != null) h["x-ds-pow-response"] = powHeader
+        return h
     }
 
     private fun postJson(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
+        // Slice 11 (vc328): transport JSON via Rust (HttpSeam.request,
+        // seam httpJson slice 8) bila saklar hidup; null = transport
+        // gagal -> fallback Kotlin (saklar hidup). recordDiag + mapping
+        // error tetap di postJsonResult (sama untuk kedua jalur).
+        if (rustDsApi) {
+            val r = HttpSeam.request(
+                "POST", "https://chat.deepseek.com$path",
+                headersMap(token, cookie, ua, powHeader),
+                body.toString(), 20000, 30000,
+                wantHeaders = listOf("Retry-After")
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustDsApi = false
+                return postJsonResult(path, r.code, r.body, r.headers["Retry-After"], token, powHeader)
+            }
+            if (!HttpSeam.rustHttp) rustDsApi = false
+            // null = transport gagal -> fallback Kotlin (saklar hidup).
+        }
+        return postJsonKotlin(path, body, token, cookie, ua, powHeader)
+    }
+
+    /** Bagian sesudah transport postJson: recordDiag Mode Jhon + mapping
+     *  error (Retry-After -> suffix "[retry_after=<n>]") + parse JSON
+     *  (sama untuk Rust/Kotlin). */
+    private fun postJsonResult(path: String, code: Int, text: String, retryAfter: String?, token: String, powHeader: String?): JSONObject {
+        if (code !in 200..299) {
+            // vc316 P1: baca Retry-After; ditempel sebagai suffix
+            // "[retry_after=<n>]" supaya DsFailure.classifyFailure di
+            // chat() bisa memakainya sebagai jeda pertama tangga
+            // rate-limit (tanpa state bersama antar-thread).
+            val retryAfterSec = DsFailure.parseRetryAfterHeader(retryAfter)
+            recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "HTTP $code", text.take(200))
+            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
+        }
+        recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "", "")
+        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+    }
+
+    private fun postJsonKotlin(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
         val conn = URL("https://chat.deepseek.com$path").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 20000
@@ -542,17 +599,7 @@ class DsApiClient(private val webView: WebView) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
-        if (code !in 200..299) {
-            // vc316 P1: baca Retry-After; ditempel sebagai suffix
-            // "[retry_after=<n>]" supaya DsFailure.classifyFailure di
-            // chat() bisa memakainya sebagai jeda pertama tangga
-            // rate-limit (tanpa state bersama antar-thread).
-            val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
-            recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "HTTP $code", text.take(200))
-            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
-        }
-        recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "", "")
-        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+        return postJsonResult(path, code, text, conn.getHeaderField("Retry-After"), token, powHeader)
     }
 
     private fun postCompletion(body: JSONObject, token: String, cookie: String, ua: String, powHeader: String, onPartial: (String) -> Unit): Pair<String, String> {
@@ -576,6 +623,15 @@ class DsApiClient(private val webView: WebView) {
         val content = StringBuilder()
         val thinkingBuf = StringBuilder()
         val state = StreamState()
+        // Slice 11 (vc328): mesin parse SSE Rust (state JSON) bila saklar
+        // hidup; bila seam mati di awal, langsung jalur Kotlin. Bila seam
+        // mati DI TENGAH stream, baris dilewati + saklar dimatikan — stream
+        // ini berakhir stream_terputus lalu retry chat() memakai Kotlin
+        // (pola SlotClient slice 8).
+        val useRust = rustDsApi && HttpSeam.rustHttp
+        if (rustDsApi && !HttpSeam.rustHttp) rustDsApi = false
+        var sseStateJson = HttpSeam.sseInitState()
+        var sawFinish = false
         val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
         var lastPartialAt = 0L
         val rawSample = StringBuilder()
@@ -592,10 +648,23 @@ class DsApiClient(private val webView: WebView) {
             if (rawSample.length < 900) rawSample.append(payload.take(300)).append(" | ")
             val obj = try { JSONObject(payload) } catch (e: Exception) { continue }
             if (obj.has("code") && obj.optInt("code", 0) != 0) {
-                recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "SERVER ${obj.optInt("code")}", rawSample.toString())
+                recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "SERVER ${obj.optInt("code")}", rawSample.toString())
                 throw Exception("SERVER ${obj.optInt("code")}: ${obj.optString("msg")}")
             }
-            applyChunk(obj, content, thinkingBuf, state)
+            if (useRust) {
+                val step = HttpSeam.sseApply(sseStateJson, payload)
+                if (step == null) {
+                    rustDsApi = false
+                } else {
+                    sseStateJson = step.state
+                    content.append(step.contentDelta)
+                    thinkingBuf.append(step.thinkingDelta)
+                    sawFinish = step.sawFinish
+                }
+            } else {
+                applyChunkKotlin(obj, content, thinkingBuf, state)
+                sawFinish = state.sawFinish
+            }
             val now = System.currentTimeMillis()
             if (content.isNotEmpty() && now - lastPartialAt > 250) {
                 lastPartialAt = now
@@ -611,20 +680,20 @@ class DsApiClient(private val webView: WebView) {
         if (full.isBlank()) {
             val rawStr = rawSample.toString()
             if (rawStr.contains("rate_limit") || rawStr.contains("too frequent", ignoreCase = true)) {
-                recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "rate_limit", rawStr)
+                recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "rate_limit", rawStr)
                 throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final." + DsFailure.retryAfterSuffix(retryAfterSec))
             }
             // v4.12.2: bedakan PUTUS (tanpa penanda selesai resmi) dari
             // selesai-resmi-tanpa-jawaban. Keduanya ditandai agar chat()
             // mengulang di sesi yang sama alih-alih menyerah ke WebView.
-            if (!state.sawFinish) {
+            if (!sawFinish) {
                 recordDiag("completion", code, dataLines, false, token, powHeader.length, "stream_terputus", rawStr)
                 throw Exception("stream_terputus: koneksi ke server putus sebelum jawaban selesai (baris data: $dataLines, fragmen berpikir ${thinkingBuf.length} karakter). Cuplikan mentah: ${rawStr.take(400)}")
             }
             recordDiag("completion", code, dataLines, true, token, powHeader.length, "jawaban_kosong", rawStr)
             throw Exception("jawaban_kosong: stream selesai resmi tapi tanpa fragmen jawaban (fragmen berpikir ${thinkingBuf.length} karakter dibuang, baris data: $dataLines). Cuplikan mentah: ${rawStr.take(400)}")
         }
-        recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "", rawSample.toString())
+        recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "", rawSample.toString())
         return Pair(DsSafetyStrip.strip(full), DsSafetyStrip.strip(thinkingBuf.toString().trim()))
     }
 
@@ -645,14 +714,14 @@ class DsApiClient(private val webView: WebView) {
     private val fragIdxRe = Regex("fragments/(-?\\d+)")
 
     /** Daftarkan tipe sebuah fragmen; opsional jadikan fragmen berjalan. */
-    private fun declareFragment(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
+    private fun declareFragmentKotlin(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
         state.fragmentThinking[idx] = isThink
         if (idx >= state.fragmentCount) state.fragmentCount = idx + 1
         if (makeCurrent) state.currentThinking = isThink
     }
 
     /** Tentukan apakah chunk pada path ini milik fragmen berpikir (THINK) atau jawaban (RESPONSE). */
-    private fun routeIsThinking(state: StreamState, path: String): Boolean {
+    private fun routeIsThinkingKotlin(state: StreamState, path: String): Boolean {
         if (path.contains("thinking", ignoreCase = true) || path.contains("reasoning", ignoreCase = true)) return true
         val m = fragIdxRe.find(path) ?: return state.currentThinking
         val raw = m.groupValues[1].toIntOrNull() ?: return state.currentThinking
@@ -662,7 +731,7 @@ class DsApiClient(private val webView: WebView) {
         // Indeks baru tepat sesudah fragmen terakhir = fragmen berikutnya; sesudah
         // fase berpikir selesai, fragmen baru selalu fragmen jawaban.
         if (raw == state.fragmentCount && state.fragmentCount > 0) {
-            declareFragment(state, raw, false)
+            declareFragmentKotlin(state, raw, false)
             return false
         }
         return state.currentThinking
@@ -677,7 +746,7 @@ class DsApiClient(private val webView: WebView) {
      * Versi lama merutekan berdasar "p" chunk itu sendiri saja (p kosong ->
      * jawaban) sehingga potongan berpikir bocor ke bubble jawaban.
      */
-    private fun applyChunk(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyChunkKotlin(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val p = obj.optString("p", "")
         if (p == "response/status" && obj.optString("v") == "FINISHED") state.sawFinish = true
         // Path status BUKAN path isi: jangan jadikan path efektif, supaya chunk isi
@@ -689,7 +758,7 @@ class DsApiClient(private val webView: WebView) {
             val arr = obj.optJSONArray("v") ?: return
             for (i in 0 until arr.length()) {
                 val sub = arr.optJSONObject(i) ?: continue
-                applyChunk(sub, content, thinking, state)
+                applyChunkKotlin(sub, content, thinking, state)
             }
             return
         }
@@ -718,7 +787,7 @@ class DsApiClient(private val webView: WebView) {
                 val contentish = effPath.isEmpty() || effPath.endsWith("content") || effPath.endsWith("fragments") ||
                     effPath.contains("thinking") || effPath.contains("reasoning")
                 if (!contentish) return
-                if (routeIsThinking(state, effPath)) thinking.append(v) else content.append(v)
+                if (routeIsThinkingKotlin(state, effPath)) thinking.append(v) else content.append(v)
             }
             is JSONArray -> {
                 // Deklarasi fragmen bisa datang sebagai ARRAY berisi objek fragmen:
@@ -728,19 +797,19 @@ class DsApiClient(private val webView: WebView) {
                 // jawaban + isi pembukanya hilang, sisa teks salah rute, jawaban kosong.
                 for (i in 0 until v.length()) {
                     val el = v.optJSONObject(i)
-                    if (el != null) applyValueObject(obj, el, effPath, content, thinking, state)
+                    if (el != null) applyValueObjectKotlin(obj, el, effPath, content, thinking, state)
                     else {
                         val s = v.optString(i, "")
-                        if (s.isNotEmpty()) { if (routeIsThinking(state, effPath)) thinking.append(s) else content.append(s) }
+                        if (s.isNotEmpty()) { if (routeIsThinkingKotlin(state, effPath)) thinking.append(s) else content.append(s) }
                     }
                 }
             }
-            is JSONObject -> applyValueObject(obj, v, effPath, content, thinking, state)
+            is JSONObject -> applyValueObjectKotlin(obj, v, effPath, content, thinking, state)
         }
     }
 
     /** Terapkan satu objek nilai stream: deklarasi fragmen / objek berisi content / keadaan awal. */
-    private fun applyValueObject(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyValueObjectKotlin(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val typeStr = v.optString("type", "")
         if (typeStr.isNotEmpty()) {
             // Deklarasi/append SATU fragmen — daftarkan tipenya WALAU content
@@ -752,7 +821,7 @@ class DsApiClient(private val webView: WebView) {
             val isThink = typeStr.contains("THINK", ignoreCase = true)
             val raw = fragIdxRe.find(effPath)?.groupValues?.get(1)?.toIntOrNull()
             val idx = if (raw != null && raw >= 0) raw else state.fragmentCount
-            declareFragment(state, idx, isThink)
+            declareFragmentKotlin(state, idx, isThink)
             val c = v.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
             return
@@ -760,7 +829,7 @@ class DsApiClient(private val webView: WebView) {
         // Objek berisi content tanpa type: rute berdasar fragmen berjalan.
         val directContent = v.optString("content", "")
         if (directContent.isNotEmpty()) {
-            if (routeIsThinking(state, effPath)) thinking.append(directContent) else content.append(directContent)
+            if (routeIsThinkingKotlin(state, effPath)) thinking.append(directContent) else content.append(directContent)
             return
         }
         // Keadaan awal: v.response.fragments[]
@@ -771,7 +840,7 @@ class DsApiClient(private val webView: WebView) {
             val f = frags.optJSONObject(i) ?: continue
             val isThink = f.optString("type", "").contains("THINK", ignoreCase = true)
             // Deklarasi massal tidak menggeser fragmen berjalan (kecuali awal stream).
-            declareFragment(state, i, isThink, makeCurrent = false)
+            declareFragmentKotlin(state, i, isThink, makeCurrent = false)
             val c = f.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
         }
@@ -782,6 +851,18 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun findSessionId(root: JSONObject): String? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin
+        // (menghitung ulang hasil yang sama).
+        if (rustDsApi) {
+            val v = DsApiSeam.findSessionId(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findSessionIdKotlin(root)
+    }
+
+    private fun findSessionIdKotlin(root: JSONObject): String? {
         // data.biz_data.chat_session.id | data.biz_data.id
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
@@ -791,6 +872,17 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun findChallenge(root: JSONObject): JSONObject? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.findChallenge(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findChallengeKotlin(root)
+    }
+
+    private fun findChallengeKotlin(root: JSONObject): JSONObject? {
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
         return biz.optJSONObject("challenge") ?: if (biz.has("challenge")) biz else null
@@ -910,7 +1002,18 @@ class DsApiClient(private val webView: WebView) {
      * diterima — dikalibrasi dengan tokenizer DeepSeek asli (terukur:
      * prosa Indonesia 3,92 kar/token; JSON tool 3,14; campuran prompt 3,44;
      * keluaran memakai 3,7). Hanya giliran yang SELESAI yang tercatat. */
-    private fun estTokens(chars: Int, perChar: Double): Long =
+    private fun estTokens(chars: Int, perChar: Double): Long {
+        // Slice 11 (vc328): hitung via Rust (DsApiSeam) bila saklar hidup;
+        // null = seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.estTokens(chars, perChar)
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return estTokensKotlin(chars, perChar)
+    }
+
+    private fun estTokensKotlin(chars: Int, perChar: Double): Long =
         if (chars <= 0) 0L else maxOf(1L, Math.round(chars / perChar))
 
     private val tokLock = Object()
@@ -940,6 +1043,32 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun getJson(path: String, token: String, cookie: String, ua: String): JSONObject {
+        // Slice 11 (vc328): transport via Rust (HttpSeam.request, seam
+        // httpJson slice 8) bila saklar hidup; null = transport gagal ->
+        // fallback Kotlin (saklar hidup).
+        if (rustDsApi) {
+            val r = HttpSeam.request(
+                "GET", "https://chat.deepseek.com$path",
+                headersMap(token, cookie, ua, null),
+                null, 20000, 30000
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustDsApi = false
+                return getJsonResult(path, r.code, r.body)
+            }
+            if (!HttpSeam.rustHttp) rustDsApi = false
+        }
+        return getJsonKotlin(path, token, cookie, ua)
+    }
+
+    /** Bagian sesudah transport getJson: mapping error + parse JSON
+     *  (sama untuk Rust/Kotlin). */
+    private fun getJsonResult(path: String, code: Int, text: String): JSONObject {
+        if (code !in 200..299) throw Exception("HTTP $code di $path: ${text.take(250)}")
+        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+    }
+
+    private fun getJsonKotlin(path: String, token: String, cookie: String, ua: String): JSONObject {
         val conn = URL("https://chat.deepseek.com$path").openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 20000
@@ -950,8 +1079,7 @@ class DsApiClient(private val webView: WebView) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
-        if (code !in 200..299) throw Exception("HTTP $code di $path: ${text.take(250)}")
-        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+        return getJsonResult(path, code, text)
     }
 
     /** v4.10.5: kontrak upload ASLI (riset kode RE terawat, terverifikasi 2026-10):
@@ -959,27 +1087,7 @@ class DsApiClient(private val webView: WebView) {
      * lalu polling GET /api/v0/file/fetch_files sampai status SUCCESS. */
     private fun uploadFile(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String): String? {
         val powHeader = solvePowHeader("/api/v0/file/upload_file", token, cookie, ua, null)
-        val boundary = "----WebKitFormBoundaryTB0pXOQR2RL219Hu"
-        val safeName = fileName.map { c -> if (c.code in 32..126 && c != '"') c else '_' }.joinToString("").ifBlank { "file.bin" }
-        val conn = URL("https://chat.deepseek.com/api/v0/file/upload_file").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 20000
-        conn.readTimeout = 120000
-        conn.doOutput = true
-        headers(conn, token, cookie, ua, powHeader)
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
-        conn.setRequestProperty("x-file-size", bytes.size.toString())
-        conn.outputStream.use { out ->
-            val head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"\r\nContent-Type: " + mime + "\r\n\r\n"
-            out.write(head.toByteArray(Charsets.UTF_8))
-            out.write(bytes)
-            out.write(("\r\n--" + boundary + "--\r\n").toByteArray(Charsets.UTF_8))
-        }
-        val code = conn.responseCode
-        val text = try {
-            val s = if (code in 200..299) conn.inputStream else conn.errorStream
-            s?.bufferedReader()?.readText() ?: ""
-        } catch (e: Exception) { "" }
+        val (code, text) = uploadPost(bytes, fileName, mime, token, cookie, ua, powHeader)
         if (code !in 200..299) throw Exception("HTTP $code di upload berkas: ${text.take(250)}")
         val root = try { JSONObject(text) } catch (e: Exception) { throw Exception("respons upload bukan JSON: ${text.take(200)}") }
         if (root.has("code") && root.optInt("code", 0) != 0) throw Exception("SERVER ${root.optInt("code")}: ${root.optString("msg")}")
@@ -1001,7 +1109,64 @@ class DsApiClient(private val webView: WebView) {
         throw Exception("status berkas di server: '" + status + "' (bukan SUCCESS) — file_id=" + fileId)
     }
 
+    /** Transport POST multipart unggahan: Rust dulu, Kotlin bila gagal.
+     *  Kembalikan (code, body) — pemanggil yang memutuskan throw/return. */
+    private fun uploadPost(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String, powHeader: String): Pair<Int, String> {
+        // Slice 11 (vc328): transport unggah via Rust (DsApiSeam.uploadFile,
+        // seam dsApiJson) bila saklar hidup; null = transport gagal ->
+        // fallback Kotlin (saklar hidup).
+        if (rustDsApi) {
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val r = DsApiSeam.uploadFile(
+                "https://chat.deepseek.com/api/v0/file/upload_file",
+                headersMap(token, cookie, ua, powHeader), b64, fileName, mime, 20000, 120000
+            )
+            if (r != null) {
+                if (!DsApiSeam.rustDsApi) rustDsApi = false
+                return Pair(r.code, r.body)
+            }
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return uploadPostKotlin(bytes, fileName, mime, token, cookie, ua, powHeader)
+    }
+
+    private fun uploadPostKotlin(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String, powHeader: String): Pair<Int, String> {
+        val boundary = "----WebKitFormBoundaryTB0pXOQR2RL219Hu"
+        val safeName = fileName.map { c -> if (c.code in 32..126 && c != '"') c else '_' }.joinToString("").ifBlank { "file.bin" }
+        val conn = URL("https://chat.deepseek.com/api/v0/file/upload_file").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 20000
+        conn.readTimeout = 120000
+        conn.doOutput = true
+        headers(conn, token, cookie, ua, powHeader)
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
+        conn.setRequestProperty("x-file-size", bytes.size.toString())
+        conn.outputStream.use { out ->
+            val head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"\r\nContent-Type: " + mime + "\r\n\r\n"
+            out.write(head.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+            out.write(("\r\n--" + boundary + "--\r\n").toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val text = try {
+            val s = if (code in 200..299) conn.inputStream else conn.errorStream
+            s?.bufferedReader()?.readText() ?: ""
+        } catch (e: Exception) { "" }
+        return Pair(code, text)
+    }
+
     private fun findFileId(root: JSONObject): String? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.findFileId(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findFileIdKotlin(root)
+    }
+
+    private fun findFileIdKotlin(root: JSONObject): String? {
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
         biz.optString("id").ifBlank { null }?.let { return it }

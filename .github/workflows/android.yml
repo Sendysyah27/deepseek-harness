@@ -52,6 +52,13 @@ name: Android vc317
 # delta continuation; P13 66 cek;
 # suite 2012/2013 (R2-4.1 ditoleransi); RUST_CORE_VERSION tetap 8;
 # Kotlin saja, Rust tidak berubah.
+# Slice 11 vc328: split DsApiClient — HTTP JSON (postJson/getJson via
+# HttpSeam.request slice 8) + parse stream SSE (sseApply slice 8) +
+# find/estTokens/upload multipart via seam dsApiJson baru (ds_api.rs,
+# ureq + base64 + serde_json, tanpa dep baru); P14 280 cek (140 per mode)
+# (rust 70 + kotlin 70 fallback); suite 2152/2153 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 8->9; panen cookie/token (WebView/CookieManager)
+# + mesin sesi + loop stream tetap Kotlin.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -165,6 +172,9 @@ jobs:
 
       - name: Suite P13 SessFix residual vc327 (66 cek)
         run: bash tests/run-suite-ci.sh P13
+
+      - name: Suite P14 DsApiClient split vc328 (280 cek, 140 per mode)
+        run: bash tests/run-suite-ci.sh P14
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

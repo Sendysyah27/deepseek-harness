@@ -13,6 +13,7 @@ use crate::agent_prompt;
 use crate::behaviors;
 use crate::chat_theme;
 use crate::concat_api_client;
+use crate::ds_api;
 use crate::ds_failure;
 use crate::ds_safety_strip;
 use crate::http;
@@ -50,7 +51,12 @@ use std::sync::Once;
 /// (parse DuckDuckGo + parse YouTube + stripHtml + truncateMarked
 /// Tools.kt — dispatcher + daun Android + daun jaringan tetap
 /// Kotlin, BUILD-VC326.md §2).
-pub const RUST_CORE_VERSION: jint = 8;
+/// v9 = slice 11 (ds_api): +1 fungsi `dsApiJson`
+/// (find_session_id/find_challenge/find_file_id/est_tokens/
+/// safe_file_name/upload_file DsApiClient — transport JSON + parse SSE
+/// memakai seam slice 8, PoW slice 2, klasifikasi slice 1; panen cookie
+/// + mesin sesi + loop stream tetap Kotlin, BUILD-VC328.md §2).
+pub const RUST_CORE_VERSION: jint = 9;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -198,7 +204,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "sqliteJson",
                 "httpJson",
                 "workerEndpointJson",
-                "toolsLeavesJson"],
+                "toolsLeavesJson",
+                "dsApiJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
@@ -207,7 +214,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "sqlite", "sqlite_schema",
                 "http", "sse",
                 "worker_endpoint",
-                "tools_leaves"]
+                "tools_leaves",
+                "ds_api"]
         })
         .to_string())
     })
@@ -904,5 +912,23 @@ pub extern "C" fn Java_harness_core_RustCore_toolsLeavesJson(
     guarded_string_nullable(env, |env| {
         let req = jstring_to_rust(env, &request);
         tools_leaves::tools_leaves_json(&req).ok()
+    })
+}
+
+// Slice 11: split DsApiClient — `{"op":"find_session_id"|
+// "find_challenge"|"find_file_id"|"est_tokens"|"safe_file_name"|
+// "upload_file",...}`.
+// Respons `{"ok":true,...}` / `{"ok":false,...}`; `null` = Rust gagal
+// (panic/error di boundary) -> pemanggil Kotlin WAJIB fallback ke
+// implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_dsApiJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        ds_api::ds_api_json(&req).ok()
     })
 }

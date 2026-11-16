@@ -23,7 +23,7 @@
 //       Android + daun jaringan tetap Kotlin, DSML sudah Rust slice 6,
 //       daun murni lain (slugify/ruleKey/parseDateRange/dll.) TANPA
 //       Rust, Flavor.kt + DsApiClient.kt tanpa sentuhan slice 10.
-//   (e) STRUKTUR: RUST_CORE_VERSION 8 + 28 simbol JNI +
+//   (e) STRUKTUR: RUST_CORE_VERSION 9 + 29 simbol JNI +
 //       toolsLeavesJson + modul tools_leaves, TANPA tokio dan TANPA
 //       dependensi Cargo baru.
 //
@@ -215,15 +215,15 @@ fun main(args: Array<String>) {
     }.firstOrNull() ?: ""
 
     // ---- §1. Seam + VERSION ----
-    cek("1.1 RustCore.kt VERSION 8 + toolsLeavesJson", rcSrc.contains("const val VERSION = 8") && rcSrc.contains("external fun toolsLeavesJson(request: String): String?"))
+    cek("1.1 RustCore.kt VERSION 9 + toolsLeavesJson", rcSrc.contains("const val VERSION = 9") && rcSrc.contains("external fun toolsLeavesJson(request: String): String?"))
     if (rust) {
         cek("1.2 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
         val caps = harness.core.RustCore.rustCoreCapabilities()
-        cek("1.3 capabilities: version 8 + toolsLeavesJson + modul tools_leaves", caps.contains("\"version\":8") && caps.contains("toolsLeavesJson") && caps.contains("\"tools_leaves\""))
+        cek("1.3 capabilities: version 9 + toolsLeavesJson + modul tools_leaves", caps.contains("\"version\":9") && caps.contains("toolsLeavesJson") && caps.contains("\"tools_leaves\""))
         cek("1.4 ToolsLeavesSeam.rustToolsLeaves true (mode rust)", ToolsLeavesSeam.rustToolsLeaves)
         val glue = srcCore(coreDir, "src/jni_glue.rs")
         val nSym = glue.split("pub extern \"C\" fn Java_harness_core_RustCore_").size - 1
-        cek("1.5 28 simbol JNI (27 lama + toolsLeavesJson)", nSym == 28)
+        cek("1.5 29 simbol JNI (28 lama + dsApiJson)", nSym == 29)
         cek("1.6 seam stripHtml non-null + nilai (mode rust)", ToolsLeavesSeam.stripHtml("<p>x <b>y</b></p>") == "x y")
     } else {
         cek("1.2 RustCore.available false (mode kotlin, tanpa .so)", !harness.core.RustCore.available)

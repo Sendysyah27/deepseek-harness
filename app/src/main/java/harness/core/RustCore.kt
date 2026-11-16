@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 8
+    const val VERSION = 9
 
     val available: Boolean
 
@@ -159,4 +159,17 @@ object RustCore {
      * fallback ke implementasi Kotlin lama.
      */
     external fun toolsLeavesJson(request: String): String?
+
+    // ---- Slice 11: Split DsApiClient (find + estTokens + upload) ----
+    /**
+     * Split DsApiClient.kt. Request JSON `{"op":...}`:
+     * `find_session_id`, `find_challenge`, `find_file_id`,
+     * `est_tokens`, `safe_file_name`, `upload_file`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama. Transport JSON non-streaming
+     * (postJson/getJson) + parse SSE tetap memakai seam `httpJson`
+     * slice 8; PoW memakai slice 2; klasifikasi memakai slice 1.
+     */
+    external fun dsApiJson(request: String): String?
 }

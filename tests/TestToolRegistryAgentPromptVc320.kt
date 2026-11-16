@@ -218,11 +218,11 @@ fun main(args: Array<String>) {
 
     // ================= 7. Seam =================
     println("== 7. Seam JNI (VERSION 8 + capabilities + saklar) ==")
-    check("7.1 RustCore.VERSION == 8", RustCore.VERSION == 8, "VERSION=${RustCore.VERSION}")
+    check("7.1 RustCore.VERSION == 9", RustCore.VERSION == 9, "VERSION=${RustCore.VERSION}")
     if (useRust) {
         check("7.2 RustCore.available true (mode rust)", RustCore.available)
         val caps = JSONObject(RustCore.rustCoreCapabilities())
-        check("7.3 capabilities version 8", caps.getInt("version") == 8, "version=${caps.optInt("version")}")
+        check("7.3 capabilities version 9", caps.getInt("version") == 9, "version=${caps.optInt("version")}")
         val fns = caps.getJSONArray("functions")
         val fnNames = (0 until fns.length()).map { fns.getString(it) }.toSet()
         check("7.4 capabilities memuat 3 fungsi baru", "toolRegistryJson" in fnNames && "agentPromptJson" in fnNames && "skillTriggerJson" in fnNames)
