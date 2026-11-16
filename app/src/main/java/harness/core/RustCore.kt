@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 3
+    const val VERSION = 4
 
     val available: Boolean
 
@@ -63,6 +63,31 @@ object RustCore {
      * fallback ke implementasi Kotlin lama.
      */
     external fun concatApiJson(request: String): String?
+
+    // ---- Slice 6: ToolRegistry + AgentPrompt + SkillTrigger (bulk JSON) ----
+    /**
+     * ToolRegistry (data + scoring katalog): request
+     * `{"op":"catalogSection"|"browserSkillDetail"|"names"|"namesByKind"|
+     * "sectionCounts"|"nearestNames", ...}`; respons
+     * `{"ok":true,"value":...}`. `null`/JSON-error = Rust gagal ->
+     * pemanggil WAJIB fallback ke implementasi Kotlin lama.
+     */
+    external fun toolRegistryJson(request: String): String
+
+    /**
+     * AgentPrompt (fungsi murni): request
+     * `{"op":"selectCatalog"|"continuationAnchor"|"stripRawToolMarkup"|
+     * "normalizeDsmlDelimiters"|"applyDoublePass", ...}`; respons
+     * `{"ok":true,"value":"..."}`.
+     */
+    external fun agentPromptJson(request: String): String
+
+    /**
+     * SkillJudge trigger scoring vc312: request
+     * `{"op":"splitDescrSections"|"negWordsOf"|"triggerScore", ...}`;
+     * respons `{"ok":true,"value":...}`.
+     */
+    external fun skillTriggerJson(request: String): String
 
     // ---- Slice 2: PowSolver (PoW DeepSeekHashV1) ----
     /** SHA3-256 sebagai 64 digit hex lowercase; "" / bukan-hex = gagal. */

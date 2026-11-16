@@ -9,6 +9,7 @@
 //! panic TIDAK BOLEH menyeberang FFI (undefined behavior) — bila panic,
 //! kembalikan JSON error / nilai sentinel, bukan crash.
 
+use crate::agent_prompt;
 use crate::behaviors;
 use crate::chat_theme;
 use crate::concat_api_client;
@@ -19,7 +20,9 @@ use crate::notif_ids;
 use crate::pow_solver;
 use crate::redact_secrets;
 use crate::session_background;
+use crate::skill_trigger;
 use crate::system_bar_spec;
+use crate::tool_registry;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
@@ -32,7 +35,9 @@ use std::sync::Once;
 /// v2 = slice 2 (pow_solver): +8 fungsi PoW; slice 3 (redact_secrets):
 /// +1 fungsi redactSecrets; slice 4: +7 fungsi bulk JSON modul kecil.
 /// v3 = slice 5 (concat_api_client): +1 fungsi `concatApiJson`.
-pub const RUST_CORE_VERSION: jint = 3;
+/// v4 = slice 6 (tool_registry/agent_prompt/skill_trigger):
+/// +3 fungsi bulk JSON `toolRegistryJson`/`agentPromptJson`/`skillTriggerJson`.
+pub const RUST_CORE_VERSION: jint = 4;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -175,11 +180,13 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "powSolveDeepSeekJson", "powSolveFastJson", "powSolveFmtJson", "powSolveJson",
                 "notifIdsJson", "systemBarSpecJson", "dsSafetyStripJson", "mcpHelperJson",
                 "sessionBackgroundJson", "behaviorsJson", "chatThemeJson",
-                "concatApiJson"],
+                "concatApiJson",
+                "toolRegistryJson", "agentPromptJson", "skillTriggerJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
-                "concat_api_client"]
+                "concat_api_client",
+                "tool_registry", "agent_prompt", "skill_trigger"]
         })
         .to_string())
     })
@@ -621,5 +628,184 @@ pub extern "C" fn Java_harness_core_RustCore_concatApiJson(
             })
             .to_string()),
         }
+    })
+}
+
+// ------------------------------------------------------------- Slice 6: ToolRegistry + AgentPrompt + SkillTrigger --
+//
+// Tiga fungsi bulk JSON (pola slice 4): request `{"op", ...}`; respons
+// `{"ok":true,"value":...}`; panic/error di boundary -> JSON error generik
+// (`guarded_string`) -> Kotlin fallback ke implementasi Kotlin lama +
+// matikan saklar `rustToolRegistry` / `rustAgentPrompt` / `rustSkillTrigger`.
+
+fn json_string_array(v: &serde_json::Value, key: &str) -> Result<Vec<String>, String> {
+    match v.get(key) {
+        Some(serde_json::Value::Array(a)) => {
+            let mut out = Vec::with_capacity(a.len());
+            for item in a {
+                match item.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => return Err(format!("{} bukan array string", key)),
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(format!("{} hilang/bukan array", key)),
+    }
+}
+
+fn json_i64_array(v: &serde_json::Value, key: &str) -> Result<Vec<i64>, String> {
+    match v.get(key) {
+        Some(serde_json::Value::Array(a)) => {
+            let mut out = Vec::with_capacity(a.len());
+            for item in a {
+                match item.as_i64() {
+                    Some(n) => out.push(n),
+                    None => return Err(format!("{} bukan array angka", key)),
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(format!("{} hilang/bukan array", key)),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_toolRegistryJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&req).map_err(|_| "bad request json".to_string())?;
+        let op = concat_api_client::opt_string(&parsed, "op", "");
+        let value = match op.as_str() {
+            "catalogSection" => {
+                serde_json::Value::String(tool_registry::catalog_section())
+            }
+            "browserSkillDetail" => {
+                serde_json::Value::String(tool_registry::browser_skill_detail())
+            }
+            "names" => serde_json::json!(tool_registry::names()),
+            "namesByKind" => {
+                let kind = match concat_api_client::opt_string(&parsed, "kind", "").as_str() {
+                    "READ" => tool_registry::Kind::Read,
+                    "WRITE" => tool_registry::Kind::Write,
+                    "MEMORY" => tool_registry::Kind::Memory,
+                    _ => return Err("kind tidak dikenal".to_string()),
+                };
+                serde_json::json!(tool_registry::names_by_kind(kind))
+            }
+            "sectionCounts" => {
+                let mut obj = serde_json::Map::new();
+                for (section, n) in tool_registry::section_counts() {
+                    obj.insert(section.to_string(), serde_json::json!(n));
+                }
+                serde_json::Value::Object(obj)
+            }
+            "nearestNames" => {
+                let name = concat_api_client::opt_string(&parsed, "name", "");
+                let count = parsed
+                    .get("count")
+                    .and_then(|c| c.as_i64())
+                    .unwrap_or(3);
+                let count = if count <= 0 { 0 } else { count as usize };
+                serde_json::json!(tool_registry::nearest_names(&name, count))
+            }
+            _ => return Err("unknown op".to_string()),
+        };
+        Ok(serde_json::json!({"ok": true, "value": value}).to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_agentPromptJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&req).map_err(|_| "bad request json".to_string())?;
+        let op = concat_api_client::opt_string(&parsed, "op", "");
+        let value = match op.as_str() {
+            "selectCatalog" => {
+                let full = concat_api_client::opt_string(&parsed, "full", "");
+                let task = concat_api_client::opt_string(&parsed, "task", "");
+                serde_json::Value::String(agent_prompt::select_catalog(&full, &task))
+            }
+            "continuationAnchor" => {
+                let command = concat_api_client::opt_string(&parsed, "command", "");
+                serde_json::Value::String(agent_prompt::continuation_anchor_vc316(&command))
+            }
+            "stripRawToolMarkup" => {
+                let text = concat_api_client::opt_string(&parsed, "text", "");
+                serde_json::Value::String(agent_prompt::strip_raw_tool_markup_for_display(&text))
+            }
+            "normalizeDsmlDelimiters" => {
+                let text = concat_api_client::opt_string(&parsed, "text", "");
+                serde_json::Value::String(agent_prompt::normalize_dsml_delimiters(&text))
+            }
+            "applyDoublePass" => {
+                let answer = concat_api_client::opt_string(&parsed, "answer", "");
+                let claims = json_string_array(&parsed, "claims")?;
+                let unsupported = json_i64_array(&parsed, "unsupported")?;
+                serde_json::Value::String(agent_prompt::apply_double_pass(
+                    &answer,
+                    &claims,
+                    &unsupported,
+                ))
+            }
+            _ => return Err("unknown op".to_string()),
+        };
+        Ok(serde_json::json!({"ok": true, "value": value}).to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_skillTriggerJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&req).map_err(|_| "bad request json".to_string())?;
+        let op = concat_api_client::opt_string(&parsed, "op", "");
+        let value = match op.as_str() {
+            "splitDescrSections" => {
+                let descr = concat_api_client::opt_string(&parsed, "descr", "");
+                let s = skill_trigger::split_descr_sections(&descr);
+                serde_json::json!({
+                    "positive": s.positive,
+                    "negative": s.negative,
+                    "markerFound": s.marker_found
+                })
+            }
+            "negWordsOf" => {
+                let descr = concat_api_client::opt_string(&parsed, "descr", "");
+                let mut words: Vec<String> =
+                    skill_trigger::neg_words_of(&descr).into_iter().collect();
+                words.sort();
+                serde_json::json!(words)
+            }
+            "triggerScore" => {
+                let descr = concat_api_client::opt_string(&parsed, "descr", "");
+                let query = concat_api_client::opt_string(&parsed, "query", "");
+                let sc = skill_trigger::trigger_score(&descr, &query);
+                serde_json::json!({
+                    "trigger": sc.trigger,
+                    "posOverlap": sc.pos_overlap,
+                    "negOverlap": sc.neg_overlap,
+                    "netScore": sc.net_score
+                })
+            }
+            _ => return Err("unknown op".to_string()),
+        };
+        Ok(serde_json::json!({"ok": true, "value": value}).to_string())
     })
 }

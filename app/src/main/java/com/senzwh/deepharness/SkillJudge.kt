@@ -1,5 +1,6 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -325,11 +326,44 @@ object SkillJudge {
     /** Skor sinyal trigger satu query (vc312 Opsi A). */
     data class TriggerScore(val trigger: Boolean, val posOverlap: Int, val negOverlap: Int, val netScore: Int)
 
+    // ---- Seam Rust (slice 6, vc320) ----
+    // Scoring trigger vc312 jalan di Rust bila core tersedia; bila tidak,
+    // fallback ke implementasi Kotlin lama (*Kotlin — JANGAN dihapus).
+    // Sekali Rust gagal, saklar dimatikan.
+    /** Saklar A/B slice 6: false = pakai Kotlin lama. */
+    var rustSkillTrigger: Boolean = true
+
+    /** Panggil seam JSON; null = Rust gagal / respons bukan ok:true. */
+    private fun rustTriggerValue(request: JSONObject): JSONObject? {
+        if (!rustSkillTrigger || !RustCore.available) return null
+        return try {
+            val obj = JSONObject(RustCore.skillTriggerJson(request.toString()))
+            if (!obj.optBoolean("ok", false)) {
+                rustSkillTrigger = false
+                null
+            } else obj
+        } catch (e: Throwable) {
+            rustSkillTrigger = false
+            null
+        }
+    }
+
     /** Pecah deskripsi jadi bagian positif + bagian larangan (S1=A).
      *  Hanya marker PERTAMA yang dikenali; kata markernya sendiri
      *  ("JANGAN PICU:") BUKAN kata konten larangan — hanya sisa baris
      *  sesudah ":" yang masuk bagian larangan. */
     fun splitDescrSections(descr: String): DescrSections {
+        try {
+            val v = rustTriggerValue(JSONObject().put("op", "splitDescrSections").put("descr", descr))?.getJSONObject("value")
+            if (v != null) return DescrSections(v.getString("positive"), v.getString("negative"), v.getBoolean("markerFound"))
+        } catch (e: Throwable) {
+            rustSkillTrigger = false
+        }
+        return splitDescrSectionsKotlin(descr)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun splitDescrSectionsKotlin(descr: String): DescrSections {
         val lines = descr.lines()
         val markerIdx = lines.indexOfFirst { NEG_MARKER_REGEX.matches(it) }
         if (markerIdx < 0) return DescrSections(descr, "", false)
@@ -355,6 +389,21 @@ object SkillJudge {
      *  TIDAK masuk negWords dan TIDAK terpenalti — bila aturan ini lupa,
      *  kata pemicu utama ikut terpenalti. */
     fun negWordsOf(descr: String): Set<String> {
+        try {
+            val arr: JSONArray? = rustTriggerValue(JSONObject().put("op", "negWordsOf").put("descr", descr))?.getJSONArray("value")
+            if (arr != null) {
+                val out = HashSet<String>()
+                for (i in 0 until arr.length()) out.add(arr.getString(i))
+                return out
+            }
+        } catch (e: Throwable) {
+            rustSkillTrigger = false
+        }
+        return negWordsOfKotlin(descr)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun negWordsOfKotlin(descr: String): Set<String> {
         val sections = splitDescrSections(descr)
         if (!sections.markerFound) return emptySet()
         return contentWords(sections.negative) - contentWords(sections.positive)
@@ -365,6 +414,17 @@ object SkillJudge {
      *  tetap TIDAK). Tanpa marker (negWords kosong) skor = overlap lama —
      *  perilaku identik sebelum vc312. */
     fun triggerScore(descr: String, query: String): TriggerScore {
+        try {
+            val v = rustTriggerValue(JSONObject().put("op", "triggerScore").put("descr", descr).put("query", query))?.getJSONObject("value")
+            if (v != null) return TriggerScore(v.getBoolean("trigger"), v.getInt("posOverlap"), v.getInt("negOverlap"), v.getInt("netScore"))
+        } catch (e: Throwable) {
+            rustSkillTrigger = false
+        }
+        return triggerScoreKotlin(descr, query)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun triggerScoreKotlin(descr: String, query: String): TriggerScore {
         val sections = splitDescrSections(descr)
         val posWords = contentWords(sections.positive)
         val negWords = if (sections.markerFound) contentWords(sections.negative) - posWords else emptySet()

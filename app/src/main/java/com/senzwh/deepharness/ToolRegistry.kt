@@ -1,5 +1,9 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
+import org.json.JSONArray
+import org.json.JSONObject
+
 // vc272 O2: SATU sumber kebenaran katalog tool — registry data, bukan teks
 // yang diparse ulang. Teks katalog (ToolRegistry.catalogSection) DAN
 // validasi nama (validToolNames / Tools.validateArgs) dibangun dari data
@@ -218,11 +222,89 @@ object ToolRegistry {
 
     val BY_NAME: Map<String, ToolDef> = ALL.associateBy { it.name }
 
-    fun names(): List<String> = ALL.map { it.name }
+    // ---- Seam Rust (slice 6, vc320) ----
+    // Bila core Rust tersedia (.so ke-load + versi seam cocok), fungsi
+    // publik di bawah jalan di Rust (data + scoring byte-identik,
+    // diverifikasi tes hash); bila tidak, fallback ke implementasi
+    // Kotlin lama (*Kotlin — JANGAN dihapus). Sekali Rust gagal, saklar
+    // dimatikan. `ALL`/`BY_NAME` tetap Kotlin (dipakai pemakai lain +
+    // jalur fallback); data Rust adalah salinan byte-identik.
+    /** Saklar A/B slice 6: false = pakai Kotlin lama. */
+    var rustToolRegistry: Boolean = true
 
-    fun namesByKind(kind: Kind): Set<String> = ALL.filter { it.kind == kind }.map { it.name }.toSet()
+    /** Panggil seam JSON; null = Rust gagal / respons bukan ok:true. */
+    private fun rustValue(request: JSONObject): JSONObject? {
+        if (!rustToolRegistry || !RustCore.available) return null
+        return try {
+            val raw = RustCore.toolRegistryJson(request.toString())
+            val obj = JSONObject(raw)
+            if (!obj.optBoolean("ok", false)) {
+                rustToolRegistry = false
+                null
+            } else obj
+        } catch (e: Throwable) {
+            rustToolRegistry = false
+            null
+        }
+    }
+
+    private fun rustStringValue(request: JSONObject): String? {
+        return try {
+            rustValue(request)?.getString("value")
+        } catch (e: Throwable) {
+            rustToolRegistry = false
+            null
+        }
+    }
+
+    private fun rustStringListValue(request: JSONObject): List<String>? {
+        return try {
+            val arr: JSONArray = rustValue(request)?.getJSONArray("value") ?: return null
+            val out = ArrayList<String>()
+            for (i in 0 until arr.length()) out.add(arr.getString(i))
+            out
+        } catch (e: Throwable) {
+            rustToolRegistry = false
+            null
+        }
+    }
+
+    fun names(): List<String> {
+        rustStringListValue(JSONObject().put("op", "names"))?.let { return it }
+        return namesKotlin()
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun namesKotlin(): List<String> = ALL.map { it.name }
+
+    fun namesByKind(kind: Kind): Set<String> {
+        rustStringListValue(JSONObject().put("op", "namesByKind").put("kind", kind.name))?.let { return it.toSet() }
+        return namesByKindKotlin(kind)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun namesByKindKotlin(kind: Kind): Set<String> = ALL.filter { it.kind == kind }.map { it.name }.toSet()
 
     fun sectionCounts(): Map<String, Int> {
+        try {
+            val obj = rustValue(JSONObject().put("op", "sectionCounts"))?.getJSONObject("value")
+            if (obj != null) {
+                val m = HashMap<String, Int>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    m[k] = obj.getInt(k)
+                }
+                return m
+            }
+        } catch (e: Throwable) {
+            rustToolRegistry = false
+        }
+        return sectionCountsKotlin()
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun sectionCountsKotlin(): Map<String, Int> {
         val m = HashMap<String, Int>()
         for (d in ALL) m[d.section] = (m[d.section] ?: 0) + 1
         return m
@@ -532,12 +614,21 @@ object ToolRegistry {
     // vc313: akses detail prosedur browser (lazy-loaded). Dipakai
     // koordinator/Worker B saat me-wire pemuatan on-demand; belum ada
     // tool yang memanggilnya di vc313 (lihat catatan di atas).
-    fun browserSkillDetail(): String = BROWSER_SKILL_DETAIL_VC313
+    fun browserSkillDetail(): String {
+        rustStringValue(JSONObject().put("op", "browserSkillDetail"))?.let { return it }
+        return BROWSER_SKILL_DETAIL_VC313
+    }
 
     // Membangun seksi tengah katalog ("Daftar tool:" sudah ada di kepala
     // statis AgentPrompt; trailer "Aturan: ..." juga statis). Tiap baris
     // diakhiri newline, sama seperti katalog lama.
     fun catalogSection(): String {
+        rustStringValue(JSONObject().put("op", "catalogSection"))?.let { return it }
+        return catalogSectionKotlin()
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun catalogSectionKotlin(): String {
         val sb = StringBuilder()
         for ((kind, ref) in SEGMENTS) {
             when (kind) {
@@ -576,6 +667,12 @@ object ToolRegistry {
     // 3 nama registry terdekat dengan nama yang salah ketik (jarak edit,
     // seri abjad sebagai penyeimbang) — dipakai pesan error O3.
     fun nearestNames(name: String, count: Int = 3): List<String> {
+        rustStringListValue(JSONObject().put("op", "nearestNames").put("name", name).put("count", count))?.let { return it }
+        return nearestNamesKotlin(name, count)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun nearestNamesKotlin(name: String, count: Int = 3): List<String> {
         return ALL.map { it.name }
             .sortedWith(compareBy<String> { editDistance(name, it) }.thenBy { it })
             .take(count)

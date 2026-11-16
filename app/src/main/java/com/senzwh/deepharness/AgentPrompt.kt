@@ -1,6 +1,7 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -956,6 +957,19 @@ object AgentPrompt {
     // sehingga indeks reviewer selaras. FASE VERIFIKASI: bukan tool step,
     // tidak memakan cap langkah, tidak mengeksekusi tool apa pun.
     fun applyDoublePass(answer: String, claims: List<String>, unsupported: List<Int>): String {
+        try {
+            val req = JSONObject().put("op", "applyDoublePass").put("answer", answer)
+                .put("claims", JSONArray(claims))
+                .put("unsupported", JSONArray(unsupported))
+            rustAgentValue(req)?.let { return it }
+        } catch (e: Throwable) {
+            rustAgentPrompt = false
+        }
+        return applyDoublePassKotlin(answer, claims, unsupported)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun applyDoublePassKotlin(answer: String, claims: List<String>, unsupported: List<Int>): String {
         var out = answer
         for (idx in unsupported) {
             val cl = claims.getOrNull(idx - 1) ?: continue
@@ -1074,12 +1088,40 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
 
     private val TOOL_LINE_RE_VC316 = Regex("^- ([a-z][a-z0-9_]+) \\{")
 
+    // ---- Seam Rust (slice 6, vc320) ----
+    // Fungsi murni di bawah jalan di Rust bila core tersedia (.so ke-load
+    // + versi seam cocok); bila tidak, fallback ke implementasi Kotlin
+    // lama (*Kotlin — JANGAN dihapus). Sekali Rust gagal, saklar dimatikan.
+    /** Saklar A/B slice 6: false = pakai Kotlin lama. */
+    var rustAgentPrompt: Boolean = true
+
+    /** Panggil seam JSON; null = Rust gagal / respons bukan ok:true. */
+    private fun rustAgentValue(request: JSONObject): String? {
+        if (!rustAgentPrompt || !RustCore.available) return null
+        return try {
+            val obj = JSONObject(RustCore.agentPromptJson(request.toString()))
+            if (!obj.optBoolean("ok", false)) {
+                rustAgentPrompt = false
+                null
+            } else obj.getString("value")
+        } catch (e: Throwable) {
+            rustAgentPrompt = false
+            null
+        }
+    }
+
     /** Seleksi katalog ringkas dari katalog penuh (murni, tanpa Context).
      *  Pesan kosong -> katalog penuh (kontrak lama). Selain itu: baris
      *  tool + baris prose dinilai terpisah (awalan nama / kata-utuh),
      *  masing-masing dibatasi anggarannya sendiri; list_tools selalu
      *  dipertahankan; sisanya hanya disebut namanya + catatan fallback. */
     fun selectCatalog(full: String, taskText: String): String {
+        rustAgentValue(JSONObject().put("op", "selectCatalog").put("full", full).put("task", taskText))?.let { return it }
+        return selectCatalogKotlin(full, taskText)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun selectCatalogKotlin(full: String, taskText: String): String {
         val task = taskText.trim()
         if (task.isEmpty()) return full
         val low = task.lowercase()
@@ -1183,6 +1225,12 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
      *  memanggil list_tools {} sekali untuk katalog lengkap). Murni,
      *  tanpa Context — bisa diuji di JVM. Perintah user dicap 500 char. */
     fun continuationAnchorVc316(userCommand: String): String {
+        rustAgentValue(JSONObject().put("op", "continuationAnchor").put("command", userCommand))?.let { return it }
+        return continuationAnchorVc316Kotlin(userCommand)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun continuationAnchorVc316Kotlin(userCommand: String): String {
         val cmd = userCommand.trim().take(500)
         return "[LANJUTAN SISTEM — vc316 delta: JANGAN minta konteks diulang. System prompt, katalog tool, memori, dan riwayat giliran ini SUDAH kamu terima di pesan sebelumnya DALAM SESI SERVER YANG SAMA — semuanya masih berlaku. Perintah user giliran ini: \"$cmd\". Lanjutkan dari situ memakai JEJAK + HASIL TOOL di bawah. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]"
     }
@@ -1753,6 +1801,12 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
      *  ＜ (U+FF1C) -> <, ＞ (U+FF1E) -> >. Input ASCII murni tidak berubah
      *  (identitas), jadi tidak ada regresi untuk tool call normal. */
     fun normalizeDsmlDelimiters(text: String): String {
+        rustAgentValue(JSONObject().put("op", "normalizeDsmlDelimiters").put("text", text))?.let { return it }
+        return normalizeDsmlDelimitersKotlin(text)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun normalizeDsmlDelimitersKotlin(text: String): String {
         return text.replace('｜', '|').replace('＜', '<').replace('＞', '>')
     }
 
@@ -1768,6 +1822,12 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
      *  kode ikut terhapus dari tampilan — harga untuk "DSML mentah tidak
      *  pernah lolos ke chat". */
     fun stripRawToolMarkupForDisplay(text: String): String {
+        rustAgentValue(JSONObject().put("op", "stripRawToolMarkup").put("text", text))?.let { return it }
+        return stripRawToolMarkupForDisplayKotlin(text)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun stripRawToolMarkupForDisplayKotlin(text: String): String {
         if (!text.contains("DSML") && !text.contains("<tool=")) return text
         var t = normalizeDsmlDelimiters(text)
         // Blok DSML tertutup utuh (tag + isi parameter JSON).

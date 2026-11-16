@@ -2,6 +2,7 @@
 package com.senzwh.deepharness
 
 import java.io.File
+import java.security.MessageDigest
 import kotlin.system.exitProcess
 
 // TestInputLimitVc316 — Worker IXL (vc316, input_exceeds_limit).
@@ -16,6 +17,12 @@ import kotlin.system.exitProcess
 //      lagi dikirim ulang di lanjutan; JEJAK + work-notes dipertahankan;
 //  (5) regresi: nama/argumen tool tidak berubah (ToolRegistry utuh),
 //      Governor/gerbang/retry DsApiClient byte-identik dengan baseline.
+//      PENGECUALIAN slice 6 (vc320): ToolRegistry.kt TIDAK lagi byte-identik
+//      baseline — file-nya kini berisi wrapper Rust (seam toolRegistryJson
+//      + fallback *Kotlin). Yang dikunci 7.1 sejak vc320 adalah DEFINISI
+//      tool-nya (188 nama + catalogSection byte-identik via hash probe
+//      JVM vc319), bukan byte file-nya. Governor/Gate/Tools tetap
+//      byte-identik.
 // Argumen: [0] = direktori tree yang diuji (salinan merge + 4 file IXL).
 // TIDAK BUTUH Context Android: semua yang dijalankan di sini murni;
 // yang butuh Context hanya diperiksa lewat teks source (seksi 4).
@@ -33,6 +40,11 @@ private fun check(id: String, cond: Boolean, detail: String = "") {
         failed++
         println("GAGAL  $id" + if (detail.isNotBlank()) " — $detail" else "")
     }
+}
+
+private fun sha256Hex(s: String): String {
+    val d = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+    return d.joinToString("") { "%02x".format(it) }
 }
 
 private fun tok(chars: Int): Int = (chars / 3.4).toInt()
@@ -298,8 +310,13 @@ fun main(args: Array<String>) {
     // ---------- 7. Regresi: perilaku tool / Governor / gerbang / retry TIDAK berubah ----------
     println("== 7. Regresi file yang TIDAK boleh berubah ==")
     fun bytesEqual(a: File, b: File): Boolean = a.exists() && b.exists() && a.readBytes().contentEquals(b.readBytes())
-    check("7.1 ToolRegistry.kt byte-identik baseline (nama/argumen tool tidak berubah)",
-        bytesEqual(File(tree, "ToolRegistry.kt"), File(merge, "ToolRegistry.kt")))
+    // 7.1 (vc320): bukan lagi byte-identik file — slice 6 menambah wrapper
+    // Rust di ToolRegistry.kt. Yang dikunci: DEFINISI tool tidak berubah:
+    // hash 188 nama + hash catalogSection sama persis dengan probe JVM
+    // atas kode asli vc319 (nilai yang sama dipakai P6 1.2/1.7).
+    check("7.1 Definisi tool tidak berubah (188 nama + catalogSection hash-identik probe vc319)",
+        sha256Hex(names.joinToString(",")) == "38ee24a6c668b3171ed0b017456f9a1cf15525aa5b8a12a70a0fdee63912a912" &&
+        sha256Hex(section) == "c3357c572acdcd593e23ca15b40169dca431ca6cc1f30f250db1e4c5d3fe3668")
     check("7.2 Tools.kt byte-identik baseline (dispatch + hasil tool tidak berubah)",
         bytesEqual(File(tree, "Tools.kt"), File(merge, "Tools.kt")))
     check("7.3 Governor.kt byte-identik baseline (kuota/cap langkah tidak berubah)",
