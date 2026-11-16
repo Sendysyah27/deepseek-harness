@@ -199,8 +199,8 @@ fun main(args: Array<String>) {
         "fun deltaTurnPromptVc322" in apSrc && "continuationAnchorVc316(userCommand)" in apSrc)
     check("5.3 MainActivity dispatchTurn membangun deltaVc322 + kirim ke sendToAgent",
         "val deltaVc322" in maSrc && "sendToAgent(toSendVc240, deltaVc322)" in maSrc)
-    check("5.4 MainActivity: auto-save vc298 memaksa penuh (delta null)",
-        "[SISTEM — AUTO-SAVE vc298" in maSrc && "else AgentPrompt.deltaTurnPromptVc322" in maSrc)
+    check("5.4 MainActivity: auto-save vc298 KINI delta vc327 (blok ringkas ikut delta, bukan penuh — diubah vc327, preseden IXL 7.5/7.6 vc321)",
+        "deltaTurnPromptVc327" in maSrc && "autoSaveBlockVc327(promptNoUser)" in maSrc && "sendToAgent(toSendVc240, deltaVc322)" in maSrc)
     check("5.5 MainActivity sendToAgent menerima deltaPrompt + teruskan ke kedua klien",
         "private fun sendToAgent(prompt: String, deltaPrompt: String? = null)" in maSrc &&
         "deltaPrompt = deltaPrompt" in maSrc)
@@ -249,13 +249,13 @@ fun main(args: Array<String>) {
     check("6.1 anggaran riwayat vc321 tetap (60/60000 normal, 30/30000 panjang)",
         TurnMetrics.historyBudgetVc321(0) == Pair(60, 60000) && TurnMetrics.historyBudgetVc321(39) == Pair(60, 60000) &&
         TurnMetrics.historyBudgetVc321(40) == Pair(30, 30000) && TurnMetrics.historyBudgetVc321(100) == Pair(30, 30000))
-    check("6.2 sendContinuation tetap kirim promptnya sendiri (deltaPrompt default null)",
-        "sendToAgent(text)" in maSrc && "private fun sendToAgent(prompt: String, deltaPrompt: String? = null)" in maSrc)
+    check("6.2 sendContinuation jalur non-API kirim teks mentah; jalur API kirim delta (vc327: deltaPrompt = finalTxt)",
+        "sendToAgent(text)" in maSrc && "sendToAgent(finalTxt, finalTxt)" in maSrc && "private fun sendToAgent(prompt: String, deltaPrompt: String? = null)" in maSrc)
     check("6.3 chatSync reviewer TIDAK membawa delta (tanda tangan lama)",
         "fun chatSync(prompt: String, thinking: Boolean, search: Boolean, freshEphemeral: Boolean = false, reviewer: Boolean = false)" in slSrc)
     check("6.4 parent_message_id tetap NULL di kedua klien (protokol tidak berubah)",
         dsSrc.split("parent_message_id").size - 1 >= 1 && slSrc.split("parent_message_id").size - 1 >= 1)
-    check("6.5 forceFresh tetap dihormati (stream putus 2x -> sesi baru penuh)",
+    check("6.5 forceFresh tetap dihormati (stream putus berulang -> sesi baru penuh, vc327: digate cooldown)",
         "forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt" in dsSrc &&
         "forceFresh = true, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt" in slSrc)
 

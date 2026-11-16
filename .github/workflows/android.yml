@@ -46,6 +46,12 @@ name: Android vc317
 # (rust 86 + kotlin 86 fallback); suite 1946/1947 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION 7->8; dispatcher + daun Android + jaringan tetap Kotlin.
 # WorkerLogic/WorkerQueue/WorkerJanitorLogic/WorkerRegistry TIDAK disentuh.
+# Fix vc327 (BUKAN slice 11): residual bocor sesi server — migrasi primed
+# sekali + tahan forceFresh maks 1/10 mnt per lane + retry stream 3x
+# [2s,5s,15s] + reset accum di cabang create + delta auto-save +
+# delta continuation; P13 66 cek;
+# suite 2012/2013 (R2-4.1 ditoleransi); RUST_CORE_VERSION tetap 8;
+# Kotlin saja, Rust tidak berubah.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -156,6 +162,9 @@ jobs:
 
       - name: Suite P12 Daun Tools.kt vc326 (172 cek, rust 86 + kotlin 86)
         run: bash tests/run-suite-ci.sh P12
+
+      - name: Suite P13 SessFix residual vc327 (66 cek)
+        run: bash tests/run-suite-ci.sh P13
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

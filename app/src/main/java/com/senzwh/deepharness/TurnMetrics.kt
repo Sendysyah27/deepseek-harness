@@ -275,6 +275,61 @@ object TurnMetrics {
         try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_PRIMED_VC322 + key, primed).apply() } catch (e: Exception) { }
     }
 
+    // ---- vc327 RESIDUAL (fix bocor sesi + kartu merah input_exceeds_limit,
+    // bukti live Sendy 17 Nov 00:13-00:15, vc325) ----
+    // H1 MIGRASI PRIMED: sesi dari vc321 punya stored + accum TAPI TANPA
+    // kunci primed (isServerSessionPrimedVc322 default false) -> giliran
+    // pertama vc322 mengirim PENUH dan bisa me-reset (1 sesi baru per
+    // upgrade). accum > 0 HANYA mungkin sesudah satu POST penuh sukses
+    // ke wadah ini (addServerAccum hanya dipanggil sesudah POST sukses;
+    // POST pertama ke wadah SELALU penuh karena delta butuh primed) —
+    // jadi stored + accum > 0 adalah bukti wadah sudah primed, dan
+    // migrasi satu kali ini aman: delta langsung aktif tanpa prompt
+    // penuh. Bila stored ada tapi accum == 0 (wadah dibuat tapi POST
+    // pertamanya belum pernah sukses), TIDAK dimigrasi — giliran
+    // berikut tetap penuh seperti biasa.
+    /** Migrasi primed satu kali (murni prefs, tanpa Context Android
+     *  selain prefs). Mengembalikan primed EFEKTIF sesudah migrasi. */
+    fun migratePrimedOnceVc327(ctx: Context, key: String, hasStoredSession: Boolean, accumChars: Int): Boolean {
+        if (isServerSessionPrimedVc322(ctx, key)) return true
+        if (!hasStoredSession || accumChars <= 0) return false
+        setServerSessionPrimedVc322(ctx, key, true)
+        return true
+    }
+
+    // H2 TAHAN forceFresh: stream putus -> retry 2x di sesi sama ->
+    // forceFresh = 1 sesi server baru PER EPISODE PUTUS. Di sinyal 4G
+    // lemah, tiap giliran bisa jadi 1 episode -> 1 sesi baru per
+    // giliran, tanpa batas. Cooldown 10 menit per (lane, sesi harness):
+    // paling banyak 1 forceFresh per 10 menit; episode di dalam
+    // jendela GAGAL dengan pesan jelas (bukan membakar sesi diam-diam).
+    // Reviewer (BgBrain, forceFresh=true sejak awal) TIDAK memakai
+    // gate ini — jalurnya sendiri, di luar cakupan fix.
+    /** Jeda minimum antar forceFresh (stream-putus) per kunci. */
+    const val FORCE_FRESH_COOLDOWN_MS_VC327 = 10 * 60 * 1000L
+    private const val KEY_LAST_FF_VC327 = "lastForceFreshVc327_"
+
+    /** Kapan forceFresh terakhir dicatat untuk kunci ini (ms epoch, 0 = belum pernah). */
+    fun lastForceFreshAtVc327(ctx: Context, key: String): Long = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_FF_VC327 + key, 0L).coerceAtLeast(0L)
+    } catch (e: Exception) { 0L }
+
+    /** Catat satu forceFresh (dipanggil SEBELUM percobaan — sesi sudah
+     *  dibakar begitu createServerSession jalan, walau completion-nya
+     *  kemudian gagal lagi). */
+    fun noteForceFreshVc327(ctx: Context, key: String, nowMs: Long) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_LAST_FF_VC327 + key, nowMs).apply() } catch (e: Exception) { }
+    }
+
+    /** Bolehkah forceFresh sekarang? True bila belum pernah / sudah
+     *  lewat cooldown / jam mundur (last > now = jam mundur -> izinkan,
+     *  jangan kunci pengguna gara-gara jam). */
+    fun allowForceFreshVc327(ctx: Context, key: String, nowMs: Long): Boolean {
+        val last = lastForceFreshAtVc327(ctx, key)
+        if (last <= 0L || nowMs < last) return true
+        return nowMs - last >= FORCE_FRESH_COOLDOWN_MS_VC327
+    }
+
     /** vc278 O19(c): char yang dipangkas PEMANGKAS PROAKTIF per giliran
      *  — ikut snapshot JSON giliran ("char_dipangkas_proaktif") dan
      *  ikut char_terpotong (sama seperti guard darurat). */

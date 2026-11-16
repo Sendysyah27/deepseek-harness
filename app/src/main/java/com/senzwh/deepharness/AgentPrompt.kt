@@ -1257,6 +1257,36 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
         return sb.toString()
     }
 
+    /** vc327 SESI — ambil blok "[SISTEM — AUTO-SAVE vc298 ... ]" dari
+     *  prompt penuh (dibangun MainActivity:5880: header instruksi +
+     *  note simpanan + "]\n\n"). Null bila giliran ini bukan auto-save.
+     *  Blok dicap 2000 char supaya delta auto-save tetap kecil (note
+     *  panjang dipotong + penanda sisa — isi penuh tetap ada di prompt
+     *  penuh yang dikirim bila wadah belum primed). Pemotongan memakai
+     *  penanda akhir blok PERTAMA "]\n\n" — baris note sendiri memakai
+     *  "[STATUS: ...]" + "\n" (tanpa "]\n\n"), jadi tidak terpotong
+     *  di tengah butir. Murni, tanpa Context — bisa diuji di JVM. */
+    fun autoSaveBlockVc327(promptNoUser: String): String? {
+        val start = promptNoUser.indexOf("[SISTEM — AUTO-SAVE vc298")
+        if (start < 0) return null
+        val end = promptNoUser.indexOf("]\n\n", start)
+        val raw = if (end < 0) promptNoUser.substring(start) else promptNoUser.substring(start, end + 1)
+        return if (raw.length > 2000) raw.take(2000) + "…(dipotong, sisa " + (raw.length - 2000) + " char)…" else raw
+    }
+
+    /** vc327 SESI — delta giliran 1-1 + penanda auto-save ringkas:
+     *  delta vc322 + blok AUTO-SAVE (bila ada, dicap 2000). Model tetap
+     *  membaca instruksi auto-save + isi simpanan, dan tetap
+     *  menyampaikan konfirmasi simpanan ke user dalam jawaban final —
+     *  tanpa mengirim prompt penuh ~90k. Bila bukan auto-save, hasilnya
+     *  PERSIS deltaTurnPromptVc322 (tanpa tambahan apa pun). Murni,
+     *  tanpa Context — bisa diuji di JVM. */
+    fun deltaTurnPromptVc327(userCommand: String, workNotes: String, autoSaveBlock: String?): String {
+        val base = deltaTurnPromptVc322(userCommand, workNotes)
+        if (autoSaveBlock.isNullOrBlank()) return base
+        return base + "\n\n" + autoSaveBlock
+    }
+
 
     // vc272 O2: daftar nama tool VALID berasal dari ToolRegistry — sumber
     // yang sama dengan teks katalog (satu sumber, dua pemakaian). TIDAK ADA

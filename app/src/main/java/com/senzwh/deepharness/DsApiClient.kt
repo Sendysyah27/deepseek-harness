@@ -57,11 +57,15 @@ class DsApiClient(private val webView: WebView) {
                     val m = e.message ?: ""
                     if (DsFailure.isStreamCut(m)) {
                         // v4.12.2: stream putus / selesai tanpa jawaban —
-                        // ulang maks 2x di sesi yang sama (klien stateless:
-                        // POST ulang tidak menumpuk konteks server).
+                        // ulang di sesi yang sama (klien stateless: POST
+                        // ulang tidak menumpuk konteks server). vc327:
+                        // maks 3x (jeda 2/5/15 dtk) untuk giliran biasa —
+                        // sinyal lemah butuh kesempatan lebih lama SEBELUM
+                        // membakar sesi baru; reviewer tetap 2x (2/5 dtk,
+                        // jalurnya tidak diubah).
                         var lastErr2: Exception = e
                         var out2: Pair<String, String>? = null
-                        val waits2 = longArrayOf(2_000, 5_000)
+                        val waits2 = if (reviewer) longArrayOf(2_000, 5_000) else longArrayOf(2_000, 5_000, 15_000)
                         for (w in waits2) {
                             onPartial("⏳ Stream DeepSeek terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
@@ -74,13 +78,30 @@ class DsApiClient(private val webView: WebView) {
                             }
                         }
                         out2 ?: run {
-                            // v4.43.17: sesi yang sama putus 2x — jangan bakar
-                            // waktu di sesi beracun itu lagi. SEKALI coba sesi
-                            // server baru (forceFresh menimpa simpanan), baru
-                            // menyerah. Error terbaru dilempar: paling
-                            // informatif (401 berarti auth, putus lagi
-                            // berarti bukan sesi penyebabnya).
-                            onPartial("⏳ Stream putus 2x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
+                            // vc327 SESI — TAHAN forceFresh: stream putus
+                            // berulang BUKAN bukti sesi beracun (sinyal 4G
+                            // lemah memutus stream sehat juga). Tiap
+                            // forceFresh = 1 sesi server baru; tanpa batas,
+                            // 1 giliran = 1 sesi baru (bukti live 00:15).
+                            // Aturan baru: maks 1 forceFresh per 10 menit
+                            // per sesi harness (TurnMetrics
+                            // .allowForceFreshVc327); di dalam jendela,
+                            // giliran ini GAGAL dengan pesan jelas, bukan
+                            // membakar sesi diam-diam. Reviewer (BgBrain)
+                            // TIDAK digate — jalurnya sendiri (forceFresh
+                            // =true sejak awal, di luar cakupan fix).
+                            // Error terbaru dilempar: paling informatif
+                            // (401 berarti auth, putus lagi berarti bukan
+                            // sesi penyebabnya).
+                            val cutNvc327 = if (reviewer) 2 else 3
+                            val harnessNoVc327 = if (bgMode) -100L else try { hprefs().getLong("currentSession", 1L) } catch (e3: Exception) { 1L }
+                            val ffKeyVc327 = "ffVc327_ds_" + harnessNoVc327
+                            if (!reviewer && !TurnMetrics.allowForceFreshVc327(webView.context, ffKeyVc327, System.currentTimeMillis())) {
+                                logSessEvent("Wadah PENGGANTI DITAHAN vc327 (stream putus ${cutNvc327}x di sesi yang sama — sesi server baru terakhir dibuat <10 mnt lalu; sesi lama TIDAK dibakar. Coba lagi sesudah jeda / periksa sinyal).")
+                                throw Exception((lastErr2.message ?: "") + " [sesi server baru ditahan vc327: stream putus berulang, sesi baru terakhir <10 mnt lalu — coba lagi sesudah jeda / periksa sinyal]")
+                            }
+                            if (!reviewer) TurnMetrics.noteForceFreshVc327(webView.context, ffKeyVc327, System.currentTimeMillis())
+                            onPartial("⏳ Stream putus ${cutNvc327}x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
                             try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt) }
                             catch (e3: Exception) { throw e3 }
                         }
@@ -190,7 +211,7 @@ class DsApiClient(private val webView: WebView) {
         val harnessNo = if (bgMode) -100L else try { hprefs().getLong("currentSession", 1L) } catch (e: Exception) { 1L }
         val sessLabel = if (bgMode) "latar" else "#$harnessNo"
         // v4.43.17: forceFresh melewati sesi tersimpan sepenuhnya (dipakai
-        // chat() sesudah stream putus 2x di sesi yang sama — sesi lama
+        // chat() sesudah stream putus berulang di sesi yang sama — sesi lama
         // diduga beracun, jangan dipakai lagi untuk percobaan ini).
         var storedPair = if (forceFresh) null else storedServerSessionAny(fp, harnessNo)
         var stored = storedPair?.second
@@ -215,7 +236,18 @@ class DsApiClient(private val webView: WebView) {
         // benar, dan bila tidak, giliran ini mengirim penuh + guard
         // jalan seperti biasa).
         val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
-        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, false, false, TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321), accumVc321, deltaPrompt?.length ?: 0)
+        // vc327 SESI — MIGRASI PRIMED satu kali (H1): wadah vc321 punya
+        // stored + accum > 0 tapi tanpa kunci primed -> giliran pertama
+        // vc322 mengirim PENUH dan bisa me-reset (1 sesi baru per
+        // upgrade). accum > 0 hanya mungkin sesudah satu POST penuh
+        // sukses ke wadah ini, jadi migrasi ini aman (lihat
+        // TurnMetrics.migratePrimedOnceVc327).
+        val wasPrimedVc327 = TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321)
+        val primedVc327 = TurnMetrics.migratePrimedOnceVc327(ctx, accumKeyVc321, stored != null, accumVc321)
+        if (!wasPrimedVc327 && primedVc327) {
+            logSessEvent("Wadah lama vc321 dimigrasikan ke primed vc327 (sudah ada $accumVc321 char terkirim — delta langsung aktif, tanpa prompt penuh).")
+        }
+        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, false, false, primedVc327, accumVc321, deltaPrompt?.length ?: 0)
         val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
         if (!useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
             logSessEvent("Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
@@ -229,6 +261,12 @@ class DsApiClient(private val webView: WebView) {
             val sid = stored ?: run {
                 val c = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, c)
+                // vc327 SESI — ANTI-CASCADE (H2): wadah BARU mulai dari
+                // 0. Sebelumnya accum wadah lama yang ditinggal
+                // forceFresh ikut menumpuk di kunci yang sama -> giliran
+                // PENUH berikut hampir pasti kena guard reset -> sesi
+                // baru KEDUA dari satu episode putus.
+                TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
                 // vc322 SESI: wadah baru belum primed (belum menerima
                 // prompt penuh sukses) + hitung kelahiran untuk
                 // penghitung sesi per akun (JEJAK SESI SERVER).
@@ -238,7 +276,7 @@ class DsApiClient(private val webView: WebView) {
                 // SUDAH punya riwayat wajib terlihat — bukan kelahiran diam.
                 val hadHistory = try { MemoryDb.get(ctx).historyForSession(harnessNo, 1).isNotEmpty() } catch (e: Exception) { false }
                 if (forceFresh) {
-                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus 2x di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
+                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus berulang di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 } else {
                     logSessEvent("Wadah BARU lahir untuk sesi harness " + sessLabel + (if (hadHistory) " (sesi lama, wadah pertamanya di rezim pemetaan)" else " (sesi baru)") + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                     if (hadHistory) {

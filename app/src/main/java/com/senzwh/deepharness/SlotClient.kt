@@ -46,7 +46,8 @@ import java.util.concurrent.TimeUnit
  * SATU slot = SATU sesi server per sesi harness. Sesi dibuat SEKALI lalu
  * dipakai ulang; sesi pengganti HANYA bila server menolak sesi itu secara
  * eksplisit (isSessionInvalidSignal), atau SEKALI via forceFresh sesudah
- * stream putus 2x di sesi yang sama.
+ * stream putus berulang di sesi yang sama (vc327: maks 1 forceFresh per
+ * 10 menit per slot+sesi harness — lihat TurnMetrics.allowForceFreshVc327).
  */
 class SlotClient(private val ctx: Context, private val slot: Int, private val token: String, private val cookie: String) {
 
@@ -110,9 +111,13 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                     val failure = DsFailure.classifyFailure(0, "", e)
                     val m = e.message ?: ""
                     if (DsFailure.isStreamCut(m)) {
+                        // vc327 SESI (cermin DsApiClient): ulang di sesi
+                        // yang sama maks 3x (jeda 2/5/15 dtk) untuk
+                        // giliran biasa; reviewer tetap 2x (2/5 dtk,
+                        // jalurnya tidak diubah).
                         var lastErr2: Exception = e
                         var out2: Pair<String, String>? = null
-                        val waits2 = longArrayOf(2_000, 5_000)
+                        val waits2 = if (reviewer) longArrayOf(2_000, 5_000) else longArrayOf(2_000, 5_000, 15_000)
                         for (w in waits2) {
                             onPartial("⏳ Stream Browser $slot terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
@@ -125,7 +130,21 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                             }
                         }
                         out2 ?: run {
-                            onPartial("⏳ Stream putus 2x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
+                            // vc327 SESI — TAHAN forceFresh (cermin
+                            // DsApiClient): maks 1 forceFresh per 10 menit
+                            // per (slot, sesi harness); di dalam jendela,
+                            // giliran ini GAGAL dengan pesan jelas, bukan
+                            // membakar sesi diam-diam. Reviewer TIDAK
+                            // digate — jalurnya sendiri.
+                            val cutNvc327 = if (reviewer) 2 else 3
+                            val harnessNoVc327 = try { hprefs().getLong("currentSession", 1L) } catch (e3: Exception) { 1L }
+                            val ffKeyVc327 = "ffVc327_slot" + slot + "_" + harnessNoVc327
+                            if (!reviewer && !TurnMetrics.allowForceFreshVc327(ctx, ffKeyVc327, System.currentTimeMillis())) {
+                                logSessEvent("[Browser $slot] Wadah PENGGANTI DITAHAN vc327 (stream putus ${cutNvc327}x di sesi yang sama — sesi server baru terakhir dibuat <10 mnt lalu; sesi lama TIDAK dibakar. Coba lagi sesudah jeda / periksa sinyal).")
+                                throw Exception((lastErr2.message ?: "") + " [sesi server baru ditahan vc327: stream putus berulang, sesi baru terakhir <10 mnt lalu — coba lagi sesudah jeda / periksa sinyal]")
+                            }
+                            if (!reviewer) TurnMetrics.noteForceFreshVc327(ctx, ffKeyVc327, System.currentTimeMillis())
+                            onPartial("⏳ Stream putus ${cutNvc327}x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
                             try { runChat(prompt, thinking, search, onPartial, forceFresh = true, freshEphemeral = freshEphemeral, reviewer = reviewer, deltaPrompt = deltaPrompt) }
                             catch (e3: Exception) { throw e3 }
                         }
@@ -226,7 +245,16 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
         // delta (ephemeral memang dibuang tiap panggilan; reviewer
         // memakai prompt konteks-nol sendiri yang wajib utuh).
         val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
-        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, freshEphemeral, reviewer, TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321), accumVc321, deltaPrompt?.length ?: 0)
+        // vc327 SESI — MIGRASI PRIMED satu kali (H1, cermin DsApiClient):
+        // wadah vc321 (stored + accum > 0, tanpa kunci primed) dianggap
+        // primed — giliran ini langsung delta, tanpa prompt penuh +
+        // tanpa reset. Lihat TurnMetrics.migratePrimedOnceVc327.
+        val wasPrimedVc327 = TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321)
+        val primedVc327 = TurnMetrics.migratePrimedOnceVc327(ctx, accumKeyVc321, stored != null, accumVc321)
+        if (!wasPrimedVc327 && primedVc327) {
+            logSessEvent("[Browser $slot] Wadah lama vc321 dimigrasikan ke primed vc327 (sudah ada $accumVc321 char terkirim — delta langsung aktif, tanpa prompt penuh).")
+        }
+        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, freshEphemeral, reviewer, primedVc327, accumVc321, deltaPrompt?.length ?: 0)
         val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
         if (!freshEphemeral && !useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
             logSessEvent("[Browser $slot] ♻️ Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
@@ -245,6 +273,11 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 // reviewer (reviewerSessKey) — dipakai ulang antar review,
                 // dan TIDAK PERNAH menyentuh kunci giliran agen.
                 if (!freshEphemeral) storeServerSession(f, harnessNo, c, reviewer)
+                // vc327 SESI — ANTI-CASCADE (H2, cermin DsApiClient):
+                // wadah BARU mulai dari 0. Ephemeral DIKECUALIKAN — accum
+                // kunci ini milik wadah giliran agen, bukan wadah
+                // ephemeral yang dibuang tiap panggilan.
+                if (!freshEphemeral) TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
                 // vc322 SESI: wadah tersimpan baru belum primed + hitung
                 // kelahiran (ephemeral TIDAK dihitung — bukan wadah sesi
                 // harness yang dipakai ulang).
@@ -255,7 +288,7 @@ class SlotClient(private val ctx: Context, private val slot: Int, private val to
                 }
                 val hadHistory = try { MemoryDb.get(ctx).historyForSession(harnessNo, 1).isNotEmpty() } catch (e: Exception) { false }
                 if (forceFresh) {
-                    logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo (stream putus 2x di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
+                    logSessEvent("[Browser $slot] Wadah PENGGANTI lahir untuk sesi harness #$harnessNo (stream putus berulang di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 } else {
                     // vc298: kelahiran wadah REVIEWER dicatat sebagai
                     // reviewer (bukan wadah giliran) dan TIDAK menulis

@@ -1,0 +1,151 @@
+TES VC327 — APAKAH KARTU MERAH + SESI BARU SUDAH HILANG? (bahasa bayi)
+=====================================================================
+Versi: vc327 (4.48.9.161). Install dulu APK vc327 (Main atau Pure),
+lalu tes di bawah ini. Siapkan: HP + buka web DeepSeek di browser HP
+(di tab lain) dengan akun yang sama.
+
+KENAPA TES INI PENTING (1 menit baca):
+Di vc325 ada 2 masalah sekaligus (17 Nov 00:13-00:15):
+1. KARTU MERAH: habis jawab panjang, muncul kartu merah "Browser 2
+   gagal: stream_terputus ... Content is too long. Please shorten
+   it and try again. (input_exceeds_limit)". Artinya langkah
+   lanjutan (Browser 2) gagal karena kirimannya kepanjangan.
+2. SESI BARU LAHIR TERUS: dalam 1 sesi Harness yang sama, sesi baru
+   tetap lahir di web DeepSeek.
+vc327 memperbaiki keduanya: perintah auto-save ("ingat: ...") dan
+langkah lanjutan kini dikirim sebagai "delta" kecil (bukan kiriman
+penuh ~90 ribu huruf), sesi lama dari vc321 langsung dianggap siap
+(delta langsung aktif tanpa kirim penuh dulu), dan sesi baru sesudah
+stream putus DITAHAN maksimal 1x per 10 menit.
+
+ISTILAH (biar tidak bingung):
+- "Sesi Harness" = chat di aplikasi Harness (mis. "Utama").
+- "Sesi server" = percakapan di web DeepSeek (sidebar kiri).
+- "Delta" = kiriman kecil (cuma perintah barunya saja), bukan
+  kirim ulang seluruh percakapan.
+- "Stream putus" = koneksi terputus di tengah jawaban (biasanya
+  sinyal 4G lemah).
+- "JEJAK SESI SERVER" = catatan di Profil Harness yang menulis
+  tiap kali sesi server lahir / diganti / ditahan.
+
+---------------------------------------------------------------
+TES 1 — ULANGI SKENARIO SCREENSHOT 00:13 (TES UTAMA, 5-10 menit)
+---------------------------------------------------------------
+LANGKAH:
+1. Di HP, buka web DeepSeek di browser. Lihat sidebar kiri (daftar
+   chat/sesi). CATAT jumlah sesi yang ada sekarang. Tulis di kertas:
+   "SEBELUM: ___ sesi".
+   Cara lihat: buka https://chat.deepseek.com — di kiri ada daftar
+   percakapan. Kalau sidebar ketutup, ketuk ikon garis tiga (☰) di
+   pojok kiri atas.
+2. Buka Harness. Buka sesi "Utama" (chat 1-1 yang sudah panjang —
+   yang biasa dipakai, BUKAN sesi baru kosong).
+3. Kirim perintah PANJANG (seperti waktu screenshot): contoh
+   "cek skill lists, lalu optimasi trigger skill #6 dan #8 supaya
+   tidak bentrok, dan laporkan hasilnya dengan detail"
+   Tunggu jawabannya selesai.
+4. Lanjutkan dengan perintah yang memicu langkah Browser 2 / slot
+   (mis. minta agen membuka / memeriksa sesuatu lewat Browser 2).
+   Tunggu sampai selesai.
+5. Kirim perintah "ingat: tes vc327 — auto-save tidak boleh bikin
+   sesi baru" (ini perintah auto-save; di vc325 perintah seperti
+   ini yang membakar sesi baru).
+   Tunggu jawabannya selesai.
+6. Kirim perintah pendek "bro?" — tunggu selesai.
+7. Kembali ke browser web DeepSeek. Refresh halaman (tarik ke bawah
+   / ketuk refresh). Hitung lagi jumlah sesi di sidebar.
+   Tulis: "SESUDAH: ___ sesi".
+
+LULUS kalau:
+  - SESUDAH - SEBELUM = 0 (tidak ada sesi baru sama sekali), DAN
+  - TIDAK ADA kartu merah "Browser 2 gagal" / "Content is too long"
+    selama tes.
+
+GAGAL kalau:
+  - SESUDAH - SEBELUM = 1 atau lebih (ada sesi baru lahir — catat
+    berapa), ATAU
+  - muncul kartu merah seperti di screenshot 00:13.
+
+CATATAN:
+- Jangan buka sesi Harness lain / room / sesi baru di tengah tes —
+  itu bikin sesi server sendiri, hitungannya jadi kacau.
+- Kalau sinyal jelek dan muncul pesan "sesi server baru ditahan
+  vc327 ... coba lagi sesudah jeda" — itu BUKAN gagal tes, itu
+  fitur penahan (lihat TES 3). Tunggu 10 menit, coba lagi.
+
+---------------------------------------------------------------
+TES 2 — 10 PERINTAH (TES PANJANG, 10 menit, opsional)
+---------------------------------------------------------------
+Sama seperti TES 1 langkah 2-7, tapi kirim 10 perintah berturut-
+turut di sesi "Utama" yang sama (boleh perintah apa saja, campur
+pendek + panjang + 1x "ingat: ...").
+LULUS kalau sesi baru = 0 dan tidak ada kartu merah.
+Kalau sesi baru = 1, masih bisa diterima (mungkin 1x stream putus
+/ sesi ditolak server — lihat TES 3 untuk memastikan jalurnya).
+Kalau 2 atau lebih = GAGAL.
+
+---------------------------------------------------------------
+TES 3 — LIHAT JEJAK SESI SERVER DI APLIKASI (2 menit)
+---------------------------------------------------------------
+LANGKAH:
+1. Di Harness, buka Profil (menu profil).
+2. Cari bagian "JEJAK SESI SERVER". Di sana ada daftar baris
+   (maksimal 30 baris terakhir).
+3. Cari baris-baris ini:
+
+LULUS kalau:
+  - Ada SATU baris "Wadah lama vc321 dimigrasikan ke primed vc327"
+    (artinya sesi lama langsung siap delta — ini yang baru di
+    vc327), DAN
+  - Selama TES 1 / TES 2, hanya ada SATU baris "Wadah BARU lahir"
+    (yang pertama, N=1). Tidak ada baris "Wadah PENGGANTI lahir"
+    dan tidak ada baris "Wadah server di-reset proaktif".
+
+KALAU ADA BARIS LAIN, ARTINYA:
+- "Wadah server di-reset proaktif vc321" = guard reset menembak
+  (akumulasi + prompt > 200.000 huruf). Di sesi normal seharusnya
+  TIDAK muncul lagi di vc327.
+- "Wadah PENGGANTI lahir ... stream putus berulang" = koneksi
+  putus 3x, aplikasi coba sesi baru 1x. Ini darurat, bukan bocor —
+  boleh terjadi MAKSIMAL 1x per 10 menit.
+- "Wadah PENGGANTI DITAHAN vc327 (stream putus ... <10 mnt lalu;
+  sesi lama TIDAK dibakar...)" = penahan bekerja: stream putus
+  lagi dalam 10 menit, aplikasi MENOLAK bikin sesi baru dan
+  giliran itu gagal dengan pesan jelas. Ini FITUR, bukan bug —
+  laporkan saja berapa kali muncul.
+- "Wadah PENGGANTI lahir ... (pesan error)" = server menolak sesi
+  tersimpan. Juga darurat, bukan bocor.
+- Kalau ada "reset proaktif" di TES 1/2, LAPORKAN ke Jhon dengan
+  foto baris JEJAK-nya (itu data penting).
+
+---------------------------------------------------------------
+TES 4 — PASTIKAN JAWABAN TETAP NYAMBUNG (selama TES 1)
+---------------------------------------------------------------
+Perintah ke-2, ke-3, ke-4 harus dijawab dengan konteks percakapan
+yang sama (mis. kalau perintah 1 tanya skill, perintah 2 tetap
+dijawab sebagai lanjutan, bukan seperti ngobrol baru). Perintah
+"ingat: ..." harus dijawab dengan konfirmasi simpanan seperti biasa.
+LULUS kalau jawaban nyambung seperti biasa.
+GAGAL kalau jawaban jadi ngaco / lupa konteks / seperti sesi baru
+— LAPORKAN, itu lebih penting dari hitungan sesi.
+
+---------------------------------------------------------------
+YANG TIDAK PERLU DITES:
+- Room (grup): fix ini khusus lane 1-1 ("Utama") + lane slot
+  (Browser 2). Room tidak diubah di vc327.
+- Sesi baru kosong: perintah pertama di sesi baru memang selalu
+  kirim prompt penuh (1 sesi baru itu WAJAR — yang dilarang adalah
+  sesi baru di perintah ke-2, ke-3, dst).
+- Reviewer (latar): tidak diubah di vc327.
+
+---------------------------------------------------------------
+LAPORAN KE JHON (copy-paste, isi angkanya):
+---------------------------------------------------------------
+TES VC327:
+- TES 1: SEBELUM ___ sesi, SESUDAH ___ sesi → LULUS / GAGAL
+- TES 1: kartu merah muncul? YA / TIDAK (kalau YA, tulis isinya)
+- TES 2 (kalau dites): sesi baru ___ → LULUS / GAGAL
+- TES 3: baris "Wadah BARU lahir" ___ buah, "PENGGANTI" ___ buah,
+  "DITAHAN vc327" ___ buah, "reset proaktif" ___ buah,
+  "dimigrasikan ke primed vc327" ADA / TIDAK
+- TES 4: jawaban nyambung? YA / TIDAK

@@ -11459,7 +11459,15 @@ class MainActivity : Activity() {
         // jujur: persona sudah ada di POST awal); rencana + trailer
         // seperti dulu.
         TurnMetrics.recordExtra(0, planItems.joinToString("\n").length, PENTING_TRAILER.length)
-        sendToAgent(finalTxt)
+        // vc327 SESI (H3): lanjutan dikirim sebagai DELTA (deltaPrompt =
+        // finalTxt — teksnya SUDAH delta vc316). Klien memutuskan dari
+        // keadaan wadah (tersimpan + primed): delta tidak pernah memicu
+        // guard reset — reset hanya bila accum + teks ini benar-benar
+        // melewati cap, sama seperti sebelum vc327 (string SAMA ->
+        // panjang SAMA -> hasil guard SAMA; dibuktikan numerik probe
+        // vc327 K4==L4b). Yang dikunci di sini adalah klasifikasi:
+        // lanjutan adalah langkah delta, bukan prompt penuh.
+        sendToAgent(finalTxt, finalTxt)
     }
 
     /** 4.48.9 (titik-kirim): ring buffer kirim API — HANYA panjang + 16 hex
@@ -11485,12 +11493,13 @@ class MainActivity : Activity() {
 
     // vc322 SESI: deltaPrompt = prompt delta giliran 1-1 (jangkar +
     // perintah user + work-notes) dari dispatchTurn — HANYA giliran
-    // pertama 1-1 yang membawa delta; semua pemanggil lain (lanjutan
-    // tool, verifikasi, tugas latar, rescue) memakai default null =
-    // prompt penuh seperti biasa. Klien (SlotClient/DsApiClient) yang
-    // memutuskan delta vs penuh dari keadaan wadah (tersimpan + primed
-    // + bukan reset/forceFresh). Jalur WebView di bawah SELALU memakai
-    // prompt penuh (bukan sesi API Internal). Governor tetap dihitung
+    // pertama 1-1 yang membawa delta; lanjutan tool (sendContinuation)
+    // membawa deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu
+    // sudah delta vc316). Semua pemanggil lain (verifikasi, tugas latar,
+    // rescue) memakai default null = prompt penuh seperti biasa. Klien
+    // (SlotClient/DsApiClient) yang memutuskan delta vs penuh dari
+    // keadaan wadah (tersimpan + primed + bukan reset/forceFresh). Jalur
+    // WebView di bawah SELALU memakai prompt penuh (bukan sesi API Internal). Governor tetap dihitung
     // dari prompt penuh (konservatif — kuota tidak berubah).
     private fun sendToAgent(prompt: String, deltaPrompt: String? = null) {
         statusTv.text = "DeepSeek: berpikir…"
@@ -11795,12 +11804,16 @@ class MainActivity : Activity() {
         // sudah ada + primed — klien yang memutuskan (sendToAgent ->
         // SlotClient/DsApiClient). Prompt PENUH tetap dikirim bila ini
         // giliran pertama di wadah baru / sesudah reset / forceFresh.
-        // PENGECUALIAN: giliran auto-save vc298 ("ingat:" / koreksi)
-        // memaksa prompt penuh — catatan "[SISTEM — AUTO-SAVE]" hanya
-        // ada di prompt penuh dan wajib dibaca model giliran ini
-        // (konfirmasi simpanan ke user); delta akan menghilangkannya.
-        val deltaVc322 = if (promptNoUser.contains("[SISTEM — AUTO-SAVE vc298")) null
-            else AgentPrompt.deltaTurnPromptVc322(rawUser, AgentPrompt.workNotesBlockVc302(this, currentSessionId))
+        // vc327 SESI (H3): giliran auto-save vc298 ("ingat:" / koreksi)
+        // TIDAK LAGI memaksa prompt penuh — delta kini membawa blok
+        // "[SISTEM — AUTO-SAVE]" ringkas (dicap 2000 char, isi simpanan
+        // ikut; lihat AgentPrompt.deltaTurnPromptVc327). Model tetap
+        // membaca instruksi auto-save + menyampaikan konfirmasi simpanan
+        // ke user; yang hilang hanya pengiriman ulang ~90k char prompt
+        // penuh tiap auto-save (2 auto-save = 1 reset = 1 sesi baru di
+        // vc322). Bila wadah belum primed, klien tetap mengirim PENUH
+        // (delta diabaikan) — konfirmasi tidak pernah hilang.
+        val deltaVc322 = AgentPrompt.deltaTurnPromptVc327(rawUser, AgentPrompt.workNotesBlockVc302(this, currentSessionId), AgentPrompt.autoSaveBlockVc327(promptNoUser))
         sendToAgent(toSendVc240, deltaVc322)
     }
 
