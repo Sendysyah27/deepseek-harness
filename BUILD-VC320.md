@@ -421,8 +421,57 @@ Tes (baru):
 
 ## §8. Push + CI + APK
 
-(Diisi sesudah push/CI/build VM — integrator memperbarui dokumen ini
-via `put-file` setelah langkah 8–10 selesai.)
+- **Push (16 Nov 2026 ~06:44–07:00 WIB):** branch `vc317-rust`,
+  commit **`f77939bc4cd9ed8c036e530f94055919bc861f05`**
+  ("vc320 (4.48.9.154): slice 6 ..."), 463 file via
+  `gh.py push-tree`. Remote HEAD sebelumnya `75911f63` (sesuai
+  tugas, belum bergerak). Verifikasi pasca-push: remote tree 463
+  blob == staging 463 file, **0 beda / 0 hilang / 0 ekstra**;
+  ke-15 file delta dicek SHA-nya satu per satu — semua COCOK.
+  Main TIDAK disentuh.
+- **CI run #43820363565 — SUCCESS percobaan pertama**
+  (in_progress 06:57 → completed success ~07:04 WIB):
+  https://github.com/Sendysyah27/deepseek-harness/actions/runs/43820363565
+  — cargo test + suite JVM (incl. P6 155 cek + D11) + build APK
+  senz+pure semua hijau. Tidak ada ronde perbaikan CI.
+- **Artifact CI** (`vc317-work/apk-vc320-ci/`,
+  `harness-vc320-ci.zip` 26.402.215 B, artifact id 14204411915):
+  - Main `DeepSeekHarness-v4.48.9.154.apk` 13.319.276 B,
+    MD5 `beb510164fbccc70e175d2658b17417a`,
+    SHA256 `9f4e994423e4f429f1c0066ec59296e971b12ffc672a608715d009da84c0c6b1`.
+  - Pure `Harness-v4.48.9.154-pure.apk` 13.270.124 B,
+    MD5 `ad8861e64a698d8a5671a2f9324e2bd6`,
+    SHA256 `53240a9d5c18066e7ade371940b3d607bec80332449b4dd058e658a27142d05c`.
+  - Keduanya: aapt2 320/4.48.9.154, apksigner v2+v3 true,
+    1 signer, `libharness_core.so` 1.854.424 B di lib/arm64-v8a,
+    3 simbol JNI baru ADA, hsurr: 0, arm64-only.
+  - Sidik jari CI BERBEDA (kunci runner) — EKSPEKTASI, bukan
+    gagal: Main `dee49af94bc04e3c6b6aa437e3b9464dfd3226fea92dee10cb9af6b0854e11b3`,
+    Pure `cc38e485e1d280a5cedf1061c1916ab62458ea5c7387964cd01f4ab1cc70b019`.
+- **Build VM** (`vc317-work/apk-vc320-vm/`,
+  `python3 build.py --flavor senz` lalu `pure`, JH `~/jdk-21-sys`,
+  Rust rust-lld; JANGAN cargo + kotlinc bersamaan):
+  - Main `DeepSeekHarness-v4.48.9.154.apk` 13.397.100 B (13.083 KB),
+    MD5 `9855cfc85a4c57aef028fb2440d4e2d0`,
+    SHA256 `7b63da8c52eca072600c0241f497394fe913f6d7525e3568c539446b94da3876`.
+  - Pure `Harness-v4.48.9.154-pure.apk` 13.352.044 B (13.039 KB),
+    MD5 `343d2390d5ca1586d0f203b321ea8dd0`,
+    SHA256 `14407f87c4529b6714f195e9a17c1dd954640d0c7d80c4de938d049239e9d133`.
+  - Keduanya: aapt2 320/4.48.9.154, apksigner v2+v3 true,
+    1 signer, `libharness_core.so` 2.119.656 B (release) di
+    lib/arm64-v8a, 3 simbol JNI baru ADA, hsurr: 0, arm64-only.
+  - **GERBANG SIDIK JARI LULUS — BISA MENIMPA:**
+    Main `e738145b516a07e9572e9ca7268c813edb892737b402873246efa49a64951177`
+    ✓, Pure `f7c336ae0a887b4725d81bd59f930efde0a7d1d02d0606001e748e25c5b6553f` ✓.
+  - Insiden build: service restart VM membunuh build senz pertama
+    di tengah jalan (log kosong, proses hilang; .so release sudah
+    jadi 07:05). Build diulang dengan `python3 -u` (unbuffered)
+    dan selesai normal. Pelajaran: pakai `-u` untuk build
+    berdurasi panjang supaya log tidak hilang bila runtime restart.
+  - Catatan verifikasi: `apksigner` butuh `java` di PATH —
+    verifikasi dijalankan dengan `PATH=$HOME/jdk-21-sys/bin:$PATH`.
+- **Dokumen ini diperbarui pasca-CI/APK via `gh.py put-file`**
+  (satu file, branch `vc317-rust`) — isi §8 ini + §9.
 
 ## §9. Tes perangkat (TES-VC320-SIAP-TEMPEL)
 
