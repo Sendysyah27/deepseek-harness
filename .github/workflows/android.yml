@@ -97,7 +97,7 @@ jobs:
       - name: Suite P4 SmallModules parity (235 cek)
         run: bash tests/run-suite-ci.sh P4
 
-      - name: Suite P5 ConcatApi parity (157 cek: rust 102 + kotlin 55)
+      - name: Suite P5 ConcatApi parity (157 cek, rust 102 + kotlin 55)
         run: bash tests/run-suite-ci.sh P5
 
       - name: Suite N9 audit (46 cek)
