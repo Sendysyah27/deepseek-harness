@@ -3,10 +3,13 @@ name: Android vc317
 # CI pertama repo Harness (repo sebelumnya tidak punya workflow sama sekali).
 # Branch vc317-rust = main (vc309, 13 Nov) + tree vc316 + slice 0+1 Rust
 # (DsFailure via RustCore JNI + crate harness-core). Main TIDAK disentuh.
-# Job: cargo test -> suite JVM 763/764 (R2-4.1 = assert usang warisan vc315,
+# Job: cargo test -> suite JVM 920/921 (R2-4.1 = assert usang warisan vc315,
 # ditoleransi eksplisit di tests/run-suite-ci.sh) -> build APK senz+pure
 # via build.py -> verifikasi (apksigner, aapt2, libharness_core.so ada)
 # -> upload APK sebagai artifact.
+# Slice 5 (vc319): ConcatApiClient.kt -> Rust (concat_api_client.rs,
+# seam concatApiJson, VERSION 3); P5 157 cek (rust 102 via TCP 7420 +
+# .so host + kotlin 55 fallback).
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -93,6 +96,9 @@ jobs:
 
       - name: Suite P4 SmallModules parity (235 cek)
         run: bash tests/run-suite-ci.sh P4
+
+      - name: Suite P5 ConcatApi parity (157 cek: rust 102 + kotlin 55)
+        run: bash tests/run-suite-ci.sh P5
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

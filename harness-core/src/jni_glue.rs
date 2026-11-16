@@ -11,6 +11,7 @@
 
 use crate::behaviors;
 use crate::chat_theme;
+use crate::concat_api_client;
 use crate::ds_failure;
 use crate::ds_safety_strip;
 use crate::mcp_helper;
@@ -30,8 +31,8 @@ use std::sync::Once;
 /// saat load (`RustCore.available` false bila mismatch -> fallback).
 /// v2 = slice 2 (pow_solver): +8 fungsi PoW; slice 3 (redact_secrets):
 /// +1 fungsi redactSecrets; slice 4: +7 fungsi bulk JSON modul kecil.
-/// TETAP 2 — jangan naikkan di slice 3/4.
-pub const RUST_CORE_VERSION: jint = 2;
+/// v3 = slice 5 (concat_api_client): +1 fungsi `concatApiJson`.
+pub const RUST_CORE_VERSION: jint = 3;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -173,10 +174,12 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "powSha3Hex", "powDsHashV1Hex", "powSha3Bytes", "powDsHashV1Bytes",
                 "powSolveDeepSeekJson", "powSolveFastJson", "powSolveFmtJson", "powSolveJson",
                 "notifIdsJson", "systemBarSpecJson", "dsSafetyStripJson", "mcpHelperJson",
-                "sessionBackgroundJson", "behaviorsJson", "chatThemeJson"],
+                "sessionBackgroundJson", "behaviorsJson", "chatThemeJson",
+                "concatApiJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
-                "session_background", "behaviors", "chat_theme"]
+                "session_background", "behaviors", "chat_theme",
+                "concat_api_client"]
         })
         .to_string())
     })
@@ -574,5 +577,49 @@ pub extern "C" fn Java_harness_core_RustCore_chatThemeJson(
             "isAaOk": chat_theme::is_aa_ok(fg, bg)
         })
         .to_string())
+    })
+}
+
+// ------------------------------------------------------------- Slice 5: ConcatApiClient --
+//
+// Satu fungsi JSON in/out (stateless per panggilan): request
+// `{"op","token","args","previewDir"}`; respons
+// `{"ok":true,"value":...}` atau
+// `{"ok":false,"kind":"auth"|"down"|"api","message":...}`.
+// Panic/error di boundary -> JSON error generik (`guarded_string`)
+// -> Kotlin fallback ke implementasi Kotlin lama + matikan saklar
+// `rustConcatApiClient`. Transport: `TcpConnector` (satu koneksi per
+// panggilan, auth id 1, call id 2, cap baris 4 MiB).
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_concatApiJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&req).map_err(|_| "bad request json".to_string())?;
+        let op = concat_api_client::opt_string(&parsed, "op", "");
+        let token = concat_api_client::opt_string(&parsed, "token", "");
+        let args = parsed
+            .get("args")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let preview_dir = concat_api_client::opt_string(
+            &parsed,
+            "previewDir",
+            "/sdcard/Pictures/Harness",
+        );
+        let mut tcp = concat_api_client::TcpConnector;
+        match concat_api_client::dispatch(&mut tcp, &op, &token, &args, &preview_dir) {
+            Ok(value) => Ok(serde_json::json!({"ok": true, "value": value}).to_string()),
+            Err(e) => Ok(serde_json::json!({
+                "ok": false,
+                "kind": e.kind(),
+                "message": e.message()
+            })
+            .to_string()),
+        }
     })
 }

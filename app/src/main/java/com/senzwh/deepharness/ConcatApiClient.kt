@@ -1,4 +1,7 @@
 // ConcatApiClient.kt — klien JSON-RPC Concat (Worker A, vc315: vc314 + 17 method baru)
+// vc319 slice 5: API publik Rust-first (harness.core.RustCore.concatApiJson)
+// + fallback ke implementasi Kotlin lama (private *Kotlin) bila Rust tak bisa.
+// Perilaku publik TIDAK berubah: signature, pesan error, dan ringkasan sama.
 //
 // Satu-satunya file source baru Worker A. Pure-Kotlin: TANPA import android.*
 // (bisa diuji JVM). Token diterima sebagai parameter String, bukan dibaca dari
@@ -25,6 +28,7 @@
 // verbatim, nama metode, nama/path proyek — tidak pernah token.
 package com.senzwh.deepharness
 
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -82,9 +86,343 @@ object ConcatApi {
     const val LOCK_HINT: String = "tutup dulu proyek di layar Concat, lalu coba lagi"
 
     // ---- API publik (kontrak FINAL — jangan ubah signature) ----
+    // vc319 slice 5: tiap fungsi publik di bawah ini Rust-first —
+    // satu panggilan stateless ke Rust (`RustCore.concatApiJson`) yang
+    // mengerjakan SELURUH op (validasi + transport + ringkasan).
+    // Bila Rust tak bisa (`.so` absen / versi tak cocok / panic /
+    // jawaban bentuk tak dikenal), saklar dimatikan dan implementasi
+    // Kotlin lama (`*Kotlin`) yang jalan. Error protokol ASLI dari
+    // server (auth/down/api) DITERUSKAN apa adanya — bukan fallback.
+
+    /** Saklar seam Rust (mirip `rustPowSolver`): false = pakai Kotlin lama. */
+    internal var rustConcatApiClient: Boolean = true
+
+    /** Sinyal internal: Rust tak bisa dipakai -> fallback ke `*Kotlin`. */
+    private class RustFallback : Exception()
+
+    /**
+     * Satu panggilan Rust. Kembalikan `value` respons (`String` untuk
+     * 20 op, `JSONArray` untuk listProjects) — atau lempar:
+     * [ConcatAuthException]/[ConcatDownException]/[ConcatApiException]
+     * untuk jawaban server ASLI, [RustFallback] bila Rust tak bisa.
+     * Sekali Rust gagal, saklar `rustConcatApiClient` dimatikan.
+     */
+    private fun rustCall(token: String, op: String, args: JSONObject): Any? {
+        if (!rustConcatApiClient || !RustCore.available) throw RustFallback()
+        val request = JSONObject()
+            .put("op", op)
+            .put("token", token)
+            .put("args", args)
+            .put("previewDir", previewDir)
+        val raw = try {
+            RustCore.concatApiJson(request.toString())
+        } catch (t: Throwable) {
+            null
+        } ?: run {
+            rustConcatApiClient = false
+            throw RustFallback()
+        }
+        val resp = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            rustConcatApiClient = false
+            throw RustFallback()
+        }
+        if (!resp.optBoolean("ok", false)) {
+            val kind = resp.optString("kind", "")
+            val message = resp.optString("message", "")
+            when (kind) {
+                "auth" -> throw ConcatAuthException(message)
+                "down" -> throw ConcatDownException(message)
+                "api" -> throw ConcatApiException(message)
+                else -> {
+                    // {"ok":false,"error":"rust core error"} (panic/JNI) -> fallback.
+                    rustConcatApiClient = false
+                    throw RustFallback()
+                }
+            }
+        }
+        return resp.opt("value")
+    }
+
+    /** Seperti [rustCall], tapi `value` HARUS String — bila bukan, fallback. */
+    private fun rustString(token: String, op: String, args: JSONObject): String {
+        val value = rustCall(token, op, args)
+        return value as? String ?: run {
+            rustConcatApiClient = false
+            throw RustFallback()
+        }
+    }
+
+    /** "concat <versi build> / apiVersion <versi kontrak>" — Rust-first, fallback [versionKotlin]. */
+    fun version(token: String): String {
+        try {
+            return rustString(token, "version", JSONObject())
+        } catch (e: RustFallback) {
+            return versionKotlin(token)
+        }
+    }
+
+    /** Daftar proyek (recents, terbaru dulu) — Rust-first, fallback [listProjectsKotlin]. */
+    fun listProjects(token: String): List<ConcatProjectRef> {
+        try {
+            val value = rustCall(token, "listProjects", JSONObject())
+            val arr = value as? JSONArray ?: run {
+                rustConcatApiClient = false
+                throw RustFallback()
+            }
+            val refs = ArrayList<ConcatProjectRef>(arr.length())
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                val name = entry.optString("name", "")
+                val path = entry.optString("path", "")
+                if (name.isEmpty() || path.isEmpty()) continue
+                refs.add(ConcatProjectRef(name, path))
+            }
+            return refs
+        } catch (e: RustFallback) {
+            return listProjectsKotlin(token)
+        }
+    }
+
+    /** Buka proyek, kembalikan RINGKASAN view — Rust-first, fallback [openProjectKotlin]. */
+    fun openProject(token: String, nameOrPath: String): String {
+        try {
+            return rustString(token, "openProject", JSONObject().put("nameOrPath", nameOrPath))
+        } catch (e: RustFallback) {
+            return openProjectKotlin(token, nameOrPath)
+        }
+    }
+
+    /** Baca status/timeline, kembalikan RINGKASAN — Rust-first, fallback [getProjectKotlin]. */
+    fun getProject(token: String, nameOrPath: String): String {
+        try {
+            return rustString(token, "getProject", JSONObject().put("nameOrPath", nameOrPath))
+        } catch (e: RustFallback) {
+            return getProjectKotlin(token, nameOrPath)
+        }
+    }
+
+    /** Buat proyek baru — Rust-first, fallback [createProjectKotlin]. */
+    fun createProject(
+        token: String,
+        name: String,
+        location: String? = null,
+        width: Int? = null,
+        height: Int? = null,
+        rateNum: Long? = null,
+        rateDen: Long? = null
+    ): String {
+        try {
+            val args = JSONObject().put("name", name).put("location", location)
+                .put("width", width).put("height", height)
+                .put("rateNum", rateNum).put("rateDen", rateDen)
+            return rustString(token, "createProject", args)
+        } catch (e: RustFallback) {
+            return createProjectKotlin(token, name, location, width, height, rateNum, rateDen)
+        }
+    }
+
+    /** Tutup proyek — Rust-first, fallback [closeProjectKotlin]. */
+    fun closeProject(token: String, nameOrPath: String, save: Boolean = false): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("save", save)
+            return rustString(token, "closeProject", args)
+        } catch (e: RustFallback) {
+            return closeProjectKotlin(token, nameOrPath, save)
+        }
+    }
+
+    /** Simpan proyek — Rust-first, fallback [saveProjectKotlin]. */
+    fun saveProject(token: String, nameOrPath: String, name: String? = null): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("name", name)
+            return rustString(token, "saveProject", args)
+        } catch (e: RustFallback) {
+            return saveProjectKotlin(token, nameOrPath, name)
+        }
+    }
+
+    /** Atur frame + rate timeline aktif — Rust-first, fallback [setVideoKotlin]. */
+    fun setVideo(
+        token: String,
+        nameOrPath: String,
+        width: Int,
+        height: Int,
+        rateNum: Long? = null,
+        rateDen: Long? = null
+    ): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath)
+                .put("width", width).put("height", height)
+                .put("rateNum", rateNum).put("rateDen", rateDen)
+            return rustString(token, "setVideo", args)
+        } catch (e: RustFallback) {
+            return setVideoKotlin(token, nameOrPath, width, height, rateNum, rateDen)
+        }
+    }
+
+    /** Terapkan satu perintah edit — Rust-first, fallback [applyEditKotlin]. */
+    fun applyEdit(token: String, nameOrPath: String, op: String, args: JSONObject): String {
+        try {
+            val req = JSONObject().put("nameOrPath", nameOrPath).put("op", op).put("args", args)
+            return rustString(token, "applyEdit", req)
+        } catch (e: RustFallback) {
+            return applyEditKotlin(token, nameOrPath, op, args)
+        }
+    }
+
+    /** Mundur satu edit — Rust-first, fallback [undoEditKotlin]. */
+    fun undoEdit(token: String, nameOrPath: String): String {
+        try {
+            return rustString(token, "undoEdit", JSONObject().put("nameOrPath", nameOrPath))
+        } catch (e: RustFallback) {
+            return undoEditKotlin(token, nameOrPath)
+        }
+    }
+
+    /** Maju satu edit — Rust-first, fallback [redoEditKotlin]. */
+    fun redoEdit(token: String, nameOrPath: String): String {
+        try {
+            return rustString(token, "redoEdit", JSONObject().put("nameOrPath", nameOrPath))
+        } catch (e: RustFallback) {
+            return redoEditKotlin(token, nameOrPath)
+        }
+    }
+
+    /** Periksa isi file media — Rust-first, fallback [probeMediaKotlin]. */
+    fun probeMedia(token: String, file: String): String {
+        try {
+            return rustString(token, "probeMedia", JSONObject().put("file", file))
+        } catch (e: RustFallback) {
+            return probeMediaKotlin(token, file)
+        }
+    }
+
+    /** Impor file ke bin proyek — Rust-first, fallback [importMediaKotlin]. */
+    fun importMedia(token: String, nameOrPath: String, file: String): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("file", file)
+            return rustString(token, "importMedia", args)
+        } catch (e: RustFallback) {
+            return importMediaKotlin(token, nameOrPath, file)
+        }
+    }
+
+    /** Daftar paket katalog — Rust-first, fallback [listCatalogueKotlin]. */
+    fun listCatalogue(token: String, kind: String? = null): String {
+        try {
+            return rustString(token, "listCatalogue", JSONObject().put("kind", kind))
+        } catch (e: RustFallback) {
+            return listCatalogueKotlin(token, kind)
+        }
+    }
+
+    /** Daftar template — Rust-first, fallback [listTemplatesKotlin]. */
+    fun listTemplates(token: String): String {
+        try {
+            return rustString(token, "listTemplates", JSONObject())
+        } catch (e: RustFallback) {
+            return listTemplatesKotlin(token)
+        }
+    }
+
+    /** Buat proyek dari template — Rust-first, fallback [instantiateTemplateKotlin]. */
+    fun instantiateTemplate(
+        token: String,
+        template: String,
+        location: String,
+        name: String,
+        fills: JSONArray
+    ): String {
+        try {
+            val args = JSONObject().put("template", template).put("location", location)
+                .put("name", name).put("fills", fills)
+            return rustString(token, "instantiateTemplate", args)
+        } catch (e: RustFallback) {
+            return instantiateTemplateKotlin(token, template, location, name, fills)
+        }
+    }
+
+    /** Simpan proyek terbuka jadi template — Rust-first, fallback [saveTemplateKotlin]. */
+    fun saveTemplate(token: String, nameOrPath: String, name: String): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("name", name)
+            return rustString(token, "saveTemplate", args)
+        } catch (e: RustFallback) {
+            return saveTemplateKotlin(token, nameOrPath, name)
+        }
+    }
+
+    /** Jalankan ekspor (kembali langsung, tanpa polling) — Rust-first, fallback [runExportKotlin]. */
+    fun runExport(
+        token: String,
+        nameOrPath: String,
+        output: String,
+        crf: Int? = null,
+        preset: String? = null,
+        width: Int? = null,
+        height: Int? = null,
+        rateNum: Long? = null,
+        rateDen: Long? = null,
+        codec: String? = null,
+        tenBit: Boolean? = null,
+        colorRange: String? = null,
+        hdr: Boolean? = null
+    ): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("output", output)
+                .put("crf", crf).put("preset", preset)
+                .put("width", width).put("height", height)
+                .put("rateNum", rateNum).put("rateDen", rateDen)
+                .put("codec", codec).put("tenBit", tenBit)
+                .put("colorRange", colorRange).put("hdr", hdr)
+            return rustString(token, "runExport", args)
+        } catch (e: RustFallback) {
+            return runExportKotlin(token, nameOrPath, output, crf, preset, width, height, rateNum, rateDen, codec, tenBit, colorRange, hdr)
+        }
+    }
+
+    /** Batalkan ekspor yang jalan — Rust-first, fallback [cancelExportKotlin]. */
+    fun cancelExport(token: String, job: String): String {
+        try {
+            return rustString(token, "cancelExport", JSONObject().put("job", job))
+        } catch (e: RustFallback) {
+            return cancelExportKotlin(token, job)
+        }
+    }
+
+    /** Cek status job ekspor — Rust-first, fallback [exportStatusKotlin]. */
+    fun exportStatus(token: String, job: String): String {
+        try {
+            return rustString(token, "exportStatus", JSONObject().put("job", job))
+        } catch (e: RustFallback) {
+            return exportStatusKotlin(token, job)
+        }
+    }
+
+    /** Ambil satu frame pratinjau — Rust-first, fallback [previewFrameKotlin]. */
+    fun previewFrame(
+        token: String,
+        nameOrPath: String,
+        time: Double,
+        output: String? = null,
+        width: Int? = null,
+        height: Int? = null
+    ): String {
+        try {
+            val args = JSONObject().put("nameOrPath", nameOrPath).put("time", time)
+                .put("output", output).put("width", width).put("height", height)
+            return rustString(token, "previewFrame", args)
+        } catch (e: RustFallback) {
+            return previewFrameKotlin(token, nameOrPath, time, output, width, height)
+        }
+    }
+
+    // ---- Implementasi Kotlin lama (fallback; vc315, TIDAK diubah isinya) ----
 
     /** "concat <versi build> / apiVersion <versi kontrak>", mis. "concat 0.2.10 / apiVersion 0.2". */
-    fun version(token: String): String {
+    private fun versionKotlin(token: String): String {
         val result = call(token, "version", null) as? JSONObject
             ?: throw ConcatApiException("Jawaban Concat untuk pengecekan versi tidak bisa dibaca.")
         val concat = result.optString("concat", "")
@@ -96,7 +434,7 @@ object ConcatApi {
     }
 
     /** Daftar proyek (recents, terbaru dulu) dari `project.list`. */
-    fun listProjects(token: String): List<ConcatProjectRef> {
+    private fun listProjectsKotlin(token: String): List<ConcatProjectRef> {
         val result = call(token, "project.list", null)
         if (result !is JSONArray) {
             throw ConcatApiException("Daftar proyek dari Concat tidak bisa dibaca.")
@@ -117,7 +455,7 @@ object ConcatApi {
      * Nama diselesaikan lewat `project.list`; mengembalikan RINGKASAN view
      * (bukan dokumen mentah). Gagal karena lock -> pesan server + hint S6.
      */
-    fun openProject(token: String, nameOrPath: String): String {
+    private fun openProjectKotlin(token: String, nameOrPath: String): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "project.open", JSONObject().put("path", path))
         val view = result as? JSONObject
@@ -130,7 +468,7 @@ object ConcatApi {
      * Mengembalikan RINGKASAN (judul, jumlah klip, daftar klip nama+durasi,
      * track, durasi total), cap ~2000 karakter — BUKAN dokumen mentah.
      */
-    fun getProject(token: String, nameOrPath: String): String {
+    private fun getProjectKotlin(token: String, nameOrPath: String): String {
         val path = resolvePath(token, nameOrPath)
         val view = fetchView(token, path)
         return summarizeView(view, path, opened = false)
@@ -152,7 +490,7 @@ object ConcatApi {
      * field `video` dihilangkan (server pakai 1080p@30); bila sebagian diisi,
      * sisanya diisi default 1920x1080 @ 30/1.
      */
-    fun createProject(
+    private fun createProjectKotlin(
         token: String,
         name: String,
         location: String? = null,
@@ -162,7 +500,7 @@ object ConcatApi {
         rateDen: Long? = null
     ): String {
         val loc = if (location.isNullOrBlank()) {
-            val refs = listProjects(token)
+            val refs = listProjectsKotlin(token)
             val first = refs.firstOrNull()
                 ?: throw ConcatApiException(
                     "Belum ada proyek sama sekali di Concat — sebutkan folder tempat proyek baru dibuat (location)."
@@ -194,7 +532,7 @@ object ConcatApi {
      * Tutup proyek via `project.close`. `save = false` = edit yang belum
      * disimpan DIBUANG (perilaku server). Balasan Done -> pesan konfirmasi.
      */
-    fun closeProject(token: String, nameOrPath: String, save: Boolean = false): String {
+    private fun closeProjectKotlin(token: String, nameOrPath: String, save: Boolean = false): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "project.close", JSONObject().put("path", path).put("save", save))
         requireDone(result, "menutup proyek")
@@ -206,7 +544,7 @@ object ConcatApi {
     }
 
     /** Simpan proyek via `project.save`; `name` diisi = ganti nama proyek. */
-    fun saveProject(token: String, nameOrPath: String, name: String? = null): String {
+    private fun saveProjectKotlin(token: String, nameOrPath: String, name: String? = null): String {
         val path = resolvePath(token, nameOrPath)
         val params = JSONObject().put("path", path)
         if (!name.isNullOrBlank()) params.put("name", name)
@@ -224,7 +562,7 @@ object ConcatApi {
      * `rateNum`/`rateDen`: isi dua-duanya atau kosongkan dua-duanya; bila
      * kosong, diambil dari rate proyek yang sedang aktif (`project.get`).
      */
-    fun setVideo(
+    private fun setVideoKotlin(
         token: String,
         nameOrPath: String,
         width: Int,
@@ -268,7 +606,7 @@ object ConcatApi {
      * di dalamnya ditolak. Objek bersarang (style/patch/curve/moves/item)
      * pass-through: server yang memvalidasi isinya.
      */
-    fun applyEdit(token: String, nameOrPath: String, op: String, args: JSONObject): String {
+    private fun applyEditKotlin(token: String, nameOrPath: String, op: String, args: JSONObject): String {
         val required = EDIT_OP_REQUIRED[op]
             ?: throw ConcatApiException(
                 if (op == "matchClip") {
@@ -298,7 +636,7 @@ object ConcatApi {
     }
 
     /** Mundur satu edit via `edit.undo`. */
-    fun undoEdit(token: String, nameOrPath: String): String {
+    private fun undoEditKotlin(token: String, nameOrPath: String): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "edit.undo", JSONObject().put("path", path))
         val view = result as? JSONObject
@@ -307,7 +645,7 @@ object ConcatApi {
     }
 
     /** Maju satu edit via `edit.redo`. */
-    fun redoEdit(token: String, nameOrPath: String): String {
+    private fun redoEditKotlin(token: String, nameOrPath: String): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "edit.redo", JSONObject().put("path", path))
         val view = result as? JSONObject
@@ -316,7 +654,7 @@ object ConcatApi {
     }
 
     /** Periksa isi file media via `media.probe` (tanpa menyentuh proyek). */
-    fun probeMedia(token: String, file: String): String {
+    private fun probeMediaKotlin(token: String, file: String): String {
         val result = call(token, "media.probe", JSONObject().put("path", file))
         val media = result as? JSONObject
             ?: throw ConcatApiException("Jawaban Concat untuk memeriksa file tidak bisa dibaca.")
@@ -324,7 +662,7 @@ object ConcatApi {
     }
 
     /** Impor file ke bin proyek via `media.import` (server yang probe). */
-    fun importMedia(token: String, nameOrPath: String, file: String): String {
+    private fun importMediaKotlin(token: String, nameOrPath: String, file: String): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "media.import", JSONObject().put("path", path).put("file", file))
         val view = result as? JSONObject
@@ -336,7 +674,7 @@ object ConcatApi {
      * Daftar paket katalog via `catalogue.list`. `kind` kosong = semua;
      * bila diisi harus salah satu dari effect/filter/audio/transition/generator.
      */
-    fun listCatalogue(token: String, kind: String? = null): String {
+    private fun listCatalogueKotlin(token: String, kind: String? = null): String {
         val cleanKind = kind?.trim()?.takeIf { it.isNotEmpty() }
         if (cleanKind != null && cleanKind !in CATALOGUE_KINDS) {
             throw ConcatApiException(
@@ -351,7 +689,7 @@ object ConcatApi {
     }
 
     /** Daftar template via `template.list`. */
-    fun listTemplates(token: String): String {
+    private fun listTemplatesKotlin(token: String): String {
         val result = call(token, "template.list", null)
         val arr = result as? JSONArray
             ?: throw ConcatApiException("Daftar template dari Concat tidak bisa dibaca.")
@@ -363,7 +701,7 @@ object ConcatApi {
      * `fills` = array {mediaId, file} — SEMUA slot wajib terisi, kalau tidak
      * server menolak tanpa membuat apa pun.
      */
-    fun instantiateTemplate(
+    private fun instantiateTemplateKotlin(
         token: String,
         template: String,
         location: String,
@@ -388,7 +726,7 @@ object ConcatApi {
     }
 
     /** Simpan proyek terbuka jadi template via `template.save`. */
-    fun saveTemplate(token: String, nameOrPath: String, name: String): String {
+    private fun saveTemplateKotlin(token: String, nameOrPath: String, name: String): String {
         val path = resolvePath(token, nameOrPath)
         val result = call(token, "template.save", JSONObject().put("path", path).put("name", name))
         val info = result as? JSONObject
@@ -402,7 +740,7 @@ object ConcatApi {
      * [exportStatus]. Semua opsi render opsional (default server: crf 20,
      * preset medium, codec h264, limited); yang kosong tidak dikirim.
      */
-    fun runExport(
+    private fun runExportKotlin(
         token: String,
         nameOrPath: String,
         output: String,
@@ -436,14 +774,14 @@ object ConcatApi {
     }
 
     /** Batalkan ekspor yang jalan via `export.cancel`. */
-    fun cancelExport(token: String, job: String): String {
+    private fun cancelExportKotlin(token: String, job: String): String {
         val result = call(token, "export.cancel", JSONObject().put("job", job))
         requireDone(result, "membatalkan ekspor")
         return "Ekspor job \"$job\" dibatalkan."
     }
 
     /** Cek status job ekspor via `export.status` (polling — tanpa event stream). */
-    fun exportStatus(token: String, job: String): String {
+    private fun exportStatusKotlin(token: String, job: String): String {
         val result = call(token, "export.status", JSONObject().put("job", job))
         val status = result as? JSONObject
             ?: throw ConcatApiException("Jawaban Concat untuk status ekspor tidak bisa dibaca.")
@@ -458,7 +796,7 @@ object ConcatApi {
      * belum ada; pure java.io). Gagal tulis -> error jujur. PNG melebihi cap
      * baris 4 MiB -> error jujur (minta width/height lebih kecil atau isi output).
      */
-    fun previewFrame(
+    private fun previewFrameKotlin(
         token: String,
         nameOrPath: String,
         time: Double,
@@ -640,7 +978,7 @@ object ConcatApi {
     private fun resolvePath(token: String, nameOrPath: String): String {
         if (nameOrPath.contains('/')) return nameOrPath
         val name = nameOrPath.trim()
-        val refs = listProjects(token)
+        val refs = listProjectsKotlin(token)
         val match = refs.firstOrNull { it.name == name }
         if (match != null) return match.path
         val available = if (refs.isEmpty()) {

@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 2
+    const val VERSION = 3
 
     val available: Boolean
 
@@ -51,6 +51,18 @@ object RustCore {
     external fun sessionBackgroundJson(turnSessionId: Long, currentSessionId: Long, turnActive: Boolean): String
     external fun behaviorsJson(id: String): String
     external fun chatThemeJson(fg: Int, bg: Int): String
+
+    // ---- Slice 5: ConcatApiClient (klien JSON-RPC server Concat) ----
+    /**
+     * Satu panggilan stateless ke server Concat (TCP 127.0.0.1:7420).
+     * Request JSON: `{"op","token","args","previewDir"}`; respons:
+     * `{"ok":true,"value":...}` (String untuk 20 op, array
+     * `{name,path}` untuk listProjects) atau
+     * `{"ok":false,"kind":"auth"|"down"|"api","message":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama.
+     */
+    external fun concatApiJson(request: String): String?
 
     // ---- Slice 2: PowSolver (PoW DeepSeekHashV1) ----
     /** SHA3-256 sebagai 64 digit hex lowercase; "" / bukan-hex = gagal. */
