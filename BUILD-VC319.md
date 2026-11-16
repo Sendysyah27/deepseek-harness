@@ -301,7 +301,12 @@ RustCore.concatApiJson(request: String): String?
 - CI: run #18 FAILURE (YAML, 0 job — lihat §7); run #19 SUCCESS
   (43807229555). APK CI + VM terverifikasi — lihat §6.
 - Doc-sync: BUILD-VC319.md dilengkapi angka CI + APK sesudah push
-  (pola slice 4).
+  (pola slice 4). Commit `f0fe75d8c3f9605d35c84d6117f4a0ebf3f7000d`
+  (remote == staging 456/456); CI run #20 (43811670303) SUCCESS.
+  Main TIDAK disentuh (masih vc309).
+- TES perangkat: `vc317-work/TES-VC319-SIAP-TEMPEL.txt` (bahasa bayi) —
+  TIDAK ADA tes baru (perilaku user-visible identik); T1–T6 vc318 tetap
+  berlaku (T5 = Concat version via mesin Rust baru).
 
 ## §9. Tes perangkat
 
