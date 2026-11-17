@@ -196,6 +196,21 @@ object TurnMetrics {
     fun shouldResetServerSessionVc321(accumChars: Int, nextPromptChars: Int): Boolean =
         accumChars > 0 && accumChars + nextPromptChars > DEFAULT_CAP
 
+    // ---- vc330 SESI (katup pengaman giliran senyap) ----
+    // Keputusan LEWATI giliran senyap (murni, tanpa Context). True
+    // HANYA bila keempat syarat terpenuhi: giliran ini senyap
+    // (silentKind "verify"/"extract"), giliran ini TIDAK mengirim
+    // delta (useDelta false — delta tidak pernah memicu guard),
+    // wadah tersimpan ADA (tanpa wadah tidak ada yang dibakar), dan
+    // guard reset vc321 AKAN menembak (accum + prompt penuh > cap).
+    // freshEphemeral dikecualikan (wadahnya memang dibuang tiap
+    // panggilan — DsApiClient tidak punya ephemeral, teruskan false).
+    // Giliran user-visible (silentKind null) TIDAK PERNAH dilewati —
+    // guard reset-nya jalan seperti biasa. Dipakai SlotClient/DsApiClient
+    // runChat TEPAT di guard reset yang sudah ada, SEBELUM reset.
+    fun shouldSkipSilentVc330(silentKind: String?, useDelta: Boolean, hasStoredSession: Boolean, wouldReset: Boolean, freshEphemeral: Boolean): Boolean =
+        silentKind != null && !useDelta && hasStoredSession && wouldReset && !freshEphemeral
+
     private const val KEY_SRV_ACCUM_VC321 = "srvAccumVc321_"
 
     /** Estimasi akumulasi server sesi ini (jumlah char prompt sukses

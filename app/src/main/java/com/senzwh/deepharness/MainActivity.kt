@@ -11495,8 +11495,13 @@ class MainActivity : Activity() {
     // perintah user + work-notes) dari dispatchTurn — HANYA giliran
     // pertama 1-1 yang membawa delta; lanjutan tool (sendContinuation)
     // membawa deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu
-    // sudah delta vc316). Semua pemanggil lain (verifikasi, tugas latar,
-    // rescue) memakai default null = prompt penuh seperti biasa. Klien
+    // sudah delta vc316). vc330 SESI: verifikasi diri membawa delta
+    // (deltaVerifyPromptVc330 — tanpa ctxHist 20.000 char) dan tugas
+    // latar membawa delta (deltaExtractPromptVc330 — jendela 13 pesan,
+    // bukan 40/40.000); rescue tetap default null = prompt penuh.
+    // silentKindVc330 ("verify"/"extract"/null) memberi tahu klien
+    // bahwa giliran ini SENYAP — katup vc330 di runChat melewatinya
+    // tanpa POST bila guard reset akan menembak. Klien
     // (SlotClient/DsApiClient) yang memutuskan delta vs penuh dari
     // keadaan wadah (tersimpan + primed + bukan reset/forceFresh). Jalur
     // WebView di bawah SELALU memakai prompt penuh (bukan sesi API Internal). Governor tetap dihitung
@@ -11506,6 +11511,12 @@ class MainActivity : Activity() {
         beginStreamBubble()
         val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || jhonMode()
         val silent = internalTurn || verifyTurn
+        // vc330 SESI: jenis giliran senyap untuk katup pengaman klien.
+        val silentKindVc330: String? = when {
+            verifyTurn -> "verify"
+            internalTurn -> "extract"
+            else -> null
+        }
         if (apiMode) {
             dumpPromptLast(prompt)
             recordSendPoint(prompt)
@@ -11539,11 +11550,11 @@ class MainActivity : Activity() {
                     // pilihan eksplisit; fallback akan memakai akun WebView
                     // utama yang berbeda.
                     addBubble("⚠️ $err", false, turn = true)
-                }, deltaPrompt = deltaPrompt)
+                }, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
                 return
             }
             val chatFn: (String, Boolean, Boolean, (String) -> Unit, (String, String) -> Unit, (String) -> Unit) -> Unit =
-                { p, t, s, op, od, oe -> apiClient.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt) }
+                { p, t, s, op, od, oe -> apiClient.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
             chatFn(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
                 // Giliran senyap (verifikasi/ekstraksi): JANGAN tampilkan teks mentah —
                 // proses mikir model bisa bocor jadi bubble sampah. Cukup label status.
@@ -12344,9 +12355,14 @@ class MainActivity : Activity() {
             }
             if (verifyTurn) {
                 verifyTurn = false
-                // Hasil verifikasi WAJIB disaring: model suka membocorkan proses mikirnya
-                // (Inggris, draf, catatan meta). Teks mentah tidak pernah ditampilkan.
-                when (val cleaned = cleanVerdict(visible)) {
+                // vc330 KATUP: sentinel "dilewati" dari klien (wadah
+                // penuh, tanpa POST) BUKAN verdict — WAJIB dicek
+                // SEBELUM cleanVerdict (cleanVerdict akan memetakan
+                // teks ini jadi "koreksi" di cabang else). UI menampilkan
+                // "dilewati", BUKAN "lolos verifikasi".
+                if (visible.trim() == AgentPrompt.VERIFY_SKIPPED_VC330) {
+                    addMsg("⏭️ Verifikasi diri dilewati vc330 (wadah server penuh — giliran senyap tidak boleh membuat wadah baru)", "meta", turn = true)
+                } else when (val cleaned = cleanVerdict(visible)) {
                     "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
                     null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
                     else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false, turn = true)
@@ -12573,7 +12589,13 @@ class MainActivity : Activity() {
                     val ctxHist = try { MemoryDb.get(this).historyTranscriptVc230(20, 20000, turnSessionId) } catch (e: Exception) { "" }
                     val trailTxt = synchronized(turnWork) { vc228FullTrailText(turnWork.toList()) }
                     val wsLineVc228 = try { WorldState.line(this) } catch (e: Exception) { "" }
-                    sendToAgent("VERIFIKASI DIRI (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH & RIWAYAT di bawah ini. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: " + wsLineVc228 + " — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.\n\nJEJAK TOOL GILIRAN INI:\n$trailTxt\n\nRIWAYAT:\n$ctxHist\n\nJAWABAN FINAL YANG DIPERIKSA:\n$visible")
+                    // vc330 SESI: verifikasi kini membawa DELTA (jangkar +
+                    // jejak + WorldState + jawaban final — TANPA ctxHist
+                    // 20.000 char). Prompt PENUH tetap teks lama lengkap
+                    // (fallback bila wadah belum primed).
+                    val fullVerifyVc330 = "VERIFIKASI DIRI (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH & RIWAYAT di bawah ini. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: " + wsLineVc228 + " — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.\n\nJEJAK TOOL GILIRAN INI:\n$trailTxt\n\nRIWAYAT:\n$ctxHist\n\nJAWABAN FINAL YANG DIPERIKSA:\n$visible"
+                    val deltaVerifyVc330 = AgentPrompt.deltaVerifyPromptVc330(currentTurnUser, trailTxt, wsLineVc228, visible)
+                    sendToAgent(fullVerifyVc330, deltaVerifyVc330)
                     return
                 }
             }
@@ -12591,7 +12613,16 @@ class MainActivity : Activity() {
                     internalTurn = true
                     collectingExtract = true
                     pendingExtractProposals.clear()
-                sendToAgent("TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist")
+                    // vc330 SESI: ekstraksi kini membawa DELTA (jangkar +
+                    // jendela 13 pesan terakhir, cap 8.000 — BUKAN
+                    // 40/40.000). Prompt PENUH tetap teks lama lengkap
+                    // (40/40.000, fallback bila wadah belum primed).
+                    // Gate sinyal fakta tetap memakai hist penuh (tidak
+                    // berubah); jendela delta diambil dari transkrip
+                    // yang sama (13 pesan terakhir).
+                    val histRecentVc330 = try { MemoryDb.get(this).historyTranscriptVc230(AgentPrompt.EXTRACT_WINDOW_N_VC330, AgentPrompt.EXTRACT_WINDOW_CHARS_VC330, turnSessionId) } catch (e: Exception) { "" }
+                    val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
+                    sendToAgent(fullExtractVc330, AgentPrompt.deltaExtractPromptVc330(currentTurnUser, histRecentVc330))
                 }
             } else {
                 if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5

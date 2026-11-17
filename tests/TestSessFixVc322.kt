@@ -204,12 +204,19 @@ fun main(args: Array<String>) {
     check("5.5 MainActivity sendToAgent menerima deltaPrompt + teruskan ke kedua klien",
         "private fun sendToAgent(prompt: String, deltaPrompt: String? = null)" in maSrc &&
         "deltaPrompt = deltaPrompt" in maSrc)
+    // CATATAN vc330: cek 5.6/5.7 diperbarui — chat/runChat kini membawa
+    // param tambahan di ujung `silentKindVc330: String? = null` (katup
+    // pengaman giliran senyap vc330). Perilaku deltaPrompt TIDAK berubah
+    // (threading delta identik, param baru default null); premis
+    // "tanda tangan berakhir di deltaPrompt" sudah tidak berlaku.
+    // (Preseden: CATATAN vc323/vc324 memperbarui cek 5.18 yang sama
+    // alasannya — VERSION naik karena JNI baru.)
     check("5.6 DsApiClient chat/runChat menerima deltaPrompt",
         "forceFresh: Boolean = false, deltaPrompt: String? = null" in dsSrc &&
-        "private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null)" in dsSrc)
+        "private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null)" in dsSrc)
     check("5.7 SlotClient chat/runChat menerima deltaPrompt",
         "reviewer: Boolean = false, deltaPrompt: String? = null" in slSrc &&
-        "forceFresh: Boolean = false, freshEphemeral: Boolean = false, reviewer: Boolean = false, deltaPrompt: String? = null)" in slSrc)
+        "forceFresh: Boolean = false, freshEphemeral: Boolean = false, reviewer: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null)" in slSrc)
     check("5.8 DsApiClient: keputusan delta + POST delta + akumulasi panjang terkirim",
         "val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322" in dsSrc &&
         "completeWithSession(sid, sendPromptVc322" in dsSrc &&

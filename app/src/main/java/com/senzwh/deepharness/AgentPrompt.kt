@@ -1287,6 +1287,75 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
         return base + "\n\n" + autoSaveBlock
     }
 
+    // ---- vc330 SESI (fix bocor sesi: verifikasi + ekstraksi delta +
+    // katup pengaman; bukti live Sendy 17 Nov 09:07, vc329) ----
+    // AKAR: giliran VERIFIKASI DIRI + TUGAS LATAR (ekstraksi) mengirim
+    // prompt PENUH tanpa deltaPrompt — verifikasi membawa ulang ctxHist
+    // 20.000 char, ekstraksi membawa ulang hist 40 pesan / 40.000 char.
+    // Begitu accum + prompt penuh > DEFAULT_CAP 200.000, guard vc321
+    // menembak -> clearServerSession + createServerSession = wadah BARU
+    // (notifikasi "sesi browser 2 membuat wadah baru") padahal sesi
+    // Harness tetap "Utama". Fix vc327 H3 hanya mencakup auto-save.
+    // Jendela ekstraksi vc330 = 13 pesan (10 sejak ekstraksi terakhir +
+    // overlap 3, komentar vc241 O7 — kode lama memakai 40/40.000,
+    // padahal niatnya 13); cap char 8.000 (tipikal 13 pesan jauh di
+    // bawah 40.000; delta ekstraksi tipikal ~2-3k + jangkar).
+    /** Jumlah pesan jendela ekstraksi vc330 (10 baru + overlap 3). */
+    const val EXTRACT_WINDOW_N_VC330 = 13
+    /** Cap char jendela riwayat ekstraksi vc330 (≪ 40.000 lama). */
+    const val EXTRACT_WINDOW_CHARS_VC330 = 8000
+
+    /** Sentinel yang dikembalikan klien bila giliran verifikasi
+     *  DILEWATI katup vc330 (wadah penuh — tanpa POST). MainActivity
+     *  WAJIB mengecek sentinel ini SEBELUM cleanVerdict: teks ini
+     *  TIDAK diawali "LULUS" dan TIDAK mengandung "koreksi", tapi
+     *  cleanVerdict akan mengembalikannya utuh sebagai "koreksi" bila
+     *  lolos ke sana (cabang else, panjang < 350). */
+    const val VERIFY_SKIPPED_VC330 = "VERIFIKASI-DILEWATI-VC330"
+
+    /** Respons netral katup vc330 untuk giliran senyap yang dilewati
+     *  (tanpa POST). "verify" -> sentinel verifikasi (MainActivity
+     *  menampilkannya sebagai "dilewati"); "extract" -> persis
+     *  "TIDAK ADA" (itu yang model sendiri jawab bila tak ada fakta
+     *  baru — cabang internalTurn lalu menutup giliran tanpa proposal).
+     *  Murni, tanpa Context — bisa diuji di JVM. */
+    fun silentSkippedResponseVc330(kind: String?): String =
+        if (kind == "extract") "TIDAK ADA" else VERIFY_SKIPPED_VC330
+
+    /** vc330 SESI — delta VERIFIKASI DIRI: jangkar vc316 + instruksi
+     *  verifikasi yang sama seperti prompt penuh (aturan output ketat
+     *  verbatim supaya cleanVerdict tetap bekerja) + JEJAK TOOL +
+     *  WorldState + JAWABAN FINAL — TANPA pengiriman ulang ctxHist
+     *  (20.000 char). Riwayat SUDAH ada di konteks sesi server yang
+     *  sama, dinyatakan eksplisit supaya model tidak memintanya ulang.
+     *  Prompt PENUH (argumen pertama sendToAgent) tetap teks lama
+     *  lengkap — fallback bila wadah belum primed. Murni, tanpa
+     *  Context — bisa diuji di JVM. */
+    fun deltaVerifyPromptVc330(userCommand: String, trailTxt: String, wsLine: String, finalAnswer: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[VERIFIKASI DIRI — vc330 delta (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH di bawah ini. RIWAYAT percakapan SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: ").append(wsLine).append(" — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.]")
+        sb.append("\n\nJEJAK TOOL GILIRAN INI:\n").append(trailTxt)
+        sb.append("\n\nJAWABAN FINAL YANG DIPERIKSA:\n").append(finalAnswer)
+        return sb.toString()
+    }
+
+    /** vc330 SESI — delta TUGAS LATAR (ekstraksi): jangkar vc316 +
+     *  instruksi ekstraksi yang sama seperti prompt penuh + jendela
+     *  RIWAYAT BARU sejak ekstraksi terakhir SAJA (13 pesan terakhir,
+     *  cap 8.000 char — BUKAN 40 pesan / 40.000 char). Riwayat lebih
+     *  lama SUDAH ada di konteks sesi server yang sama. Prompt PENUH
+     *  (40/40.000) tetap dikirim sebagai argumen pertama sendToAgent —
+     *  fallback bila wadah belum primed. Murni, tanpa Context — bisa
+     *  diuji di JVM. */
+    fun deltaExtractPromptVc330(userCommand: String, recentHist: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[TUGAS LATAR — vc330 delta (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut jendela RIWAYAT BARU sejak ekstraksi terakhir (13 pesan terakhir; riwayat lebih lama SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang). Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.]")
+        sb.append("\n\nRIWAYAT BARU (13 pesan terakhir):\n").append(recentHist)
+        return sb.toString()
+    }
+
 
     // vc272 O2: daftar nama tool VALID berasal dari ToolRegistry — sumber
     // yang sama dengan teks katalog (satu sumber, dua pemakaian). TIDAK ADA

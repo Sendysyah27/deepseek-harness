@@ -583,7 +583,10 @@ fun main(args: Array<String>) {
     cek("6.5 vc327: deltaTurnPromptVc327 ada di AgentPrompt + dipakai MainActivity", agentSrc.contains("fun deltaTurnPromptVc327(") && src(treeDir, "MainActivity.kt").contains("AgentPrompt.deltaTurnPromptVc327("))
     cek("6.6 vc321/vc322: isSessionInvalidSignal delegasi DsFailure", dsSrc.contains("private fun isSessionInvalidSignal(msg: String?): Boolean = DsFailure.isSessionInvalidSignal(msg)"))
     cek("6.7 vc321: createServerSession tepat 2 call site", dsSrc.split("createServerSession(token, cookie, ua)").size - 1 == 2)
-    cek("6.8 vc322: deltaPrompt diteruskan chat -> runChat", dsSrc.contains("runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)"))
+    // CATATAN vc330: cek 6.8 diperbarui — chat -> runChat kini juga
+    // meneruskan `silentKindVc330 = silentKindVc330` (katup pengaman
+    // giliran senyap vc330). Threading deltaPrompt TIDAK berubah.
+    cek("6.8 vc322: deltaPrompt diteruskan chat -> runChat", dsSrc.contains("runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)"))
     cek("6.9 vc327: pesan 'sesi server baru ditahan vc327' utuh", dsSrc.contains("[sesi server baru ditahan vc327: stream putus berulang"))
     cek("6.10 vc321: guard reset proaktif utuh (shouldResetServerSessionVc321)", dsSrc.contains("TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)") && dsSrc.contains("Wadah server di-reset proaktif vc321"))
 

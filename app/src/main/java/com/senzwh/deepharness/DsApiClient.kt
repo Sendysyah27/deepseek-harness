@@ -40,7 +40,7 @@ class DsApiClient(private val webView: WebView) {
 
     fun chat(prompt: String, thinking: Boolean, search: Boolean,
              onPartial: (String) -> Unit, onDone: (String, String) -> Unit, onError: (String) -> Unit,
-             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false, deltaPrompt: String? = null) {
+             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null) {
         val run: () -> Unit = {
             Thread {
                 // vc271 O5: Governor dihitung di pintu masuk EKSEKUSI request,
@@ -57,7 +57,7 @@ class DsApiClient(private val webView: WebView) {
                 // pada percobaan pertama. Panggilan biasa tidak berubah
                 // (forceFresh=false diteruskan apa adanya).
                 val res = try {
-                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
+                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
                 } catch (e: Exception) {
                     // vc316 P1: klasifikasi via DsFailure.classifyFailure —
                     // JANGAN lagi contains(...) manual di sini. Kode HTTP di-parse
@@ -80,7 +80,7 @@ class DsApiClient(private val webView: WebView) {
                         for (w in waits2) {
                             onPartial("⏳ Stream DeepSeek terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
-                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
+                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
                                 if (DsFailure.isSuspendSignal(m2)) throw e2
@@ -113,7 +113,7 @@ class DsApiClient(private val webView: WebView) {
                             }
                             if (!reviewer) TurnMetrics.noteForceFreshVc327(webView.context, ffKeyVc327, System.currentTimeMillis())
                             onPartial("⏳ Stream putus ${cutNvc327}x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
-                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt) }
+                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
                             catch (e3: Exception) { throw e3 }
                         }
                     } else if (DsFailure.isSuspendSignal(m)) {
@@ -128,7 +128,7 @@ class DsApiClient(private val webView: WebView) {
                         val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                         if (!switched) throw Exception((e.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         onPartial("⏳ Akun DeepSeek ter-suspended — pindah ke akun cadangan yang sehat, lanjut…")
-                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
+                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
                     } else when (failure.kind) {
                         FailureKind.RATE_LIMIT -> {
                             // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
@@ -141,7 +141,7 @@ class DsApiClient(private val webView: WebView) {
                             for (w in waits) {
                                 onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
                                 catch (e2: Exception) {
                                     if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
                                     lastErr = e2
@@ -151,7 +151,7 @@ class DsApiClient(private val webView: WebView) {
                                 val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                                 if (switched) {
                                     onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
-                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt) } catch (e4: Exception) { lastErr = e4 }
+                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) } catch (e4: Exception) { lastErr = e4 }
                                 }
                             }
                             out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
@@ -166,7 +166,7 @@ class DsApiClient(private val webView: WebView) {
                             for (w in DsFailure.UPSTREAM_WAITS_MS) {
                                 onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
                                 Thread.sleep(w)
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt); break }
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
                                 catch (e2: Exception) {
                                     val k2 = DsFailure.classifyFailure(0, "", e2).kind
                                     if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
@@ -180,7 +180,7 @@ class DsApiClient(private val webView: WebView) {
                             // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
                             // sebelum menyerah ke jalur WebView.
                             Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
-                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt)
+                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
                         }
                         else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
@@ -197,7 +197,7 @@ class DsApiClient(private val webView: WebView) {
         if (!accepted) onError("Mode API: antrean penuh (maks 3 menunggu). Coba lagi sebentar lagi.")
     }
 
-    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null): Pair<String, String> {
+    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null): Pair<String, String> {
         val pooled = authOverride ?: try { AccountPool.resolve(webView.context) } catch (e: Exception) { null }
         val token = pooled?.first ?: extractToken() ?: throw Exception("token sesi tidak ditemukan di WebView (userToken kosong). Pastikan tab Web sudah LOGIN, lalu coba lagi.")
         val cookie = pooled?.second ?: (CookieManager.getInstance().getCookie("https://chat.deepseek.com") ?: "")
@@ -260,6 +260,15 @@ class DsApiClient(private val webView: WebView) {
         }
         val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, false, false, primedVc327, accumVc321, deltaPrompt?.length ?: 0)
         val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
+        // vc330 KATUP PENGAMAN (cermin SlotClient): giliran senyap
+        // (verifikasi/ekstraksi) yang akan menembak guard reset
+        // DILEWATI tanpa POST — giliran senyap tidak boleh membuat
+        // wadah baru. DsApiClient tidak punya freshEphemeral (teruskan
+        // false). Guard user-visible di bawah TIDAK berubah.
+        if (TurnMetrics.shouldSkipSilentVc330(silentKindVc330, useDeltaVc322, stored != null, TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length), false)) {
+            logSessEvent("⏭️ " + (if (silentKindVc330 == "extract") "Ekstraksi" else "Verifikasi") + " DILEWATI vc330 (wadah penuh: akumulasi $accumVc321 char + prompt ${prompt.length} char) — giliran senyap tidak boleh membuat wadah baru.")
+            return Pair(AgentPrompt.silentSkippedResponseVc330(silentKindVc330), "")
+        }
         if (!useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
             logSessEvent("Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
             clearServerSession(storedPair!!.first, harnessNo)
