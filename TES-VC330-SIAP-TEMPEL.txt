@@ -1,0 +1,123 @@
+TES VC330 — APAKAH WADAH BARU MASIH LAHIR? (bahasa bayi)
+=====================================================================
+Versi: vc330 (4.48.9.164). Install dulu APK vc330 (Main atau Pure),
+lalu tes di bawah ini.
+
+KENAPA TES INI PENTING (1 menit baca):
+vc330 memperbaiki SATU bug: sesi browser membuat "wadah baru"
+(sesi baru di web DeepSeek) padahal tidak seharusnya.
+Kejadian nyata 17 Nov 09:07, vc329: di chat "Utama" (slot Browser 2),
+"say hello bro" AMAN, tapi "cek skill lists" (pakai tool) langsung
+memunculkan notifikasi "sesi browser 2 membuat wadah baru" — padahal
+sesi Harness tetap "Utama". Penyebabnya: verifikasi jawaban + tugas
+latar (ekstraksi fakta) mengirim ulang riwayat penuh, sehingga wadah
+server yang sudah penuh dibuang dan diganti baru.
+vc330 membuat verifikasi + ekstraksi mengirim DELTA saja (yang baru),
+dan kalau wadah sudah penuh, giliran senyap itu DILEWATI saja —
+tidak boleh membuat wadah baru.
+
+YANG TETAP BERLAKU:
+- TES-VC329 tetap berlaku penuh. Kerjakan TES-VC329 seperti biasa.
+- TES-VC328, TES-VC327, dan T1–T6 vc322 tetap berlaku penuh.
+Kalau tes-tes lama itu GAGAL di vc330, itu REGRESI — laporkan
+ke Jhon, jangan lanjut pakai vc330 untuk kerja penting.
+
+ISTILAH (biar tidak bingung):
+- "Sesi Harness" = chat di aplikasi Harness (mis. "Utama").
+- "Wadah" / "sesi server" = percakapan di web DeepSeek (sidebar kiri).
+  Satu sesi Harness HARUS pakai SATU wadah yang sama terus.
+- "Wadah baru lahir" = muncul sesi baru di web DeepSeek / notifikasi
+  "membuat wadah baru" — ini yang TIDAK BOLEH terjadi di tes ini.
+- "Verifikasi diri" = sesudah jawaban, aplikasi memeriksa sendiri
+  jawaban itu (muncul tulisan "lolos verifikasi diri" atau
+  "verifikasi tidak konklusif" di chat).
+- "JEJAK SESI SERVER" = catatan di aplikasi yang menulis kapan
+  wadah dibuat / di-reset (buka lewat Setup / menu sesi server).
+- "Giliran senyap" = verifikasi + ekstraksi fakta — kerjanya di
+  belakang layar, user tidak melihat jawabannya langsung.
+- "Dilewati" = giliran senyap yang TIDAK jadi dijalankan karena
+  wadah penuh — muncul tulisan "Verifikasi diri dilewati vc330".
+  Ini HASIL YANG BENAR (bukan gagal), selama tidak ada wadah baru.
+
+---------------------------------------------------------------
+TES 1 — ULANGI KEJADIAN 17 NOV 09:07 (5 menit, WAJIB)
+---------------------------------------------------------------
+LANGKAH:
+1. Buka Harness. Buka sesi "Utama" (chat 1-1 yang sudah panjang
+   — yang biasa dipakai, BUKAN sesi baru kosong). Pastikan slot
+   Browser 2 sudah login (akun Eneng Sunarsih, seperti waktu kejadian).
+2. Kirim perintah pendek: "say hello bro"
+   Tunggu jawabannya selesai.
+3. Kirim perintah pakai tool: "cek skill lists"
+   Tunggu jawabannya selesai (tabel skill harus tampil).
+4. Kirim SATU perintah tool lain, contoh: "cek skill lists,
+   lalu jelaskan singkat skill #6 dan #8"
+   Tunggu jawabannya selesai.
+
+LULUS kalau:
+  - Ketiga jawaban muncul dan nyambung, DAN
+  - Tabel skill tampil seperti biasa, DAN
+  - TIDAK ADA notifikasi / pesan "membuat wadah baru" selama
+    ketiga perintah itu, DAN
+  - JEJAK SESI SERVER tidak menunjukkan reset / wadah baru
+    selama tes ini.
+
+GAGAL kalau:
+  - Muncul notifikasi / pesan "membuat wadah baru", ATAU
+  - JEJAK SESI SERVER menunjukkan wadah baru lahir / di-reset,
+    ATAU
+  - Jawaban macet / kartu merah muncul.
+
+CATATAN:
+- Sesudah jawaban "cek skill lists", biasanya muncul tulisan
+  verifikasi diri ("lolos verifikasi diri" / "verifikasi tidak
+  konklusif"). Itu NORMAL — verifikasi tetap jalan.
+- Kalau muncul tulisan "Verifikasi diri dilewati vc330", itu
+  JUGA LULUS (artinya wadah sudah penuh dan verifikasi sengaja
+  dilewati supaya tidak membuat wadah baru). Yang penting TIDAK
+  ADA wadah baru.
+
+---------------------------------------------------------------
+TES 2 — EKSTRAKSI FAKTA TETAP JALAN (besok / sesudah 10 pesan,
+opsional tapi dianjurkan)
+---------------------------------------------------------------
+Ekstraksi fakta jalan otomatis tiap 10 pesan — aplikasi mengumpulkan
+fakta baru tentang user untuk dimintai persetujuan batch.
+LANGKAH:
+1. Pakai "Utama" seperti biasa sampai total 10 pesan terkirim
+   (boleh dicicil, tidak harus sekaligus).
+2. Kalau ada dialog persetujuan batch fakta (daftar fakta baru),
+   buka dan periksa isinya.
+
+LULUS kalau:
+  - Dialog batch fakta muncul seperti biasa (bila ada fakta baru),
+    DAN
+  - TIDAK ADA notifikasi "membuat wadah baru" saat ekstraksi jalan.
+
+GAGAL kalau:
+  - Muncul notifikasi "membuat wadah baru", ATAU
+  - Dialog batch tidak pernah muncul padahal biasanya muncul
+    (tulis ke Jhon: sudah berapa pesan sejak tes).
+
+---------------------------------------------------------------
+YANG TIDAK PERLU DITES:
+- Sesi baru kosong: perintah pertama di sesi baru memang selalu
+  kirim prompt penuh (1 sesi baru itu WAJAR).
+- Room / grup: tidak diubah di vc330 (tetap berlaku TES-VC329).
+- Upload file: tidak diubah di vc330 (tetap berlaku TES-VC328).
+- Tampilan / tombol / warna: tidak ada yang berubah.
+
+---------------------------------------------------------------
+LAPORAN KE JHON (copy-paste, isi angkanya):
+---------------------------------------------------------------
+TES VC330:
+- TES 1 (say hello + cek skill lists + 1 perintah tool): LULUS / GAGAL
+  - Notifikasi "wadah baru" selama TES 1: ADA / TIDAK ADA
+  - JEJAK SESI SERVER: ada reset/wadah baru? YA / TIDAK
+  - Tabel skill tampil? YA / TIDAK
+  - Tulisan verifikasi sesudah jawaban: "lolos verifikasi diri" / "tidak konklusif" / "dilewati vc330" / tidak ada
+- TES 2 (ekstraksi/batch fakta, kalau dites): LULUS / GAGAL
+- TES-VC329: LULUS / GAGAL (lihat file TES-VC329-SIAP-TEMPEL.txt)
+- TES-VC328: LULUS / GAGAL
+- TES-VC327: LULUS / GAGAL
+- T1–T6 vc322: LULUS / GAGAL
