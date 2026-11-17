@@ -5176,6 +5176,11 @@ class MainActivity : Activity() {
     private fun sanitizePartial(p: String): String {
         var t = p
         t = DsSafetyStrip.strip(t)
+        // vc331: markup DSML tidak pernah tampil live saat streaming —
+        // blok utuh dihapus + potong di pembuka DSML pertama (tanda
+        // giliran masih mengalir); bubble final tetap memakai strip
+        // final di extractToolCall.
+        t = AgentPrompt.stripForStreamingVc331(t)
         val ti = t.indexOf("{\"tool\"")
         if (ti >= 0) t = t.substring(0, ti)
         val ci = t.indexOf("```")
