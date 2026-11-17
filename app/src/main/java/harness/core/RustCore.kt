@@ -15,7 +15,7 @@ package harness.core
  */
 object RustCore {
     /** Versi seam JNI — naikkan tiap kali signature berubah. */
-    const val VERSION = 9
+    const val VERSION = 10
 
     val available: Boolean
 
@@ -172,4 +172,58 @@ object RustCore {
      * slice 8; PoW memakai slice 2; klasifikasi memakai slice 1.
      */
     external fun dsApiJson(request: String): String?
+
+    // ---- Slice 12: Otak latar/room (BgBrain/GroupChat/DsAgent/OcCoord) ----
+    /**
+     * Logika murni BgBrain.kt. Request JSON `{"op":...}`:
+     * `cut_boundary`, `trim_transcript`, `bg_quiet_hour`,
+     * `battery_formula`, `submit_decision`, `continuation_prompt_bg`,
+     * `honest_cap_stop_bg`, `bg_tool_route`, `watchdog_decision`,
+     * `queue_fact_proposal`, `deliver_title`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal (panic/error di boundary) -> pemanggil WAJIB
+     * fallback ke implementasi Kotlin lama. WebView latar, notifikasi,
+     * thread/loop orkestrasi dan parkir/approval tetap Kotlin.
+     */
+    external fun bgBrainJson(request: String): String?
+
+    /**
+     * Logika murni GroupChat.kt. Request JSON `{"op":...}`:
+     * `parse_mentions`, `member_info`, `select_queue`, `chair_hop`,
+     * `slot_resolve`, `build_prompt`, `continuation_prompt_room`,
+     * `honest_cap_stop_group`, `retrieve_memories_filter`,
+     * `quiet_hour_group`, `bg_round_gate`, `group_tool_route`,
+     * `save_last_round_plan`, `parse_plans`, `render_notif_3lines`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal -> fallback Kotlin. `build_prompt` menerima
+     * katalog yang SUDAH dipotong (`catalogForTask` + backstop 30k
+     * vc321 di Kotlin) — JANGAN kirim katalog penuh dari Rust.
+     */
+    external fun groupChatJson(request: String): String?
+
+    /**
+     * Logika murni DsAgent.kt. Request JSON `{"op":...}`:
+     * `poll_step`, `parse_eval_result`, `json_quote`,
+     * `build_attach_js`, `build_send_js`, `ds_js`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal -> fallback Kotlin. Evaluasi WebView
+     * (`evaluateJavascript`) + polling thread tetap Kotlin.
+     */
+    external fun dsAgentJson(request: String): String?
+
+    /**
+     * Logika murni OcCoord.kt. Request JSON `{"op":...}`:
+     * `result_notif_id`, `rule_defaults`, `sanitize_rule`, `rule_int`,
+     * `spinning_pattern`, `spin_observe`, `spin_flush`, `budget_over`,
+     * `looks_failed`, `quiet_now`, `incremental_text`,
+     * `collect_result`, `scan_messages`, `await_body`, `honest_status`,
+     * `runloop_gate`, `session_rotate`, `serve_select`,
+     * `probe_cache_read`, `probe_cache_write`, `status_text`,
+     * `task_result_text`, `peek_text`, `parse_perm_event`,
+     * `perm_stale`, `perm_decision`, `battery_pct`.
+     * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
+     * `null` = Rust gagal -> fallback Kotlin. HTTP ke serve,
+     * Termux, DB dan notifikasi tetap Kotlin.
+     */
+    external fun ocCoordJson(request: String): String?
 }

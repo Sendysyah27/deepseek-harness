@@ -36,7 +36,7 @@
 //       uploadPostKotlin dibandingkan per-baris transport karena badan
 //       lamanya terbelah ke *Result), solvePowHeader + completeWithSession
 //       + perilaku vc321/vc322/vc327 utuh, panen cookie tetap Kotlin.
-//   (f) STRUKTUR: RUST_CORE_VERSION 9 + 29 simbol JNI + dsApiJson +
+//   (f) STRUKTUR: RUST_CORE_VERSION 10 + 33 simbol JNI + dsApiJson +
 //       modul ds_api, TANPA dependensi Cargo baru, TANPA sentuhan
 //       SlotClient/TurnMetrics/Flavor/GroupChat/BgBrain/MainActivity.
 //
@@ -359,15 +359,15 @@ fun main(args: Array<String>) {
     val inst = allocDsApi(rust)
 
     // ---- §1. Seam + VERSION ----
-    cek("1.1 RustCore.kt VERSION 9 + dsApiJson", rcSrc.contains("const val VERSION = 9") && rcSrc.contains("external fun dsApiJson(request: String): String?"))
-    cek("1.2 jni_glue.rs RUST_CORE_VERSION 9 + fn dsApiJson", glue.contains("pub const RUST_CORE_VERSION: jint = 9") && glue.contains("Java_harness_core_RustCore_dsApiJson"))
+    cek("1.1 RustCore.kt VERSION 10 + dsApiJson", rcSrc.contains("const val VERSION = 10") && rcSrc.contains("external fun dsApiJson(request: String): String?"))
+    cek("1.2 jni_glue.rs RUST_CORE_VERSION 10 + fn dsApiJson", glue.contains("pub const RUST_CORE_VERSION: jint = 10") && glue.contains("Java_harness_core_RustCore_dsApiJson"))
     cek("1.3 lib.rs modul ds_api + jni_glue use ds_api", libRs.contains("pub mod ds_api;") && glue.contains("use crate::ds_api;"))
     val nSym = glue.split("pub extern \"C\" fn Java_harness_core_RustCore_").size - 1
-    cek("1.4 29 simbol JNI (28 lama + dsApiJson)", nSym == 29)
+    cek("1.4 33 simbol JNI (29 lama + 4 bgRoom)", nSym == 33)
     if (rust) {
         cek("1.5 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
         val caps = harness.core.RustCore.rustCoreCapabilities()
-        cek("1.6 capabilities: version 9 + dsApiJson + modul ds_api", caps.contains("\"version\":9") && caps.contains("dsApiJson") && caps.contains("\"ds_api\""))
+        cek("1.6 capabilities: version 10 + dsApiJson + modul ds_api", caps.contains("\"version\":10") && caps.contains("dsApiJson") && caps.contains("\"ds_api\""))
         cek("1.7 DsApiSeam.rustDsApi true (mode rust)", DsApiSeam.rustDsApi)
         cek("1.8 seam findSessionId non-null (mode rust)", DsApiSeam.findSessionId("""{"data":{"biz_data":{"chat_session":{"id":"sess-123"}}}}""") == "sess-123")
         cek("1.9 seam estTokens 340/3.4 = 100 (mode rust)", DsApiSeam.estTokens(340, 3.4) == 100L)

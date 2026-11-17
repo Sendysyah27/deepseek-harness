@@ -59,6 +59,14 @@ name: Android vc317
 # (rust 70 + kotlin 70 fallback); suite 2152/2153 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION 8->9; panen cookie/token (WebView/CookieManager)
 # + mesin sesi + loop stream tetap Kotlin.
+# Slice 12 vc329 (TERAKHIR — migrasi PENUH): otak latar/room — logika
+# BgBrain/GroupChat/DsAgent/OcCoord -> Rust via seam BgRoomSeam baru
+# (bg_brain.rs + bg_room_common.rs + group_chat.rs + ds_agent.rs +
+# ds_agent_js.rs + oc_coord.rs, 58 op, 4 JNI baru bgBrainJson/
+# groupChatJson/dsAgentJson/ocCoordJson, tanpa dep baru); P15 608 cek
+# (312 rust / 296 kotlin per mode); suite 2900/2901 (R2-4.1 ditoleransi);
+# RUST_CORE_VERSION 9->10; WebView latar/notifikasi Android/dialog Views
+# + orkestrasi (thread/serve/Termux) tetap Kotlin.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -175,6 +183,9 @@ jobs:
 
       - name: Suite P14 DsApiClient split vc328 (280 cek, 140 per mode)
         run: bash tests/run-suite-ci.sh P14
+
+      - name: Suite P15 BgRoom vc329 (608 cek, 312 rust / 296 kotlin per mode)
+        run: bash tests/run-suite-ci.sh P15
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9

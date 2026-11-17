@@ -484,7 +484,7 @@ fun rustTests(treeDir: String, previewTmp: File) {
     val savedPreviewDir = ConcatApi.previewDir
 
     // -- Seam --
-    check("R1. RustCore.VERSION == 9 (seam vc319; slice 11 vc328 menambah dsApiJson)", RustCore.VERSION == 9, "VERSION=${RustCore.VERSION}")
+    check("R1. RustCore.VERSION == 10 (seam vc319; slice 12 vc329 menambah 4 JNI bgRoom)", RustCore.VERSION == 10, "VERSION=${RustCore.VERSION}")
     check("R2. RustCore.available == true (.so host termuat)", RustCore.available, "available=false — jalankan dengan -Djava.library.path=<harness-core/target/debug>")
     val caps = try { RustCore.rustCoreCapabilities() } catch (t: Throwable) { "" }
     check(

@@ -55,7 +55,8 @@ object OcCoord {
     // tetap — hasil kedua tidak lagi menimpa hasil pertama di shade.
     // Basis 40000 di luar rentang parkir BgBrain (20000-24999) dan ID tetap
     // lama (7701-7712); task.id autoincrement membuat tiap tugas unik.
-    fun resultNotifIdFor(taskId: Long): Int = (40000 + taskId).toInt()
+    fun resultNotifIdFor(taskId: Long): Int =
+        OcCoordSeam.resultNotifIdFor(taskId) ?: (40000 + taskId).toInt()
 
     private val executor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "oc-coord").apply { isDaemon = true }
@@ -69,6 +70,12 @@ object OcCoord {
     private fun mdb(ctx: Context) = MemoryDb.get(ctx.applicationContext)
     private fun rule(ctx: Context, key: String): String {
         val raw = mdb(ctx).coordRule(key, RULE_DEFAULTS[key] ?: "")
+        return OcCoordSeam.sanitizeRule(key, raw) ?: ruleSanitizeKotlin(key, raw)
+    }
+
+    /** Slice 12 (vc329): sanitasi aturan (salinan asli) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun ruleSanitizeKotlin(key: String, raw: String): String {
         // Sanitasi baca (v3.3.2): nilai tidak sah yang sempat tersimpan oleh
         // model sebelum ada validasi tulis dinetralkan di sini.
         return when (key) {
@@ -77,8 +84,10 @@ object OcCoord {
             else -> raw
         }
     }
-    private fun ruleInt(ctx: Context, key: String, def: Int): Int =
-        rule(ctx, key).trim().toIntOrNull() ?: def
+    private fun ruleInt(ctx: Context, key: String, def: Int): Int {
+        val raw = mdb(ctx).coordRule(key, RULE_DEFAULTS[key] ?: "")
+        return OcCoordSeam.ruleInt(key, raw, def) ?: rule(ctx, key).trim().toIntOrNull() ?: def
+    }
 
     // vc265 N2-m7: kill switch F1 dicek PER LANGKAH, bukan cuma di pintu
     // masuk runTask — rantai yang sedang berjalan berhenti saat user
@@ -137,21 +146,65 @@ object OcCoord {
         while (true) {
             val task = db.nextQueuedOcTask() ?: break
             val continuation = db.chainDoneCount(task.chainId) > 0
-            if (continuation) {
-                val battMin = ruleInt(ctx, "chain_batt_min", 20)
-                if (batteryPct(ctx) < battMin) {
-                    EventDb.get(ctx).add("occoord", ctx.packageName, "Rantai ditunda: baterai di bawah $battMin%")
-                    break
-                }
-                if (isQuietNow(rule(ctx, "quiet_hours"))) {
-                    EventDb.get(ctx).add("occoord", ctx.packageName, "Rantai ditunda: jam hening aktif")
-                    break
-                }
-                val delay = ruleInt(ctx, "chain_delay_sec", 10)
-                if (delay > 0) Thread.sleep(delay * 1000L)
-            }
+            if (!runloopGate(ctx, continuation)) break
             runTask(ctx, task)
         }
+    }
+
+    /** Slice 12 (vc329): gerbang rantai `runLoop` (tugas lanjutan:
+     *  baterai min, jam hening, jeda antar tugas) — dipakai P15
+     *  untuk uji paritas. True = lanjut ke `runTask`, false = berhenti. */
+    private fun runloopGate(ctx: Context, continuation: Boolean): Boolean {
+        if (!continuation) return true
+        val battMin = ruleInt(ctx, "chain_batt_min", 20)
+        val battery = batteryPct(ctx)
+        val quietSpec = rule(ctx, "quiet_hours")
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val delay = ruleInt(ctx, "chain_delay_sec", 10)
+        val g = OcCoordSeam.runloopGate(true, battery, battMin, quietSpec, hour, delay)
+        if (g != null) {
+            return when (g.first) {
+                "run" -> {
+                    if (g.third > 0) Thread.sleep(g.third * 1000L)
+                    true
+                }
+                "delay_battery", "delay_quiet" -> {
+                    EventDb.get(ctx).add("occoord", ctx.packageName, g.second ?: "")
+                    false
+                }
+                else -> runloopGateKotlin(ctx)
+            }
+        }
+        return runloopGateKotlin(ctx)
+    }
+
+    /** Slice 12 (vc329): gerbang rantai (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun runloopGateKotlin(ctx: Context): Boolean {
+        val battMin = ruleInt(ctx, "chain_batt_min", 20)
+        if (batteryPct(ctx) < battMin) {
+            EventDb.get(ctx).add("occoord", ctx.packageName, "Rantai ditunda: baterai di bawah $battMin%")
+            return false
+        }
+        if (isQuietNow(rule(ctx, "quiet_hours"))) {
+            EventDb.get(ctx).add("occoord", ctx.packageName, "Rantai ditunda: jam hening aktif")
+            return false
+        }
+        val delay = ruleInt(ctx, "chain_delay_sec", 10)
+        if (delay > 0) Thread.sleep(delay * 1000L)
+        return true
+    }
+
+    /** Slice 12 (vc329): keputusan rotasi sesi (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun sessionRotateKotlin(sid: String, prevCtx: Long, ctxLimit: Long, taskId: Long, taskText: String): OcCoordSeam.SessionRotate {
+        val need = sid.isBlank() || prevCtx > ctxLimit
+        if (!need) return OcCoordSeam.SessionRotate(false, "", null)
+        val title = "🤖 Harness #${taskId} " + taskText.take(42)
+        val note = if (sid.isNotBlank() && prevCtx > ctxLimit) {
+            "(Sesi dirotasi: konteks sesi sebelumnya $prevCtx token melewati batas $ctxLimit — sesi lama dibiarkan utuh di serve, tidak dihapus.)\n"
+        } else ""
+        return OcCoordSeam.SessionRotate(true, note, title)
     }
 
     // ---------------- Eksekusi satu tugas ----------------
@@ -192,22 +245,24 @@ object OcCoord {
                 return
             }
             // Sesi persisten per rantai + rotasi bila konteks melewati batas.
+            // Slice 12 (vc329): keputusan rotasi lewat seam Rust;
+            // pembuatan sesi + tulis prefs tetap Kotlin.
             val ctxLimit = ruleInt(ctx, "session_ctx_limit", 350000).toLong()
             val sKey = "ocChainSession:${task.chainId}"
             val cKey = "ocChainCtx:${task.chainId}"
             var sid = p.getString(sKey, "") ?: ""
             val prevCtx = p.getLong(cKey, 0)
             var rotateNote = ""
-            if (sid.isBlank() || prevCtx > ctxLimit) {
-                val title = "🤖 Harness #${task.id} " + task.text.take(42)
+            val rot = OcCoordSeam.sessionRotate(sid, prevCtx, ctxLimit, task.id, task.text)
+                ?: sessionRotateKotlin(sid, prevCtx, ctxLimit, task.id, task.text)
+            if (rot.needCreate) {
+                val title = rot.title ?: ("🤖 Harness #${task.id} " + task.text.take(42))
                 val created = OcClient.createSession(base, title)
                 if (created == null) {
                     finishTask(ctx, task, "failed", "❌ Gagal membuat sesi OpenCode di $base.")
                     return
                 }
-                if (sid.isNotBlank() && prevCtx > ctxLimit) {
-                    rotateNote = "(Sesi dirotasi: konteks sesi sebelumnya $prevCtx token melewati batas $ctxLimit — sesi lama dibiarkan utuh di serve, tidak dihapus.)\n"
-                }
+                rotateNote = rot.rotateNote
                 sid = created
                 p.edit().putString(sKey, sid).putLong(cKey, 0).apply()
             }
@@ -280,6 +335,69 @@ object OcCoord {
         private val firstSeen = HashMap<String, String>()
         private var pending = ""
         fun observe(chunk: String): String? {
+            // Slice 12 (vc329): satu langkah lewat seam Rust (state
+            // JSON bolak-balik); fallback = observe asli.
+            val r = OcCoordSeam.spinObserve(stateJson(), chunk) ?: return observeKotlin(chunk)
+            applyState(r.second)
+            return r.first
+        }
+        // Baris terakhir tanpa newline ikut dihitung saat tugas selesai.
+        fun flush(): String? {
+            // Slice 12 (vc329): flush lewat seam Rust (pending selalu
+            // dibersihkan walau norm <20); fallback = flush asli.
+            val r = OcCoordSeam.spinFlush(stateJson()) ?: return flushKotlin()
+            applyState(r.second)
+            return r.first
+        }
+        fun reset() { counts.clear(); firstSeen.clear(); pending = "" }
+
+        /** Slice 12 (vc329): serialisasi state watch (counts +
+         *  first_seen + pending) untuk seam Rust. */
+        private fun stateJson(): String {
+            val o = JSONObject()
+            val c = JSONObject()
+            for ((k, v) in counts) c.put(k, v)
+            val f = JSONObject()
+            for ((k, v) in firstSeen) f.put(k, v)
+            o.put("counts", c)
+            o.put("first_seen", f)
+            o.put("pending", pending)
+            return o.toString()
+        }
+
+        /** Slice 12 (vc329): terapkan state JSON dari seam Rust. */
+        private fun applyState(json: String) {
+            try {
+                val o = JSONObject(json)
+                counts.clear()
+                val c = o.optJSONObject("counts")
+                if (c != null) {
+                    val keys = c.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        counts[k] = c.optInt(k)
+                    }
+                }
+                firstSeen.clear()
+                val f = o.optJSONObject("first_seen")
+                if (f != null) {
+                    val keys = f.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        firstSeen[k] = f.optString(k)
+                    }
+                }
+                pending = o.optString("pending")
+            } catch (e: Exception) {
+                // State rusak: reset (watch hanya memengaruhi deteksi
+                // spinning — tidak ada data pengguna yang hilang).
+                counts.clear(); firstSeen.clear(); pending = ""
+            }
+        }
+
+        /** Slice 12 (vc329): observe asli — dipakai bila seam Rust
+         *  tak-tersedia. */
+        private fun observeKotlin(chunk: String): String? {
             if (chunk.isEmpty()) return null
             pending += chunk
             val lines = pending.split("\n")
@@ -295,8 +413,10 @@ object OcCoord {
             }
             return null
         }
-        // Baris terakhir tanpa newline ikut dihitung saat tugas selesai.
-        fun flush(): String? {
+
+        /** Slice 12 (vc329): flush asli — dipakai bila seam Rust
+         *  tak-tersedia. */
+        private fun flushKotlin(): String? {
             if (pending.isBlank()) return null
             val raw = pending
             pending = ""
@@ -307,7 +427,6 @@ object OcCoord {
             if (!firstSeen.containsKey(norm)) firstSeen[norm] = raw.trim()
             return if (n >= 3) firstSeen[norm]?.take(120) else null
         }
-        fun reset() { counts.clear(); firstSeen.clear(); pending = "" }
     }
 
     // VC303-P3-22 (LP-9): anggaran langkah tugas koordinator — jumlah pesan
@@ -318,7 +437,8 @@ object OcCoord {
     // tidak disentuh); anggaran ini menghitung pesan ASISTEN serve, bukan
     // poll Harness, jadi tidak menghukum polling yang sah.
     class OcTaskBudgetVc303(val maxSteps: Int = 200) {
-        fun overSteps(assistantMessages: Int): Boolean = assistantMessages > maxSteps
+        fun overSteps(assistantMessages: Int): Boolean =
+            OcCoordSeam.budgetOver(assistantMessages, maxSteps) ?: (assistantMessages > maxSteps)
     }
 
     // vc277 O17(d): OcCoord tetap tanpa StuckDetector proses (OpenCode
@@ -328,7 +448,12 @@ object OcCoord {
     // cuplikan pola yang berulang, atau null bila tidak berputar.
     // Baris pendek (<20 char) diabaikan agar header/pemisah umum tidak
     // memicu deteksi.
-    private fun spinningPatternVc277(text: String): String? {
+    private fun spinningPatternVc277(text: String): String? =
+        OcCoordSeam.spinningPattern(text) ?: spinningPatternVc277Kotlin(text)
+
+    /** Slice 12 (vc329): pola berputar pasca-hoc (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun spinningPatternVc277Kotlin(text: String): String? {
         val counts = HashMap<String, Int>()
         val firstSeen = HashMap<String, String>()
         for (raw in text.lines()) {
@@ -343,9 +468,30 @@ object OcCoord {
     }
 
     // vc262 K-13: penanda status JUJUR dari isi hasil.
-    private fun looksFailedVc262(text: String): Boolean {
+    private fun looksFailedVc262(text: String): Boolean =
+        OcCoordSeam.looksFailed(text) ?: looksFailedVc262Kotlin(text)
+
+    /** Slice 12 (vc329): penanda gagal (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun looksFailedVc262Kotlin(text: String): Boolean {
         val t = text.lowercase()
         return t.contains("gagal") || t.contains("❌") || t.contains("tidak berhasil") || t.contains("error") || t.contains("tidak selesai")
+    }
+
+    /** Slice 12 (vc329): prefix spinning + status JUJUR (salinan
+     *  asli, vc262 K-13) — dipakai bila seam Rust tak-tersedia. */
+    private fun honestStatusKotlin(status: String, spinning: String?, resultFull: String): Pair<String, String> {
+        var res = resultFull
+        if (spinning != null) res = "⛔ Hasil koordinator terdeteksi berputar: pola yang sama berulang 3x atau lebih dalam teks hasil (contoh: \"" + spinning + "\") — status SEBAGIAN, periksa hasilnya sebelum dipakai.\n\n" + res
+        // vc262 K-13: status JUJUR — hasil yang isinya gagal/sebagian
+        // ditandai "partial", bukan "done".
+        val honest = when {
+            status == "failed" -> "failed"
+            spinning != null -> "partial"
+            looksFailedVc262(res) -> "partial"
+            else -> status
+        }
+        return honest to res
     }
 
     private fun finishTask(ctx: Context, task: MemoryDb.OcTask, status: String, result: String) {
@@ -428,15 +574,12 @@ object OcCoord {
         }
         // vc277 O17(d): hasil berputar (>=3x pola sama) = partial + alasan.
         val spinningVc277 = spinningPatternVc277(result)
-        if (spinningVc277 != null) resultFull = "⛔ Hasil koordinator terdeteksi berputar: pola yang sama berulang 3x atau lebih dalam teks hasil (contoh: \"" + spinningVc277 + "\") — status SEBAGIAN, periksa hasilnya sebelum dipakai.\n\n" + resultFull
-        // vc262 K-13: status JUJUR — hasil yang isinya gagal/sebagian
-        // ditandai "partial", bukan "done".
-        val honestStatusVc262 = when {
-            status == "failed" -> "failed"
-            spinningVc277 != null -> "partial"
-            looksFailedVc262(resultFull) -> "partial"
-            else -> status
-        }
+        // Slice 12 (vc329): prefix spinning + status jujur lewat seam
+        // Rust (Kotlin menghitung ulang bila seam tak-tersedia).
+        val honestPair = OcCoordSeam.honestStatus(status, spinningVc277, resultFull)
+            ?: honestStatusKotlin(status, spinningVc277, resultFull)
+        val honestStatusVc262 = honestPair.first
+        resultFull = honestPair.second
         val db = mdb(ctx)
         db.setOcTask(task.id, status = honestStatusVc262, result = resultFull)
         // vc243 GELOMBANG 2 (K-04): hasil pulang ke SESI ASAL enqueue, bukan
@@ -495,25 +638,10 @@ object OcCoord {
             }
             val msgs = OcClient.messages(base, sid)
             if (msgs.length() == lastCount) stable++ else { stable = 0; lastCount = msgs.length(); lastChangeAt = System.currentTimeMillis() }
-            var agentError: String? = null
-            var asstCountVc303 = 0
-            for (i in baseline until msgs.length()) {
-                val info = msgs.optJSONObject(i)?.optJSONObject("info") ?: continue
-                if (info.optString("role") != "assistant") continue
-                asstCountVc303++
-                if (info.optString("finish") == "stop") finishedSeen = true
-                // v3.3.3: pesan asisten ber-error (mis. endpoint model HTTP 402
-                // "Endpoint is unavailable" dari opencode.ai) = tugas GAGAL
-                // seketika — dulu finish kosong bikin tugas menggantung sampai
-                // timeout 20 menit (insiden tugas #1, 2026-10-22).
-                val errObj = info.optJSONObject("error")
-                if (errObj != null) {
-                    val d = errObj.optJSONObject("data")
-                    val msg = d?.optString("message")?.ifEmpty { null } ?: errObj.optString("name").ifEmpty { "error tak dikenal" }
-                    val code = d?.optInt("statusCode", 0) ?: 0
-                    agentError = msg + if (code > 0) " (HTTP $code)" else ""
-                }
-            }
+            // Slice 12 (vc329): pindaian pesan lewat seam Rust
+            // (finishedSeen bersifat persisten antar poll).
+            val (asstCountVc303, finishedNew, agentError) = scanMessages(msgs, baseline)
+            finishedSeen = finishedSeen || finishedNew
             if (agentError != null) {
                 return Outcome("failed", "❌ Agen OpenCode error dari serve: $agentError\nIni gangguan di sisi opencode.ai/model-nya, bukan harness. Tugas bisa dikirim ulang nanti.", 0)
             }
@@ -551,13 +679,64 @@ object OcCoord {
         val (txt, ctxSize) = collectResult(base, sid, baseline)
         val timedOut = System.currentTimeMillis() >= deadline && !finishedSeen
         if (timedOut) OcClient.abort(base, sid)
+        // Slice 12 (vc329): badan akhir + status lewat seam Rust.
+        val (status, body) = awaitBody(txt, timedOut, sid)
+        return Outcome(status, body, ctxSize)
+    }
+
+    /** Slice 12 (vc329): pindaian pesan `awaitCompletion` (jumlah
+     *  asisten, finishedSeen, agentError terakhir) — dipakai P15
+     *  untuk uji paritas. */
+    private fun scanMessages(msgs: JSONArray, baseline: Int): Triple<Int, Boolean, String?> {
+        val r = OcCoordSeam.scanMessages(msgs, baseline)
+        if (r != null) return r
+        return scanMessagesKotlin(msgs, baseline)
+    }
+
+    /** Slice 12 (vc329): pindaian pesan (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun scanMessagesKotlin(msgs: JSONArray, baseline: Int): Triple<Int, Boolean, String?> {
+        var agentError: String? = null
+        var asstCountVc303 = 0
+        var finishedSeen = false
+        for (i in baseline until msgs.length()) {
+            val info = msgs.optJSONObject(i)?.optJSONObject("info") ?: continue
+            if (info.optString("role") != "assistant") continue
+            asstCountVc303++
+            if (info.optString("finish") == "stop") finishedSeen = true
+            // v3.3.3: pesan asisten ber-error (mis. endpoint model HTTP 402
+            // "Endpoint is unavailable" dari opencode.ai) = tugas GAGAL
+            // seketika — dulu finish kosong bikin tugas menggantung sampai
+            // timeout 20 menit (insiden tugas #1, 2026-10-22).
+            val errObj = info.optJSONObject("error")
+            if (errObj != null) {
+                val d = errObj.optJSONObject("data")
+                val msg = d?.optString("message")?.ifEmpty { null } ?: errObj.optString("name").ifEmpty { "error tak dikenal" }
+                val code = d?.optInt("statusCode", 0) ?: 0
+                agentError = msg + if (code > 0) " (HTTP $code)" else ""
+            }
+        }
+        return Triple(asstCountVc303, finishedSeen, agentError)
+    }
+
+    /** Slice 12 (vc329): badan akhir `awaitCompletion` — dipakai P15
+     *  untuk uji paritas. */
+    private fun awaitBody(txt: String, timedOut: Boolean, sid: String): Pair<String, String> {
+        val r = OcCoordSeam.awaitBody(txt, timedOut, sid)
+        if (r != null) return r
+        return awaitBodyKotlin(txt, timedOut, sid)
+    }
+
+    /** Slice 12 (vc329): badan akhir (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun awaitBodyKotlin(txt: String, timedOut: Boolean, sid: String): Pair<String, String> {
         val body = when {
             txt.isBlank() && timedOut -> "⏱ Timeout tanpa jawaban teks dari agen (sesi $sid). Cek sesi langsung di serve/Termux."
             txt.isBlank() -> "(Agen selesai tanpa teks jawaban — kemungkinan semua hasil berupa aksi tool. Cek sesi $sid di Panel/serve.)"
             timedOut -> "⏱ Timeout — agen dihentikan; hasil parsial:\n$txt"
             else -> txt
         }
-        return Outcome(if (timedOut) "failed" else "done", body, ctxSize)
+        return (if (timedOut) "failed" else "done") to body
     }
 
     // VC303-P3-22 (LP-9): teks jawaban asisten sejak baseline dari JSONArray
@@ -565,6 +744,12 @@ object OcCoord {
     // tanpa cap 3000 char, supaya deteksi spinning inkremental melihat
     // seluruh output, bukan hanya 3000 char pertama.
     private fun incrementalAssistantTextVc303(msgs: JSONArray, baseline: Int): String {
+        return OcCoordSeam.incrementalText(msgs, baseline) ?: incrementalAssistantTextVc303Kotlin(msgs, baseline)
+    }
+
+    /** Slice 12 (vc329): teks asisten inkremental (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun incrementalAssistantTextVc303Kotlin(msgs: JSONArray, baseline: Int): String {
         val sb = StringBuilder()
         for (i in baseline until msgs.length()) {
             val m = msgs.optJSONObject(i) ?: continue
@@ -588,6 +773,12 @@ object OcCoord {
     /** Gabung teks jawaban asisten setelah baseline; lewati ringkasan "## Objective". */
     private fun collectResult(base: String, sid: String, baseline: Int): Pair<String, Long> {
         val msgs = OcClient.messages(base, sid)
+        return OcCoordSeam.collectResult(msgs, baseline) ?: collectResultKotlin(msgs, baseline)
+    }
+
+    /** Slice 12 (vc329): gabung hasil asisten (salinan asli, pesan
+     *  sudah diambil sekali) — dipakai bila seam Rust tak-tersedia. */
+    private fun collectResultKotlin(msgs: JSONArray, baseline: Int): Pair<String, Long> {
         val sb = StringBuilder()
         var ctxSize = 0L
         for (i in baseline until msgs.length()) {
@@ -636,29 +827,9 @@ object OcCoord {
             try {
                 while (!watcherStop) {
                     val line = reader.readLine() ?: break
-                    if (!line.startsWith("data:")) continue
-                    val payload = line.substring(5).trim()
-                    if (payload.isEmpty()) continue
-                    val obj = try { JSONObject(payload) } catch (e: Exception) { continue }
-                    val type = obj.optString("type")
-                    if (!type.contains("permission")) continue
-                    val props = obj.optJSONObject("properties") ?: continue
-                    if (props.optString("sessionID") != sid) continue
-                    val permId = props.optString("id")
-                    if (permId.isBlank()) continue
-                    var title = props.optString("title")
-                    if (title.isBlank()) title = props.optString("pattern")
-                    if (title.isBlank()) title = "izin tool OpenCode"
-                    // vc260 K-02/K-12: ringkasan argumen izin dari SEMUA field event yang ada (tool/pola/perintah/args + objek permission bersarang) — dipakai jejak audit + notifikasi, supaya user melihat APA yang disetujui, bukan cuma judul.
-                    val nestedPermVc260 = props.optJSONObject("permission")?.toString().orEmpty()
-                    val permDetailVc260 = listOf(
-                        "tool=" + props.optString("tool"),
-                        "pattern=" + props.optString("pattern"),
-                        "command=" + props.optString("command"),
-                        "args=" + props.opt("args")?.toString().orEmpty(),
-                        "permission=" + nestedPermVc260
-                    ).filter { it.substringAfter("=").isNotBlank() }.joinToString(" | ").take(2000)
-                    handlePermission(ctx, base, sid, taskId, permId, title.take(300), permDetailVc260)
+                    // Slice 12 (vc329): parse baris SSE lewat seam Rust.
+                    val ev = parsePermEvent(line, sid) ?: continue
+                    handlePermission(ctx, base, sid, taskId, ev.first, ev.second, ev.third)
                 }
             } catch (e: Exception) {
                 // stream ditutup saat tugas selesai — normal
@@ -670,25 +841,89 @@ object OcCoord {
         return handle
     }
 
+    /** Slice 12 (vc329): parse SATU baris SSE `data:` jadi event izin
+     *  (permId, judul, detail) — dipakai P15 untuk uji paritas.
+     *  Null = bukan event izin ATAU seam gagal (pemanggil fallback). */
+    private fun parsePermEvent(line: String, sid: String): Triple<String, String, String>? {
+        val r = OcCoordSeam.parsePermEvent(line, sid)
+        if (r != null) return r
+        return parsePermEventKotlin(line, sid)
+    }
+
+    /** Slice 12 (vc329): parse event izin SSE (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun parsePermEventKotlin(line: String, sid: String): Triple<String, String, String>? {
+        if (!line.startsWith("data:")) return null
+        val payload = line.substring(5).trim()
+        if (payload.isEmpty()) return null
+        val obj = try { JSONObject(payload) } catch (e: Exception) { return null }
+        val type = obj.optString("type")
+        if (!type.contains("permission")) return null
+        val props = obj.optJSONObject("properties") ?: return null
+        if (props.optString("sessionID") != sid) return null
+        val permId = props.optString("id")
+        if (permId.isBlank()) return null
+        var title = props.optString("title")
+        if (title.isBlank()) title = props.optString("pattern")
+        if (title.isBlank()) title = "izin tool OpenCode"
+        // vc260 K-02/K-12: ringkasan argumen izin dari SEMUA field event yang ada (tool/pola/perintah/args + objek permission bersarang) — dipakai jejak audit + notifikasi, supaya user melihat APA yang disetujui, bukan cuma judul.
+        val nestedPermVc260 = props.optJSONObject("permission")?.toString().orEmpty()
+        val permDetailVc260 = listOf(
+            "tool=" + props.optString("tool"),
+            "pattern=" + props.optString("pattern"),
+            "command=" + props.optString("command"),
+            "args=" + props.opt("args")?.toString().orEmpty(),
+            "permission=" + nestedPermVc260
+        ).filter { it.substringAfter("=").isNotBlank() }.joinToString(" | ").take(2000)
+        return Triple(permId, title.take(300), permDetailVc260)
+    }
+
     private fun stopWatcher(h: WatcherHandle) {
         watcherStop = true
         try { h.conn?.disconnect() } catch (e: Exception) {}
     }
 
-    private fun handlePermission(ctx: Context, base: String, sid: String, taskId: Long, permId: String, title: String, detail: String = "") {
+    /** Slice 12 (vc329): keputusan izin (auto_gate / auto_pattern /
+     *  park) — dipakai P15 untuk uji paritas. */
+    private fun permDecision(ctx: Context, title: String): String {
+        val r = OcCoordSeam.permDecision(ToolGate.GATES_DISABLED, rule(ctx, "auto_approve"), title)
+        if (r != null) return r
+        return permDecisionKotlin(ctx, title)
+    }
+
+    /** Slice 12 (vc329): keputusan izin (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun permDecisionKotlin(ctx: Context, title: String): String {
         // vc247: gate dimatikan — izin koordinator langsung disetujui
         // tanpa parkir notifikasi / tunggu keputusan user.
-        if (ToolGate.GATES_DISABLED) {
-            val ok = OcClient.replyPermission(base, sid, permId, "once")
-            // vc260 K-02: VISIBILITAS — tiap izin yang di-auto-approve tercatat (judul + ringkasan argumen + waktu otomatis dari EventDb). Auto-approve TETAP, tidak ada gate baru.
-            EventDb.get(ctx).add("occoord", ctx.packageName, "Izin AUTO-DISETUJUI (gate vc247 nonaktif): $title" + (if (detail.isNotBlank()) " | $detail" else "") + " (terkirim: $ok)")
-            return
-        }
+        if (ToolGate.GATES_DISABLED) return "auto_gate"
         val patterns = rule(ctx, "auto_approve").split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        if (patterns.any { it == "*" || title.contains(it, ignoreCase = true) }) {
-            val ok = OcClient.replyPermission(base, sid, permId, "once")
-            EventDb.get(ctx).add("occoord", ctx.packageName, "Izin AUTO-DISETUJUI (pola aturan): $title" + (if (detail.isNotBlank()) " | $detail" else "") + " (terkirim: $ok)")
-            return
+        if (patterns.any { it == "*" || title.contains(it, ignoreCase = true) }) return "auto_pattern"
+        return "park"
+    }
+
+    /** Slice 12 (vc329): basi izin — dipakai P15 untuk uji paritas. */
+    private fun permStale(ts: Long, nowMs: Long, ttlMin: Int): Boolean {
+        return OcCoordSeam.permStale(ts, nowMs, ttlMin) ?: (ts > 0 && nowMs - ts > ttlMin * 60_000L)
+    }
+
+    private fun handlePermission(ctx: Context, base: String, sid: String, taskId: Long, permId: String, title: String, detail: String = "") {
+        // Slice 12 (vc329): keputusan izin lewat seam Rust
+        // (auto_gate / auto_pattern / park); balas + log + parkir
+        // tetap Kotlin.
+        when (permDecision(ctx, title)) {
+            "auto_gate" -> {
+                val ok = OcClient.replyPermission(base, sid, permId, "once")
+                // vc260 K-02: VISIBILITAS — tiap izin yang di-auto-approve tercatat (judul + ringkasan argumen + waktu otomatis dari EventDb). Auto-approve TETAP, tidak ada gate baru.
+                EventDb.get(ctx).add("occoord", ctx.packageName, "Izin AUTO-DISETUJUI (gate vc247 nonaktif): $title" + (if (detail.isNotBlank()) " | $detail" else "") + " (terkirim: $ok)")
+                return
+            }
+            "auto_pattern" -> {
+                val ok = OcClient.replyPermission(base, sid, permId, "once")
+                EventDb.get(ctx).add("occoord", ctx.packageName, "Izin AUTO-DISETUJUI (pola aturan): $title" + (if (detail.isNotBlank()) " | $detail" else "") + " (terkirim: $ok)")
+                return
+            }
+            else -> { /* parkir di bawah */ }
         }
         // Parkir: tunggu keputusan user (notifikasi / Panel Koordinator).
         val p = prefs(ctx)
@@ -739,8 +974,8 @@ object OcCoord {
         try {
             val o = JSONObject(raw)
             val ts = o.optLong("ts", 0)
-            val ttl = ruleInt(app, "perm_timeout_min", 30) * 60_000L
-            if (ts > 0 && System.currentTimeMillis() - ts > ttl) {
+            val ttlMin = ruleInt(app, "perm_timeout_min", 30)
+            if (permStale(ts, System.currentTimeMillis(), ttlMin)) {
                 p.edit().remove("ocPending").remove("ocPendingTitle").remove("ocPendingDecision").apply()
                 try { (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(APPROVAL_NOTIF_ID) } catch (e: Exception) {}
                 EventDb.get(app).add("occoord", app.packageName, "Izin koordinator BASI dibatalkan (melewati perm_timeout_min) — tidak dibalas ke serve: ${o.optString("title")}")
@@ -769,8 +1004,8 @@ object OcCoord {
             if (raw.isBlank()) return
             val o = JSONObject(raw)
             val ts = o.optLong("ts", 0)
-            val ttl = ruleInt(ctx, "perm_timeout_min", 30) * 60_000L
-            if (ts > 0 && System.currentTimeMillis() - ts > ttl) {
+            val ttlMin = ruleInt(ctx, "perm_timeout_min", 30)
+            if (permStale(ts, System.currentTimeMillis(), ttlMin)) {
                 p.edit().remove("ocPending").remove("ocPendingTitle").remove("ocPendingDecision").apply()
                 try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(APPROVAL_NOTIF_ID) } catch (e: Exception) {}
                 EventDb.get(ctx).add("occoord", ctx.packageName, "Izin koordinator basi disapu (melewati perm_timeout_min) — tidak dibalas ke serve: ${o.optString("title")}")
@@ -797,6 +1032,17 @@ object OcCoord {
     fun taskResultText(ctx: Context, id: Long): String {
         val db = mdb(ctx)
         val t = db.ocTask(id) ?: return "Tugas #$id tidak ditemukan."
+        // Slice 12 (vc329): intipan progres hanya bila tugas masih
+        // berjalan (hindari probe network yang tidak perlu).
+        val peek = if (t.status !in listOf("done", "failed", "cancelled") && t.sessionId.isNotBlank()) peekSessionText(t.sessionId) else ""
+        val taskJson = JSONObject()
+            .put("status", t.status).put("text", t.text).put("result", t.result).put("sessionId", t.sessionId)
+        return OcCoordSeam.taskResultText(id, taskJson, peek) ?: taskResultTextKotlin(t, peek)
+    }
+
+    /** Slice 12 (vc329): teks hasil tugas (salinan asli) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun taskResultTextKotlin(t: MemoryDb.OcTask, peek: String): String {
         val head = "Tugas #${t.id} [${t.status}] — ${t.text.take(120)}"
         return when (t.status) {
             "done" -> "$head\nHASIL:\n${t.result}"
@@ -804,10 +1050,7 @@ object OcCoord {
             "cancelled" -> "$head\nDibatalkan. Catatan: ${t.result}"
             else -> {
                 val sb = StringBuilder("$head\nMasih ${t.status}.")
-                if (t.sessionId.isNotBlank()) {
-                    val peek = peekSessionText(t.sessionId)
-                    if (peek.isNotEmpty()) sb.append("\nProgres terakhir agen: ").append(peek)
-                }
+                if (peek.isNotEmpty()) sb.append("\nProgres terakhir agen: ").append(peek)
                 sb.toString()
             }
         }
@@ -818,18 +1061,24 @@ object OcCoord {
         val base = listOf(4097, 4096, 4099).firstOrNull { OcClient.probe(it) }?.let { OcClient.base(it) } ?: return ""
         return try {
             val msgs = OcClient.messages(base, sid)
-            var last = ""
-            for (i in 0 until msgs.length()) {
-                val m = msgs.optJSONObject(i) ?: continue
-                if (m.optJSONObject("info")?.optString("role") != "assistant") continue
-                val parts = m.optJSONArray("parts") ?: continue
-                for (j in 0 until parts.length()) {
-                    val part = parts.optJSONObject(j) ?: continue
-                    if (part.optString("type") == "text") part.optString("text").trim().takeIf { it.isNotEmpty() }?.let { last = it }
-                }
-            }
-            last.take(700)
+            OcCoordSeam.peekText(msgs) ?: peekSessionTextKotlin(msgs)
         } catch (e: Exception) { "" }
+    }
+
+    /** Slice 12 (vc329): intip teks asisten terakhir (salinan asli)
+     *  — dipakai bila seam Rust tak-tersedia. */
+    private fun peekSessionTextKotlin(msgs: JSONArray): String {
+        var last = ""
+        for (i in 0 until msgs.length()) {
+            val m = msgs.optJSONObject(i) ?: continue
+            if (m.optJSONObject("info")?.optString("role") != "assistant") continue
+            val parts = m.optJSONArray("parts") ?: continue
+            for (j in 0 until parts.length()) {
+                val part = parts.optJSONObject(j) ?: continue
+                if (part.optString("type") == "text") part.optString("text").trim().takeIf { it.isNotEmpty() }?.let { last = it }
+            }
+        }
+        return last.take(700)
     }
 
     /**
@@ -867,6 +1116,34 @@ object OcCoord {
 
     /** Kembalikan (baseUrl, catatan). base null = tidak ada jalur hidup. */
     fun ensureServe(ctx: Context): Pair<String?, String> {
+        val mode = rule(ctx, "path_mode")
+        // Slice 12 (vc329): pohon keputusan dua fase lewat seam Rust;
+        // probe/start/Termux tetap Kotlin. Fallback = ensureServe asli
+        // bila seam tak-tersedia di fase mana pun.
+        val s0 = OcCoordSeam.serveSelect(0, mode, OcClient.probe(4099), OcClient.probe(4097), OcClient.probe(4096))
+        if (s0 != null) {
+            when (s0.action) {
+                "return" -> return Pair(s0.basePort?.let { OcClient.base(it) }, s0.note)
+                "start_4099" -> { startServeViaTermux(ctx, 4099); Thread.sleep(6000) }
+                "start_4097" -> { startServeViaTermux(ctx, 4097); Thread.sleep(6000) }
+                else -> return ensureServeKotlin(ctx)
+            }
+            val s1 = OcCoordSeam.serveSelect(1, mode, OcClient.probe(4099), OcClient.probe(4097), OcClient.probe(4096))
+            if (s1 != null) {
+                return when (s1.action) {
+                    "return" -> Pair(s1.basePort?.let { OcClient.base(it) }, s1.note)
+                    "fail" -> Pair(null, s1.note)
+                    else -> ensureServeKotlin(ctx)
+                }
+            }
+            return ensureServeKotlin(ctx)
+        }
+        return ensureServeKotlin(ctx)
+    }
+
+    /** Slice 12 (vc329): ensureServe asli (dua fase) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun ensureServeKotlin(ctx: Context): Pair<String?, String> {
         val mode = rule(ctx, "path_mode")
         if (mode == "mandiri") {
             if (OcClient.probe(4099)) return Pair(OcClient.base(4099), "")
@@ -930,8 +1207,29 @@ object OcCoord {
     fun probeCached(ctx: Context, force: Boolean): Map<Int, Boolean> {
         val p = prefs(ctx)
         val ts = p.getLong("ocProbeTs", 0)
-        if (!force && System.currentTimeMillis() - ts < 20_000) {
-            val raw = p.getString("ocProbeCache", "") ?: ""
+        val raw = p.getString("ocProbeCache", "") ?: ""
+        val now = System.currentTimeMillis()
+        // Slice 12 (vc329): baca cache lewat seam Rust; bila seam
+        // tak-tersedia, baca cache seperti aslinya (tanpa probe baru).
+        val cached = OcCoordSeam.probeCacheRead(force, now, ts, raw)
+        if (cached != null) {
+            if (cached.hit) return cached.probes ?: emptyMap()
+        } else {
+            val fromCache = probeCacheReadKotlin(force, now, ts, raw)
+            if (fromCache != null) return fromCache
+        }
+        val res = mapOf(4097 to OcClient.probe(4097), 4096 to OcClient.probe(4096), 4099 to OcClient.probe(4099))
+        val cacheStr = OcCoordSeam.probeCacheWrite(res[4097] == true, res[4096] == true, res[4099] == true)
+            ?: res.entries.joinToString(",") { "${it.key}=${if (it.value) 1 else 0}" }
+        p.edit().putString("ocProbeCache", cacheStr)
+            .putLong("ocProbeTs", System.currentTimeMillis()).apply()
+        return res
+    }
+
+    /** Slice 12 (vc329): baca cache probe (salinan asli) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun probeCacheReadKotlin(force: Boolean, now: Long, ts: Long, raw: String): Map<Int, Boolean>? {
+        if (!force && now - ts < 20_000) {
             if (raw.isNotBlank()) {
                 return raw.split(",").mapNotNull {
                     val kv = it.split("=")
@@ -939,13 +1237,36 @@ object OcCoord {
                 }.toMap()
             }
         }
-        val res = mapOf(4097 to OcClient.probe(4097), 4096 to OcClient.probe(4096), 4099 to OcClient.probe(4099))
-        p.edit().putString("ocProbeCache", res.entries.joinToString(",") { "${it.key}=${if (it.value) 1 else 0}" })
-            .putLong("ocProbeTs", System.currentTimeMillis()).apply()
-        return res
+        return null
     }
 
     fun statusText(ctx: Context, forceProbe: Boolean = false): String {
+        val db = mdb(ctx)
+        val probes = probeCached(ctx, forceProbe)
+        val cur = prefs(ctx).getLong("ocCurrentTask", 0)
+        val pend = pendingTitle(ctx)
+        val rules = db.allCoordRules()
+        val rulesJson = JSONObject()
+        for ((k, v) in rules) rulesJson.put(k, v)
+        val recent = db.recentOcTasks(5)
+        val recentJson = JSONArray()
+        for (t in recent) {
+            recentJson.put(JSONObject().put("id", t.id).put("status", t.status).put("text", t.text).put("result", t.result))
+        }
+        // Slice 12 (vc329): perakitan teks status lewat seam Rust;
+        // pembacaan DB/prefs/probe tetap Kotlin.
+        val r = OcCoordSeam.statusText(
+            rule(ctx, "path_mode"), probes[4097] == true, probes[4096] == true, probes[4099] == true,
+            cur, db.countOcTasks("queued").toLong(), db.countOcTasks("running").toLong(), pend,
+            rulesJson, ToolGate.GATES_DISABLED, recentJson
+        )
+        if (r != null) return r
+        return statusTextKotlin(ctx, forceProbe)
+    }
+
+    /** Slice 12 (vc329): teks status (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun statusTextKotlin(ctx: Context, forceProbe: Boolean = false): String {
         val db = mdb(ctx)
         val probes = probeCached(ctx, forceProbe)
         fun st(b: Boolean) = if (b) "HIDUP" else "MATI"
@@ -980,18 +1301,31 @@ object OcCoord {
             val i = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return 100
             val level = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-            if (level >= 0 && scale > 0) level * 100 / scale else 100
+            // Slice 12 (vc329): rumus persentase lewat seam Rust.
+            OcCoordSeam.batteryPct(level, scale) ?: batteryPctKotlin(level, scale)
         } catch (e: Exception) { 100 }
     }
 
+    /** Slice 12 (vc329): rumus persentase baterai (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun batteryPctKotlin(level: Int, scale: Int): Int =
+        if (level >= 0 && scale > 0) level * 100 / scale else 100
+
     private fun isQuietNow(spec: String): Boolean {
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        // Slice 12 (vc329): parse spek jam hening lewat seam Rust.
+        return OcCoordSeam.quietNow(spec, hour) ?: isQuietNowKotlin(spec, hour)
+    }
+
+    /** Slice 12 (vc329): parse spek jam hening (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun isQuietNowKotlin(spec: String, hour: Int): Boolean {
         val s = spec.trim()
         if (s.isEmpty()) return false
         val parts = s.split("-")
         if (parts.size != 2) return false
         val start = parts[0].trim().toIntOrNull() ?: return false
         val end = parts[1].trim().toIntOrNull() ?: return false
-        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         return if (start <= end) hour in start until end else (hour >= start || hour < end)
     }
 

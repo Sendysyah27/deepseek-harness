@@ -28,7 +28,7 @@
 //       transport yang SENGAJA tetap Kotlin
 //       (openEventStream, IMAP/SMTP Gmail, listener McpOAuth,
 //       postCompletion SlotClient) masih ada.
-//   (e) STRUKTUR: RUST_CORE_VERSION 9 + 29 simbol JNI + ureq/sha2
+//   (e) STRUKTUR: RUST_CORE_VERSION 10 + 33 simbol JNI + ureq/sha2
 //       di Cargo.toml/lock.
 //
 // CATATAN JUJUR: `applyChunkKotlin` dkk TIDAK bisa dipanggil langsung
@@ -304,11 +304,11 @@ fun main(args: Array<String>) {
         val f = java.io.File(treeDir, rel)
         if (f.exists()) f.readText() else null
     }.firstOrNull() ?: ""
-    cek("1.1 RustCore.kt VERSION 9 + httpJson", rcSrc.contains("const val VERSION = 9") && rcSrc.contains("external fun httpJson(request: String): String?"))
+    cek("1.1 RustCore.kt VERSION 10 + httpJson", rcSrc.contains("const val VERSION = 10") && rcSrc.contains("external fun httpJson(request: String): String?"))
     if (rust) {
         cek("1.2 RustCore.available true (mode rust, .so host)", harness.core.RustCore.available)
         val caps = harness.core.RustCore.rustCoreCapabilities()
-        cek("1.3 capabilities: version 9 + httpJson + modul http/sse", caps.contains("\"version\":9") && caps.contains("httpJson") && caps.contains("\"http\"") && caps.contains("\"sse\""))
+        cek("1.3 capabilities: version 10 + httpJson + modul http/sse", caps.contains("\"version\":10") && caps.contains("httpJson") && caps.contains("\"http\"") && caps.contains("\"sse\""))
         cek("1.4 HttpSeam.rustHttp true (mode rust)", HttpSeam.rustHttp)
     } else {
         cek("1.2 RustCore.available false (mode kotlin, tanpa .so)", !harness.core.RustCore.available)
@@ -548,11 +548,11 @@ fun main(args: Array<String>) {
 
     // ---- §11. Struktur Rust ----
     val glue = srcCore(coreDir, "src/jni_glue.rs")
-    cek("11.1 RUST_CORE_VERSION 9 di jni_glue.rs", glue.contains("RUST_CORE_VERSION: jint = 9"))
+    cek("11.1 RUST_CORE_VERSION 10 di jni_glue.rs", glue.contains("RUST_CORE_VERSION: jint = 10"))
     // Jumlah definisi JNI (bukan kemunculan mentah: baris komentar 3
     // jni_glue.rs juga mengandung prefix ini).
     val jniCount = "pub extern \"C\" fn Java_harness_core_RustCore_".toRegex().findAll(glue).count()
-    cek("11.2 29 simbol JNI (28 lama + dsApiJson)", jniCount == 29)
+    cek("11.2 33 simbol JNI (29 lama + 4 bgRoom)", jniCount == 33)
     val cargo = srcCore(coreDir, "Cargo.toml")
     cek("11.3 Cargo.toml: ureq 2.12 tls + sha2 0.10", cargo.contains("ureq") && cargo.contains("2.12") && cargo.contains("sha2") && cargo.contains("0.10"))
     val lock = srcCore(coreDir, "Cargo.lock")

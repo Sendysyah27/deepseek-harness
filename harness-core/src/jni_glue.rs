@@ -11,14 +11,18 @@
 
 use crate::agent_prompt;
 use crate::behaviors;
+use crate::bg_brain;
 use crate::chat_theme;
 use crate::concat_api_client;
+use crate::ds_agent;
 use crate::ds_api;
 use crate::ds_failure;
 use crate::ds_safety_strip;
+use crate::group_chat;
 use crate::http;
 use crate::mcp_helper;
 use crate::notif_ids;
+use crate::oc_coord;
 use crate::pow_solver;
 use crate::redact_secrets;
 use crate::session_background;
@@ -56,7 +60,12 @@ use std::sync::Once;
 /// safe_file_name/upload_file DsApiClient — transport JSON + parse SSE
 /// memakai seam slice 8, PoW slice 2, klasifikasi slice 1; panen cookie
 /// + mesin sesi + loop stream tetap Kotlin, BUILD-VC328.md §2).
-pub const RUST_CORE_VERSION: jint = 9;
+/// v10 = slice 12 (bg_brain/group_chat/ds_agent/oc_coord): +4 fungsi
+/// `bgBrainJson`/`groupChatJson`/`dsAgentJson`/`ocCoordJson` (logika
+/// murni otak latar/room — BgBrain/GroupChat/DsAgent/OcCoord; WebView,
+/// notifikasi, thread, DB, `Tools.execute`, loop poll tetap Kotlin,
+/// BUILD-VC329.md §2). Migrasi hybrid PENUH sesudah slice ini.
+pub const RUST_CORE_VERSION: jint = 10;
 
 static PANIC_HOOK: Once = Once::new();
 static PANICKED: AtomicBool = AtomicBool::new(false);
@@ -205,7 +214,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "httpJson",
                 "workerEndpointJson",
                 "toolsLeavesJson",
-                "dsApiJson"],
+                "dsApiJson",
+                "bgBrainJson", "groupChatJson", "dsAgentJson", "ocCoordJson"],
             "modules": ["ds_failure", "pow_solver", "redact_secrets",
                 "notif_ids", "system_bar_spec", "ds_safety_strip", "mcp_helper",
                 "session_background", "behaviors", "chat_theme",
@@ -215,7 +225,8 @@ pub extern "C" fn Java_harness_core_RustCore_rustCoreCapabilities(
                 "http", "sse",
                 "worker_endpoint",
                 "tools_leaves",
-                "ds_api"]
+                "ds_api",
+                "bg_brain", "group_chat", "ds_agent", "oc_coord"]
         })
         .to_string())
     })
@@ -930,5 +941,57 @@ pub extern "C" fn Java_harness_core_RustCore_dsApiJson(
     guarded_string_nullable(env, |env| {
         let req = jstring_to_rust(env, &request);
         ds_api::ds_api_json(&req).ok()
+    })
+}
+
+// Slice 12: otak latar/room — `{"op":...}` per modul (BgBrain /
+// GroupChat / DsAgent / OcCoord). Respons `{"ok":true,...}` /
+// `{"ok":false,...}`; `null` = Rust gagal (panic/error di boundary)
+// -> pemanggil Kotlin WAJIB fallback ke implementasi lama.
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_bgBrainJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        bg_brain::bg_brain_json(&req).ok()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_groupChatJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        group_chat::group_chat_json(&req).ok()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_dsAgentJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        ds_agent::ds_agent_json(&req).ok()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn Java_harness_core_RustCore_ocCoordJson(
+    env: JNIEnv,
+    _class: JClass,
+    request: JString,
+) -> jstring {
+    guarded_string_nullable(env, |env| {
+        let req = jstring_to_rust(env, &request);
+        oc_coord::oc_coord_json(&req).ok()
     })
 }

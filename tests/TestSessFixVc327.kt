@@ -372,7 +372,7 @@ fun main(args: Array<String>) {
         slSrc.split("noteServerSessionCreatedVc322").size - 1 == 2)
     check("5.12 TIDAK ADA hsurr: di 5 file fix", !("hsurr:" in tmSrc || "hsurr:" in apSrc || "hsurr:" in dsSrc || "hsurr:" in slSrc || "hsurr:" in maSrc))
     check("5.13 Flavor.kt + GroupChat + BgBrain tanpa referensi vc327", "Vc327" !in flSrc && "vc327" !in flSrc && "Vc327" !in gcSrc && "vc327" !in gcSrc && "Vc327" !in bgSrc && "vc327" !in bgSrc)
-    check("5.14 RUST_CORE_VERSION 9 (slice 11 vc328 menambah dsApiJson)", "const val VERSION = 9" in rcSrc)
+    check("5.14 RUST_CORE_VERSION 10 (slice 12 vc329 menambah 4 JNI bgRoom)", "const val VERSION = 10" in rcSrc)
     check("5.15 Migrasi primed dipakai kedua klien sebelum keputusan delta",
         "migratePrimedOnceVc327(ctx, accumKeyVc321, stored != null, accumVc321)" in dsSrc &&
         "migratePrimedOnceVc327(ctx, accumKeyVc321, stored != null, accumVc321)" in slSrc)

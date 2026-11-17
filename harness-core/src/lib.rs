@@ -20,14 +20,20 @@
 
 pub mod agent_prompt;
 pub mod behaviors;
+pub mod bg_brain;
+pub mod bg_room_common;
 pub mod chat_theme;
 pub mod concat_api_client;
+pub mod ds_agent;
+pub mod ds_agent_js;
 pub mod ds_api;
 pub mod ds_failure;
 pub mod ds_safety_strip;
+pub mod group_chat;
 pub mod http;
 pub mod mcp_helper;
 pub mod notif_ids;
+pub mod oc_coord;
 pub mod pow_solver;
 pub mod redact_secrets;
 pub mod session_background;
