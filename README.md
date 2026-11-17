@@ -5,7 +5,7 @@
 > WebView session. The agent can chat, run tools (shell via Termux, proot workers,
 > ADB), keep long-term memory, ask for approval before sensitive actions, and
 > connect MCP servers. Build it with `python3 build.py --flavor pure`.
-> Current version: **vc330 / 4.48.9.164**. License: MIT.
+> Current version: **vc331 / 4.48.9.165**. License: MIT.
 
 ## Tentang
 
@@ -18,7 +18,7 @@ Varian di repo ini adalah **Pure** (bersih/original): tanpa personalisasi pemili
 di source. Nama persona default netral (`Asisten` / `Operator`), label app
 `Harness`, dan port serve default `4100` / `4199` / `4200`.
 
-- **Versi terkini:** vc330 — `4.48.9.164` (versionCode 330)
+- **Versi terkini:** vc331 — `4.48.9.165` (versionCode 331)
 - **Hub / unduhan:** https://pos-ssr.site
 - **Lisensi:** MIT
 
@@ -65,11 +65,11 @@ apksigner langsung). Yang dibutuhkan:
 ```bash
 # Varian Pure (publik): paket com.harness.app, label "Harness"
 python3 build.py --flavor pure
-# -> Harness-v4.48.9.164-pure.apk
+# -> Harness-v4.48.9.165-pure.apk
 
 # Varian mainline (default bila tanpa --flavor): paket com.senzwh.deepharness
 python3 build.py --flavor senz
-# -> DeepSeekHarness-v4.48.9.164.apk
+# -> DeepSeekHarness-v4.48.9.165.apk
 ```
 
 `--flavor` juga bisa lewat environment: `FLAVOR=pure python3 build.py`.
