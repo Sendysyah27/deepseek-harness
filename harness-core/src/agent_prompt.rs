@@ -71,7 +71,7 @@ fn regex_dsml_calls() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(&format!(
-            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*calls{ws}*>.*?</{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*calls{ws}*>",
+            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*calls{ws}*>.*?</{ws}*(?:[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*)?calls{ws}*>",
             ws = WS
         ))
         .unwrap()
@@ -82,7 +82,7 @@ fn regex_dsml_invoke() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(&format!(
-            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*invoke\b[^>]*>.*?</{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*invoke{ws}*>",
+            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*invoke\b[^>]*>.*?</{ws}*(?:[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*)?invoke{ws}*>",
             ws = WS
         ))
         .unwrap()
@@ -93,7 +93,7 @@ fn regex_dsml_parameter() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(&format!(
-            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*parameter\b[^>]*>.*?</{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*parameter{ws}*>",
+            r"(?s)<{ws}*[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*parameter\b[^>]*>.*?</{ws}*(?:[|]{{0,2}}{ws}*DSML{ws}*[|]{{0,2}}{ws}*)?parameter{ws}*>",
             ws = WS
         ))
         .unwrap()
@@ -343,8 +343,34 @@ pub fn continuation_anchor_vc316(user_command: &str) -> String {
 }
 
 /// Cermin `AgentPrompt.normalizeDsmlDelimiters` — fullwidth ke ASCII.
+/// vc331: perluasan Q2a — semua look-alike delimiter (spasi/pipe/sudut
+/// mirip-ASCII, bukti POVA 5) dinormalisasi ke ASCII sebelum parse/strip.
+/// Cermin `AgentPrompt.normalizeDsmlDelimiters` — wajib sama persis.
 pub fn normalize_dsml_delimiters(text: &str) -> String {
-    text.replace('｜', "|").replace('＜', "<").replace('＞', ">")
+    if !text.chars().any(|c| {
+        matches!(
+            c,
+            '｜' | '＜' | '＞' | '│' | '∣' | '〈' | '〉' | '‹' | '›' | '\u{00A0}'
+                | '\u{2000}'..='\u{200A}'
+                | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{200B}' | '\u{FEFF}'
+        )
+    }) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '｜' | '│' | '∣' => out.push('|'),
+            '＜' | '〈' | '‹' => out.push('<'),
+            '＞' | '〉' | '›' => out.push('>'),
+            '\u{00A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => {
+                out.push(' ')
+            }
+            '\u{200B}' | '\u{FEFF}' => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Hapus span `<tool=nama>{...}` (kurung seimbang) dari teks tampil.
@@ -607,6 +633,46 @@ mod tests {
             );
         }
         assert_eq!(normalize_dsml_delimiters("a｜b＜c＞d"), "a|b<c>d");
+    }
+
+    #[test]
+    fn dsml_stripper_vc331_pova5_spaced() {
+        // Teks persis bocoran POVA 5 (17 Nov 23:37, vc330): blok <calls>
+        // 4 invoke, delimiter ASCII pipe + SPASI. Harus hilang total
+        // dari teks tampil (visible = "").
+        let leaked = "< | DSML | calls>\n< | DSML | invoke name=\"list_files\">\n< | DSML | parameter name=\"path\">/sdcard/SHAREit/download</parameter>\n</ | DSML | invoke>\n< | DSML | invoke name=\"list_files\">\n< | DSML | parameter name=\"path\">/sdcard/SHAREit/videos</parameter>\n</ | DSML | invoke>\n< | DSML | invoke name=\"storage_info\">\n< | DSML | parameter name=\"path\">/sdcard/SHAREit/download</parameter>\n</ | DSML | invoke>\n< | DSML | invoke name=\"storage_info\">\n< | DSML | parameter name=\"path\">/sdcard/SHAREit/videos</parameter>\n</ | DSML | invoke>\n</ | DSML | calls>";
+        assert_eq!(strip_raw_tool_markup_for_display(leaked), "");
+        // Prosa sebelum/sesudah blok ber-spasi dipertahankan.
+        assert_eq!(
+            strip_raw_tool_markup_for_display(&format!("cek dulu\n{}\nselesai", leaked)),
+            "cek dulu\n\nselesai"
+        );
+        // Varian look-alike: spasi fullwidth U+3000 (akar bocor vc330 —
+        // strip lama ASCII-only, blok lolos, residu nilai parameter
+        // + </parameter> tampil di bubble).
+        let u3000 = leaked.replace(' ', "\u{3000}");
+        assert_eq!(strip_raw_tool_markup_for_display(&u3000), "");
+        // Varian look-alike: pipe box-drawing U+2502.
+        let u2502 = leaked.replace('|', "\u{2502}");
+        assert_eq!(strip_raw_tool_markup_for_display(&u2502), "");
+        // Varian look-alike: pipe divides U+2223.
+        let u2223 = leaked.replace('|', "\u{2223}");
+        assert_eq!(strip_raw_tool_markup_for_display(&u2223), "");
+        // Varian look-alike: NBSP U+00A0 sebagai spasi.
+        let nbsp = leaked.replace(' ', "\u{a0}");
+        assert_eq!(strip_raw_tool_markup_for_display(&nbsp), "");
+        // Varian look-alike: sudut 〈 U+3008 / 〉 U+3009.
+        let angle = leaked.replace('<', "\u{3008}").replace('>', "\u{3009}");
+        assert_eq!(strip_raw_tool_markup_for_display(&angle), "");
+        // Normalisasi look-alike ke ASCII (sebelum parse/strip).
+        assert_eq!(
+            normalize_dsml_delimiters("a\u{3000}b\u{a0}c\u{2003}d│e∣f〈g〉h"),
+            "a b c d|e|f<g>h"
+        );
+        assert_eq!(normalize_dsml_delimiters("a｜b＜c＞d"), "a|b<c>d");
+        // Idempotent pada teks bocoran.
+        let once = strip_raw_tool_markup_for_display(leaked);
+        assert_eq!(strip_raw_tool_markup_for_display(&once), once);
     }
 
     #[test]
