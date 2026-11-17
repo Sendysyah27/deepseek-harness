@@ -100,7 +100,12 @@ private class SessSim330(val ctx: FakeCtxVc322, val key: String, val regime330: 
 }
 
 fun main(args: Array<String>) {
-    val tree = File(if (args.isNotEmpty()) args[0] else ".")
+    // vc330 ronde 4: absolutkan tree — findUp() menelusuri parentFile;
+    // dari path RELATIF ("app/src/...", seperti yang dipakai runner CI)
+    // rantai parent berhenti di "app" dan tidak pernah mencapai repo
+    // root, sehingga jni_glue.rs tidak ketemu (cek 5.12 gagal 63/64 di
+    // CI run 3). Path absolut membuat rantai mencapai root repo.
+    val tree = File(if (args.isNotEmpty()) args[0] else ".").absoluteFile
     fun src(name: String): String = File(tree, name).readText()
     val tmSrc = src("TurnMetrics.kt")
     val apSrc = src("AgentPrompt.kt")
