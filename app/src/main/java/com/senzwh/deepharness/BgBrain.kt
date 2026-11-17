@@ -67,11 +67,9 @@ object BgBrain {
         try {
             val qs = p.getInt("govQuietStart", -1)
             val qe = p.getInt("govQuietEnd", -1)
-            if (qs >= 0 && qe >= 0 && qs != qe) {
-                val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-                val inQuiet = if (qs < qe) (h >= qs && h < qe) else (h >= qs || h < qe)
-                if (inQuiet) return false
-            }
+            val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            val inQuiet = BgBrainSeam.bgQuietHour(qs, qe, h) ?: bgQuietHourKotlin(qs, qe, h)
+            if (inQuiet) return false
             if (p.getBoolean("govWifiOnly", false)) {
                 val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
                 val caps = cm.getNetworkCapabilities(cm.activeNetwork)
@@ -79,6 +77,13 @@ object BgBrain {
             }
         } catch (e: Exception) {}
         return true
+    }
+
+    /** Slice 12 (vc329): jam hening `bgAllowed` — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun bgQuietHourKotlin(qs: Int, qe: Int, h: Int): Boolean {
+        if (qs < 0 || qe < 0 || qs == qe) return false
+        return if (qs < qe) (h >= qs && h < qe) else (h >= qs || h < qe)
     }
 
     /**
@@ -94,9 +99,14 @@ object BgBrain {
             val level = i?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
             val scale = i?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
             val plugged = i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0
-            if (level < 0) true else (level * 100 / scale.coerceAtLeast(1) >= 20 || plugged != 0)
+            BgBrainSeam.batteryFormula(level, scale, plugged) ?: batteryFormulaKotlin(level, scale, plugged)
         } catch (e: Exception) { true }
     }
+
+    /** Slice 12 (vc329): rumus daya `batteryOk` — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun batteryFormulaKotlin(level: Int, scale: Int, plugged: Int): Boolean =
+        if (level < 0) true else (level * 100 / scale.coerceAtLeast(1) >= 20 || plugged != 0)
 
     /** F2: saklar darurat job terjadwal (origin jadwal/rutinitas). */
     fun jobsOff(ctx: Context): Boolean = prefs(ctx).getBoolean("jobsOff", false)
@@ -122,6 +132,48 @@ object BgBrain {
         // mati", jadi tugas yang ditahan cooldown tetap jatuh tempo dan
         // dicoba lagi di tick berikut (bukan jadi prompt depan).
         // BgBrain saja — chat interaktif tidak pernah memanggil submit.
+        // Slice 12 (vc329): gerbang submit lewat seam Rust (keputusan
+        // murni); efek samping (block/notify/clear sessionDead) tetap
+        // Kotlin. Fallback = blok gerbang asli bila seam tak-tersedia.
+        val lastRL = prefs(ctx).getLong("bgLastRateLimitTs", 0)
+        val lastRetry = prefs(ctx).getLong("bgDeadRetryTs", 0)
+        val gate = BgBrainSeam.submitDecision(
+            lastRL, System.currentTimeMillis(), sessionDead(ctx), lastRetry,
+            Governor.overCapBg(ctx), bgAllowed(ctx), origin in setOf("jadwal", "rutinitas") && jobsOff(ctx),
+            origin, batteryOk(ctx)
+        )
+        if (gate != null) {
+            if (gate.clearSessionDead) prefs(ctx).edit().putBoolean("bgSessionDead", false).putLong("bgDeadRetryTs", System.currentTimeMillis()).apply()
+            when (gate.decision) {
+                "proceed" -> { /* lanjut ke antrean di bawah */ }
+                "cooldown" -> return block(ctx, "cooldown")
+                "sesi mati" -> return block(ctx, "sesi mati")
+                "kuota" -> { notifyGovernorDelay(ctx, "kuota harian Governor habis"); return block(ctx, "kuota") }
+                "gerbang" -> { notifyGovernorDelay(ctx, "gerbang jam hening / WiFi-only"); return block(ctx, "gerbang") }
+                "job dimatikan" -> return block(ctx, "job dimatikan")
+                "baterai" -> return block(ctx, "baterai")
+                else -> if (!submitGateKotlin(ctx, origin)) return false
+            }
+        } else {
+            if (!submitGateKotlin(ctx, origin)) return false
+        }
+        val app = ctx.applicationContext
+        try { if (jobId != null) MemoryDb.get(app).logJob(jobId, "berjalan", task.take(120)) } catch (e: Exception) {}
+        // vc246 GELOMBANG 5 (AG-M6): catat ke antrean terlihat.
+        try {
+            val q = HashSet(prefs(app).getStringSet("bgQueue", emptySet()) ?: emptySet())
+            q.add((jobId ?: ("tanpa-id-" + System.currentTimeMillis())) + " | " + origin + " | " + task.take(80))
+            prefs(app).edit().putStringSet("bgQueue", q).apply()
+        } catch (e: Exception) {}
+        val owner = ownerSessionId ?: prefs(app).getLong("currentSession", 1L)
+        executor.execute { runTask(app, task, origin, notifTitle, jobId, jobTools, owner) }
+        return true
+    }
+
+    /** Slice 12 (vc329): gerbang `submit` (urutan asli: cooldown,
+     *  retry sessionDead, kuota, gerbang, job, baterai) — dipakai bila
+     *  seam Rust tak-tersedia. True = lolos, false = diblokir. */
+    private fun submitGateKotlin(ctx: Context, origin: String): Boolean {
         val lastRL = prefs(ctx).getLong("bgLastRateLimitTs", 0)
         if (lastRL > 0 && System.currentTimeMillis() - lastRL < 15 * 60_000) return block(ctx, "cooldown")
         if (sessionDead(ctx)) {
@@ -136,16 +188,6 @@ object BgBrain {
         if (!bgAllowed(ctx)) { notifyGovernorDelay(ctx, "gerbang jam hening / WiFi-only"); return block(ctx, "gerbang") }
         if (origin in setOf("jadwal", "rutinitas") && jobsOff(ctx)) return block(ctx, "job dimatikan")
         if (!batteryOk(ctx)) return block(ctx, "baterai")
-        val app = ctx.applicationContext
-        try { if (jobId != null) MemoryDb.get(app).logJob(jobId, "berjalan", task.take(120)) } catch (e: Exception) {}
-        // vc246 GELOMBANG 5 (AG-M6): catat ke antrean terlihat.
-        try {
-            val q = HashSet(prefs(app).getStringSet("bgQueue", emptySet()) ?: emptySet())
-            q.add((jobId ?: ("tanpa-id-" + System.currentTimeMillis())) + " | " + origin + " | " + task.take(80))
-            prefs(app).edit().putStringSet("bgQueue", q).apply()
-        } catch (e: Exception) {}
-        val owner = ownerSessionId ?: prefs(app).getLong("currentSession", 1L)
-        executor.execute { runTask(app, task, origin, notifTitle, jobId, jobTools, owner) }
         return true
     }
 
@@ -213,7 +255,12 @@ object BgBrain {
     // -> null. Hasil dipangkas 2000 char; penyimpanan + cap 3000 char ada
     // di pemanggil (MainActivity). Potongan dipotong di batas pesan, bukan
     // take mentah, supaya satu pesan tidak terbelah di tengah angka/nama.
-    fun cutAtMessageBoundary(text: String, max: Int): String {
+    fun cutAtMessageBoundary(text: String, max: Int): String =
+        BgBrainSeam.cutBoundary(text, max) ?: cutAtMessageBoundaryKotlin(text, max)
+
+    /** Slice 12 (vc329): potong di batas pesan — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun cutAtMessageBoundaryKotlin(text: String, max: Int): String {
         if (text.length <= max) return text
         val cut = text.lastIndexOf('\n', max)
         return if (cut > max / 2) text.substring(0, cut) else text.take(max)
@@ -324,34 +371,89 @@ object BgBrain {
 
     // vc302 Fix C: sessionIdVc302 = sesi pemilik tugas (diteruskan loopInner);
     // -1 = tanpa catatan kerja (pemanggil lama / tanpa sesi).
+    // vc316 IXL — LANJUTAN DELTA latar (akar yang sama seperti 1-1,
+    // lihat UKURAN-INPUT-VC316.md §4): sesi server latar (harnessNo
+    // -100) dipakai ulang tiap iterasi, jadi prompt AWAL tugas ini —
+    // system prompt + katalog + skills/pin/fakta/goals + riwayat +
+    // work-notes — SUDAH tersimpan di sesi server; mengirim ulang
+    // semuanya tiap iterasi menumpuk ~1 prompt penuh per langkah tool
+    // sampai input_exceeds_limit. Lanjutan kini hanya membawa yang
+    // BARU: jangkar delta (format tool-call + jalan keluar list_tools,
+    // pengaman bila server ternyata tidak menyimpan konteks antar
+    // POST), tugas verbatim, work-notes sesi (cap kecil, aturan
+    // jangan-ulangi — dipertahankan seperti 1-1), dan transkrip
+    // (hasil tool sejauh ini — info baru, dibatasi 60.000 char oleh
+    // trimTranscriptVc263 + guard cap di loop). Yang DIHAPUS dari
+    // lanjutan: buildSystemPrompt, CTX/PAGING rules, pinned, fakta,
+    // goals — semuanya sudah ada di prompt awal tugas ini di sesi
+    // server yang sama. Perilaku tool latar tidak berubah.
     private fun continuationPrompt(ctx: Context, transcript: StringBuilder, sessionIdVc302: Long = -1L): String {
-        val mdb = MemoryDb.get(ctx)
-        // vc263 (optimasi): transkrip diubah ke String SEKALI per giliran
-        // (dulu take(8000) dipanggil 3x + toString() berulang).
-        val t8Vc263 = transcript.toString().take(8000)
-        // vc241: sama seperti tugas latar — katalog per transkrip + tanpa goal-teratas WorldState.
-        val sb = StringBuilder(AgentPrompt.buildSystemPrompt(ctx, false, t8Vc263, true))
-        sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
-        // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan) — lanjutan latar.
-        sb.append("\n\n").append(AgentPrompt.PAGING_TOTAL_RULE_VC302)
-        val pinnedRawContVc263 = try { mdb.pinnedFactsText() } catch (e: Exception) { "" }
-        val pinnedContVc248 = try { RedactSecrets.redact(pinnedRawContVc263) } catch (e: Exception) { "" }
-        if (pinnedContVc248.isNotBlank()) sb.append("\n\n[FAKTA PIN — selalu berlaku, tidak dibuang diam-diam]:\n").append(pinnedContVc248)
+        val wb = if (sessionIdVc302 > 0) AgentPrompt.workNotesBlockVc302(ctx, sessionIdVc302) else ""
+        return BgBrainSeam.continuationPromptBg(transcript.toString(), wb) ?: continuationPromptKotlin(transcript, wb)
+    }
+
+    /** Slice 12 (vc329): lanjutan delta latar (jangkar vc316 + tugas
+     *  verbatim + work-notes + `[RIWAYAT]`) — dipakai bila seam Rust
+     *  tak-tersedia. */
+    private fun continuationPromptKotlin(transcript: StringBuilder, workNotes: String): String {
+        val sb = StringBuilder()
+        sb.append("[LANJUTAN SISTEM — vc316 delta: system prompt, katalog tool, memori, dan riwayat tugas ini SUDAH kamu terima di pesan pertama tugas ini DALAM SESI SERVER YANG SAMA — semuanya masih berlaku, jangan minta diulang. Lanjutkan tugas di bawah memakai transkrip hasil tool sejauh ini. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]")
         sb.append("\n\nTUGAS (verbatim baris pertama transkrip giliran ini — jangan diubah, jangan ditambah):\n").append(transcript.toString().substringBefore("\n"))
-        // vc240 M23: continuation latar memakai teks transkrip (yang
-        // diawali teks tugas) sebagai query relevansi, bukan tanpa argumen.
-        val facts = mdb.dedupFactsVsPinned(mdb.factsText(t8Vc263), pinnedRawContVc263); if (facts.isNotBlank()) sb.append("\n\nMEMORI PERSISTEN (fakta tentang user):\n").append(facts)
-        val goals = mdb.goalsText(t8Vc263); if (goals.isNotBlank()) sb.append("\n\nTUJUAN AKTIF:\n").append(goals)
         // vc302 Fix C: prompt lanjutan latar dibangun ulang tiap iterasi —
         // tempel catatan kerja di tiap giliran berikut, seperti prompt awal.
-        if (sessionIdVc302 > 0) {
-            val wb = AgentPrompt.workNotesBlockVc302(ctx, sessionIdVc302)
-            if (wb.isNotBlank()) sb.append("\n\n").append(wb)
-        }
+        if (workNotes.isNotBlank()) sb.append("\n\n").append(workNotes)
         sb.append("\n\n[MODE LATAR] Kamu sedang menjalankan tugas otomatis di latar. Catatan giliran sejauh ini:\n")
         sb.append("[RIWAYAT]\n").append(transcript).append("\n[/RIWAYAT]")
         sb.append("\n\nLanjutkan tugasnya: bila butuh tool lain keluarkan blok json lagi, bila selesai jawab final tanpa blok json.")
         return sb.toString()
+    }
+
+    /** Slice 12 (vc329): pesan berhenti-jujur cap langkah latar
+     *  (vc277 O15(b)) — dipakai bila seam Rust tak-tersedia. */
+    private fun honestCapStopBg(task: String, steps: Int, usedTools: List<String>, transcript: StringBuilder): String {
+        val doneVc277 = usedTools.distinct().joinToString(", ").ifBlank { "belum ada tool yang dijalankan" }
+        return BgBrainSeam.honestCapStopBg(doneVc277, steps, task.take(300), transcript.toString().takeLast(2000))
+            ?: honestCapStopBgKotlin(doneVc277, steps, task, transcript)
+    }
+
+    private fun honestCapStopBgKotlin(done: String, steps: Int, task: String, transcript: StringBuilder): String =
+        "Tugas latar berhenti di tengah pada langkah " + steps + " dari tugas: " + task.take(300) + " — ini yang sudah selesai: " + done + "; ini yang belum: tugas belum selesai — sisa langkah tidak dikerjakan. Transkrip terakhir: " + transcript.toString().takeLast(2000)
+
+    /** Slice 12 (vc329): keputusan rute tool jalur tunggal
+     *  `loopInnerVc263` (route + pesan) — dipakai P15 untuk uji
+     *  paritas Rust-vs-Kotlin. */
+    private fun bgToolRouteDecision(
+        tool: String, gatesDisabled: Boolean, isMemoryWrite: Boolean,
+        jobTools: Set<String>?, isRisky: Boolean, autoAllowed: Boolean,
+        prop: Pair<String, String>?
+    ): Pair<String, String?>? {
+        val r = BgBrainSeam.bgToolRoute(
+            tool, gatesDisabled, isMemoryWrite, jobTools == null,
+            jobTools?.contains(tool) ?: false, isRisky, autoAllowed,
+            prop != null, prop?.first ?: "", prop?.second ?: ""
+        )
+        if (r != null) return r
+        return bgToolRouteDecisionKotlin(tool, gatesDisabled, isMemoryWrite, jobTools, isRisky, autoAllowed, prop)
+    }
+
+    /** Slice 12 (vc329): tabel keputusan rute tool (salinan `when`
+     *  asli) — dipakai bila seam Rust tak-tersedia. */
+    private fun bgToolRouteDecisionKotlin(
+        tool: String, gatesDisabled: Boolean, isMemoryWrite: Boolean,
+        jobTools: Set<String>?, isRisky: Boolean, autoAllowed: Boolean,
+        prop: Pair<String, String>?
+    ): Pair<String, String?> {
+        if (tool == "make_plan" || tool == "update_plan") return "execute" to null
+        if (tool == "analyze_photo") return "msg_analyze_photo" to "Tool analyze_photo hanya tersedia dari chat 1-1 — di mode latar tidak dijalankan. Selesaikan tugas tanpa tool itu."
+        if (tool == "delete_session") return "msg_delete_session" to "Tool delete_session hanya tersedia dari UI chat aktif — di mode latar tidak dijalankan. Selesaikan tugas tanpa tool itu."
+        if (gatesDisabled) return "execute" to null
+        if (isMemoryWrite) {
+            if (jobTools != null && tool !in jobTools) return "park_memory_jobtools" to null
+            if (prop != null) return "memory_write" to "Proposal memori latar DITAMPUNG di antrean persetujuan batch (Setup 65) — BELUM tersimpan dan BELUM dieksekusi, menunggu persetujuan user: ${prop.first} = ${prop.second.take(140)}. Lanjutkan tugas tanpa menganggap fakta ini sudah tersimpan."
+            return "park_memory_noprop" to null
+        }
+        if (isRisky && !(autoAllowed && (jobTools == null || tool in jobTools))) return "park_risky" to null
+        return "execute" to null
     }
 
     private fun loop(ctx: Context, api: DsApiClient, task: String, origin: String, notifTitle: String?,
@@ -411,10 +513,7 @@ object BgBrain {
         // tool berikutnya ditolak tanpa eksekusi dan tanpa memakan langkah.
         var turnLockedBgVc277 = false
         // vc277 O15(b): berhenti yang jujur saat cap tercapai.
-        fun honestCapStopBgVc277(): String {
-            val doneVc277 = usedToolsVc249.distinct().joinToString(", ").ifBlank { "belum ada tool yang dijalankan" }
-            return "Tugas latar berhenti di tengah pada langkah " + steps + " dari tugas: " + task.take(300) + " — ini yang sudah selesai: " + doneVc277 + "; ini yang belum: tugas belum selesai — sisa langkah tidak dikerjakan. Transkrip terakhir: " + transcript.toString().takeLast(2000)
-        }
+        fun honestCapStopBgVc277(): String = honestCapStopBg(task, steps, usedToolsVc249, transcript)
         // vc263 (N-m21 + AG-M6): detektor putaran per tugas latar +
         // stempel mulai (dipakai watchdog + ukuran prompt akhir).
         val stuckWatchVc263 = AgentPrompt.StuckWatch()
@@ -600,7 +699,37 @@ object BgBrain {
             // analyze_photo/delete_session/parkir) — jangan pakai id basi.
             val t0BgVc303 = System.currentTimeMillis()
             val ridBeforeBgVc303 = Tools.lastResultId()
-            val result: String = when {
+            // Slice 12 (vc329): keputusan rute tool lewat seam Rust;
+            // eksekusi/parkir/notifikasi tetap Kotlin. Fallback = `when`
+            // asli bila seam tak-tersedia.
+            val propBgVc329 = Tools.factProposalForMemoryTool(tool, args)
+            val routeBgVc329 = bgToolRouteDecision(
+                tool, ToolGate.GATES_DISABLED, Tools.isMemoryWrite(tool),
+                jobTools, Tools.isRisky(tool, args), autoAllowed(ctx, tool), propBgVc329
+            )
+            val result: String = if (routeBgVc329 != null) {
+                when (routeBgVc329.first) {
+                    "execute" -> Tools.execute(ctx, tool, args, callIdBgVc272)
+                    "msg_analyze_photo" -> routeBgVc329.second ?: ""
+                    "msg_delete_session" -> routeBgVc329.second ?: ""
+                    "park_memory_jobtools", "park_memory_noprop", "park_risky" -> {
+                        if (!park(ctx, task, origin, notifTitle, transcript, steps, tool, args, visible, jobId, jobTools, sessionId)) deliver(ctx, origin, notifTitle, sessionId, "⛔ Tugas latar dibatalkan: antrean persetujuan Otak Latar penuh (maks 8) — tool $tool tidak diparkir dan tidak dieksekusi.", jobId, "dibatalkan")
+                        return
+                    }
+                    "memory_write" -> {
+                        val prop = propBgVc329
+                        if (prop == null) {
+                            if (!park(ctx, task, origin, notifTitle, transcript, steps, tool, args, visible, jobId, jobTools, sessionId)) deliver(ctx, origin, notifTitle, sessionId, "⛔ Tugas latar dibatalkan: antrean persetujuan Otak Latar penuh (maks 8) — tool $tool tidak diparkir dan tidak dieksekusi.", jobId, "dibatalkan")
+                            return
+                        }
+                        val n = queueBgFactProposal(ctx, prop)
+                        try { notify(ctx, 7706, "Proposal memori latar menunggu persetujuan", "Proposal memori latar ditampung (belum tersimpan) — setujui lewat Setup 65. Antrean: $n proposal.") } catch (e: Exception) {}
+                        routeBgVc329.second ?: ""
+                    }
+                    else -> Tools.execute(ctx, tool, args, callIdBgVc272)
+                }
+            } else {
+                when {
                 // vc246 GELOMBANG 5 (TL-M9, pilihan implementasi):
                 // make_plan/update_plan latar kini BENAR-BENAR menulis
                 // rencana lewat Tools.execute (PlanStore vc245), bukan
@@ -653,6 +782,7 @@ object BgBrain {
                     return
                 }
                 else -> Tools.execute(ctx, tool, args, callIdBgVc272)
+                }
             }
             // VC303-P2-10 (CX-3): kumpulkan jejak tool latar (jalur tunggal).
             run {
@@ -715,6 +845,20 @@ object BgBrain {
     // bukan di kepala transkrip. Bila transkrip satu baris (tanpa "\n")
     // maka seluruh isinya adalah tugas verbatim — jangan dipotong.
     private fun trimTranscriptVc263(transcript: StringBuilder, maxChars: Int): Int {
+        val r = BgBrainSeam.trimTranscript(transcript.toString(), maxChars)
+        if (r != null) {
+            // Rust mengembalikan teks baru (marker sudah disisipkan);
+            // ganti isi StringBuilder yang sama (identitas dipertahankan).
+            transcript.setLength(0)
+            transcript.append(r.first)
+            return r.second
+        }
+        return trimTranscriptVc263Kotlin(transcript, maxChars)
+    }
+
+    /** Slice 12 (vc329): pangkas transkrip latar — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun trimTranscriptVc263Kotlin(transcript: StringBuilder, maxChars: Int): Int {
         if (transcript.length <= maxChars) return 0
         val before = transcript.length
         val nl = transcript.indexOf("\n")
@@ -754,25 +898,49 @@ object BgBrain {
             for (k in keys) {
                 val key = k.removePrefix("bgActive_")
                 val start = p.getLong(k, 0)
-                if (start <= 0) continue
-                if (now - start > 2 * 3600_000L) {
-                    p.edit().remove(k).remove("bgHeartbeat_" + key).remove("bgLastSuccess_" + key).remove("bgWatchdogNotified_" + key).apply()
-                    continue
-                }
-                if (p.getBoolean("bgWatchdogNotified_" + key, false)) continue
                 val hb = p.getLong("bgHeartbeat_" + key, start)
                 val lastOk = p.getLong("bgLastSuccess_" + key, start)
-                val stalled = now - hb > BG_WATCHDOG_STALL_MS
-                val spinning = now - lastOk > BG_WATCHDOG_STALL_MS
-                if (!stalled && !spinning) continue
-                p.edit().putBoolean("bgWatchdogNotified_" + key, true).apply()
-                val reason = if (stalled) "tidak ada kemajuan selama 10 menit (giliran macet)" else "tidak ada tool sukses selama 10 menit (berputar tanpa progres)"
-                try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Watchdog latar: tugas $key macet — $reason (tugas TIDAK di-retry otomatis)") } catch (e: Exception) {}
-                // vc265 V-m1: ID notifikasi per tugas (bukan satu ID
-                // bersama 7723) — dua tugas macet tidak lagi saling menimpa.
-                try { notify(ctx, NotifIds.bgWatchdogId(key), "⚠️ Tugas latar macet", "Tugas latar ($key) $reason. Tidak di-retry otomatis — cek Laporan, lalu jalankan ulang manual bila perlu.", "Tugas latar $key macet: $reason. Tugas TIDAK diulang otomatis oleh watchdog — buka Laporan untuk hasil sementara, lalu kirim ulang tugasnya bila masih dibutuhkan.") } catch (e: Exception) {}
+                val notified = p.getBoolean("bgWatchdogNotified_" + key, false)
+                val (action, reason) = watchdogDecisionKey(start, hb, lastOk, now, notified)
+                when (action) {
+                    "cleanup" -> {
+                        p.edit().remove(k).remove("bgHeartbeat_" + key).remove("bgLastSuccess_" + key).remove("bgWatchdogNotified_" + key).apply()
+                        continue
+                    }
+                    "notify" -> {
+                        p.edit().putBoolean("bgWatchdogNotified_" + key, true).apply()
+                        val r = reason ?: "tidak ada kemajuan selama 10 menit (giliran macet)"
+                        try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Watchdog latar: tugas $key macet — $r (tugas TIDAK di-retry otomatis)") } catch (e: Exception) {}
+                        // vc265 V-m1: ID notifikasi per tugas (bukan satu ID
+                        // bersama 7723) — dua tugas macet tidak lagi saling menimpa.
+                        try { notify(ctx, NotifIds.bgWatchdogId(key), "⚠️ Tugas latar macet", "Tugas latar ($key) $r. Tidak di-retry otomatis — cek Laporan, lalu jalankan ulang manual bila perlu.", "Tugas latar $key macet: $r. Tugas TIDAK diulang otomatis oleh watchdog — buka Laporan untuk hasil sementara, lalu kirim ulang tugasnya bila masih dibutuhkan.") } catch (e: Exception) {}
+                    }
+                    else -> continue
+                }
             }
         } catch (e: Exception) {}
+    }
+
+    /** Slice 12 (vc329): keputusan per kunci `watchdogTick` —
+     *  dipakai P15 untuk uji paritas. Action: "skip" | "cleanup" |
+     *  "notify". */
+    private fun watchdogDecisionKey(start: Long, hb: Long, lastOk: Long, now: Long, notified: Boolean): Pair<String, String?> {
+        val r = BgBrainSeam.watchdogDecision(start, hb, lastOk, now, notified)
+        if (r != null) return r
+        return watchdogDecisionKotlin(start, hb, lastOk, now, notified)
+    }
+
+    /** Slice 12 (vc329): keputusan per kunci watchdog (salinan
+     *  kondisi asli) — dipakai bila seam Rust tak-tersedia. */
+    private fun watchdogDecisionKotlin(start: Long, hb: Long, lastOk: Long, now: Long, notified: Boolean): Pair<String, String?> {
+        if (start <= 0) return "skip" to null
+        if (now - start > 2 * 3600_000L) return "cleanup" to null
+        if (notified) return "skip" to null
+        val stalled = now - hb > BG_WATCHDOG_STALL_MS
+        val spinning = now - lastOk > BG_WATCHDOG_STALL_MS
+        if (!stalled && !spinning) return "skip" to null
+        val reason = if (stalled) "tidak ada kemajuan selama 10 menit (giliran macet)" else "tidak ada tool sukses selama 10 menit (berputar tanpa progres)"
+        return "notify" to reason
     }
 
     private fun autoAllowed(ctx: Context, tool: String): Boolean {
@@ -787,6 +955,20 @@ object BgBrain {
     // user lewat Setup 65 (vc228ShowUnconfirmedFactsDialog membaca prefs
     // yang sama dan menyimpan sebagai TERKONFIRMASI bila disetujui).
     private fun queueBgFactProposal(ctx: Context, prop: Pair<String, String>): Int {
+        val raw = prefs(ctx).getString("pendingExtractProposals", "") ?: ""
+        val r = BgBrainSeam.queueFactProposal(raw, prop.first, prop.second)
+        if (r != null) {
+            if (r.second < 0) return -1
+            val json = r.first ?: return queueBgFactProposalKotlin(ctx, prop)
+            prefs(ctx).edit().putString("pendingExtractProposals", json).apply()
+            return r.second
+        }
+        return queueBgFactProposalKotlin(ctx, prop)
+    }
+
+    /** Slice 12 (vc329): penampung proposal fakta latar (dedup per
+     *  key, replace-or-append) — dipakai bila seam Rust tak-tersedia. */
+    private fun queueBgFactProposalKotlin(ctx: Context, prop: Pair<String, String>): Int {
         return try {
             val raw = prefs(ctx).getString("pendingExtractProposals", "") ?: ""
             val old = if (raw.isBlank()) JSONArray() else JSONArray(raw)
@@ -1211,6 +1393,31 @@ object BgBrain {
 
     // ---------------- Pengantaran & error ----------------
 
+    /** Slice 12 (vc329): judul + teks `deliver` — dipakai P15 untuk
+     *  uji paritas. */
+    private fun deliverTitleText(notifTitle: String?, origin: String, routeFailed: Boolean, answer: String): Pair<String, String> {
+        val r = BgBrainSeam.deliverTitle(notifTitle, origin, routeFailed, answer)
+        if (r != null) return r
+        return deliverTitleKotlin(notifTitle, origin, routeFailed, answer)
+    }
+
+    /** Slice 12 (vc329): judul + teks `deliver` (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun deliverTitleKotlin(notifTitle: String?, origin: String, routeFailed: Boolean, answer: String): Pair<String, String> {
+        val text = answer.trim().ifBlank { "(tugas selesai tanpa teks jawaban)" }
+        val baseTitle = notifTitle ?: when (origin) {
+            "jadwal" -> "🤖 Tugas terjadwal selesai"
+            "aturan" -> "⚡ Aturan notifikasi dijalankan"
+            "tujuan" -> "🎯 Langkah tujuan dikerjakan"
+            "briefing" -> "☀️ Briefing pagi"
+            "rekap" -> "🌙 Rekap malam"
+            "konsolidasi" -> "🌙 Konsolidasi memori"
+            else -> "🤖 Otak Latar — $origin"
+        }
+        val title = if (routeFailed) "⚠️ Laporan gagal tersimpan — $baseTitle" else baseTitle
+        return title to text
+    }
+
     private fun deliver(ctx: Context, origin: String, notifTitle: String?, sessionId: Long, answer: String, jobId: String? = null, jobStatus: String = "selesai") {
         // vc246 GELOMBANG 5 (AG-M6): tugas yang berakhir keluar dari antrean.
         try {
@@ -1220,7 +1427,6 @@ object BgBrain {
                 if (drop.isNotEmpty()) { q.removeAll(drop); prefs(ctx).edit().putStringSet("bgQueue", q).apply() }
             }
         } catch (e: Exception) {}
-        val text = answer.trim().ifBlank { "(tugas selesai tanpa teks jawaban)" }
         // v4.48.9.20 (Q4): hasil latar TIDAK lagi ditulis ke riwayat chat sesi aktif — hanya notifikasi di bawah.
         // vc242 K-03: pembatalan parkir memakai jobStatus "dibatalkan".
         try { if (jobId != null) MemoryDb.get(ctx).logJob(jobId, jobStatus, answer.take(120)) } catch (e: Exception) {}
@@ -1233,17 +1439,11 @@ object BgBrain {
             try { Automation.appendUndeliveredReport(ctx, jobId, origin, answer, routeReason) } catch (e: Exception) {}
             try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "Laporan gagal route ($origin, $jobId): $routeReason") } catch (e: Exception) {}
         }
-        val baseTitle = notifTitle ?: when (origin) {
-            "jadwal" -> "🤖 Tugas terjadwal selesai"
-            "aturan" -> "⚡ Aturan notifikasi dijalankan"
-            "tujuan" -> "🎯 Langkah tujuan dikerjakan"
-            "briefing" -> "☀️ Briefing pagi"
-            "rekap" -> "🌙 Rekap malam"
-            "konsolidasi" -> "🌙 Konsolidasi memori"
-            else -> "🤖 Otak Latar — $origin"
-        }
+        // Slice 12 (vc329): judul + teks lewat seam Rust (teks =
+        // jawaban di-trim + fallback kosong; judul = notifTitle/origin
+        // + prefix bila laporan gagal route).
+        val (title, text) = deliverTitleText(notifTitle, origin, routeReason.isNotBlank(), answer)
         try { prefs(ctx).edit().putLong("notifSessionId", sessionId).apply() } catch (e: Exception) {}
-        val title = if (routeReason.isNotBlank()) "⚠️ Laporan gagal tersimpan — $baseTitle" else baseTitle
         // vc246 GELOMBANG 5 (NT-M3): hasil latar dikelompokkan per origin
         // (grup notifikasi per origin di builder notify) + ringkasan tiap
         // kelipatan 5 hasil dari origin yang sama, agar shade tidak
@@ -1263,29 +1463,34 @@ object BgBrain {
         try { if (jobId != null) MemoryDb.get(ctx).logJob(jobId, "gagal", (e.message ?: "").take(120)) } catch (e: Exception) {}
         val msg = e.message ?: ""
         EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] GAGAL: ${msg.take(180)}")
-        // v4.48.9.2: suspend + rate-limit-habis memakai badan cabang token
-        // (parkir + antre + notif 7702 sekali per episode). Deteksi meniru
-        // DsApiClient: rate-limit = "rate_limit"/"too frequent"; suspend =
-        // kata keras isHardSuspend ("suspend"/"violation"/"banned").
-        // Catatan: suspend keras sudah menandai bgSessionDead di runChat,
-        // jadi firstTime=false dan notif 7702 dilewati untuk kasus itu
-        // (tugas tetap diantrekan); rate-limit menandai cooldown 15 mnt.
-        val isRateLimit = msg.contains("rate_limit", ignoreCase = true) || msg.contains("too frequent", ignoreCase = true)
-        val isSuspend = msg.contains("suspend", ignoreCase = true) || msg.contains("violation", ignoreCase = true) || msg.contains("banned", ignoreCase = true)
-        if (msg.contains("token", ignoreCase = true) || isSuspend || isRateLimit) {
-            // Sesi DeepSeek mati: jeda Otak Latar, minta login ulang (sekali per
-            // episode), tugas jatuh ke antrean lama sampai login lagi.
-            val p = prefs(ctx)
-            val firstTime = !p.getBoolean("bgSessionDead", false)
-            if (isRateLimit) p.edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
-            p.edit().putBoolean("bgSessionDead", true).apply()
-            MemoryDb.enqueuePrompt(ctx, task)
-            if (firstTime) {
-                notify(ctx, 7702, "🔐 Sesi DeepSeek berakhir — Otak Latar jeda",
-                    "Buka app & login ulang di tab Web. Tugas latar sementara diantrekan dan jalan saat app dibuka.",
-                    "Sesi DeepSeek untuk Otak Latar tidak terbaca (kemungkinan kedaluwarsa). Buka Harness, login ulang di tab Web; setelah itu tugas terjadwal, aturan, briefing & konsolidasi kembali dieksekusi langsung di latar. Tugas yang datang selama jeda diantrekan seperti pola lama.")
+        // vc316 P1: klasifikasi via DsFailure.bgActionFor — JANGAN lagi
+        // contains(...) manual di sini. Rate-limit MURNI = COOLDOWN (catat
+        // bgLastRateLimitTs 15 mnt, antrekan tugas) dan JANGAN tandai
+        // bgSessionDead=true + JANGAN notif 7702: rate-limit bukan sesi
+        // mati, hanya perlu menunggu. submit() sudah menahan tugas baru
+        // selama cooldown (alasan "cooldown") dan tick berikutnya
+        // mencoba lagi. Suspend/token tetap SESSION_DEAD seperti dulu.
+        when (DsFailure.bgActionFor(e)) {
+            DsFailure.BgErrorAction.COOLDOWN -> {
+                prefs(ctx).edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
+                MemoryDb.enqueuePrompt(ctx, task)
+                return
             }
-            return
+            DsFailure.BgErrorAction.SESSION_DEAD -> {
+                // Sesi DeepSeek mati: jeda Otak Latar, minta login ulang (sekali per
+                // episode), tugas jatuh ke antrean lama sampai login lagi.
+                val p = prefs(ctx)
+                val firstTime = !p.getBoolean("bgSessionDead", false)
+                p.edit().putBoolean("bgSessionDead", true).apply()
+                MemoryDb.enqueuePrompt(ctx, task)
+                if (firstTime) {
+                    notify(ctx, 7702, "🔐 Sesi DeepSeek berakhir — Otak Latar jeda",
+                        "Buka app & login ulang di tab Web. Tugas latar sementara diantrekan dan jalan saat app dibuka.",
+                        "Sesi DeepSeek untuk Otak Latar tidak terbaca (kemungkinan kedaluwarsa). Buka Harness, login ulang di tab Web; setelah itu tugas terjadwal, aturan, briefing & konsolidasi kembali dieksekusi langsung di latar. Tugas yang datang selama jeda diantrekan seperti pola lama.")
+                }
+                return
+            }
+            DsFailure.BgErrorAction.GENERIC -> { /* jatuh ke notif gagal per origin di bawah */ }
         }
         if (origin in setOf("jadwal", "tujuan", "briefing", "rekap", "tes")) {
             notify(ctx, NotifIds.bgFailId(origin), "⚠️ Tugas latar gagal ($origin)", msg.take(180), msg)

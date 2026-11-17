@@ -5,7 +5,7 @@
 > WebView session. The agent can chat, run tools (shell via Termux, proot workers,
 > ADB), keep long-term memory, ask for approval before sensitive actions, and
 > connect MCP servers. Build it with `python3 build.py --flavor pure`.
-> Current version: **vc309 / 4.48.9.143**. License: MIT.
+> Current version: **vc330 / 4.48.9.164**. License: MIT.
 
 ## Tentang
 
@@ -18,7 +18,7 @@ Varian di repo ini adalah **Pure** (bersih/original): tanpa personalisasi pemili
 di source. Nama persona default netral (`Asisten` / `Operator`), label app
 `Harness`, dan port serve default `4100` / `4199` / `4200`.
 
-- **Versi terkini:** vc309 — `4.48.9.143` (versionCode 309)
+- **Versi terkini:** vc330 — `4.48.9.164` (versionCode 330)
 - **Hub / unduhan:** https://pos-ssr.site
 - **Lisensi:** MIT
 
@@ -49,7 +49,7 @@ apksigner langsung). Yang dibutuhkan:
 | Kebutuhan | Keterangan |
 |---|---|
 | Python 3 | menjalankan `build.py` |
-| JDK 21 | `JAVA_HOME` — di `build.py`: `~/jdk-21.0.12.1+1` |
+| JDK 21 | `JAVA_HOME` (atau `~/jdk-21-sys`, atau OpenJDK 21 sistem — di `build.py`) |
 | Android SDK | build-tools **34.0.0** (`aapt2`, `d8`, `zipalign`, `apksigner`) + platform **android-34** (`android.jar`) — di `build.py`: `~/android-sdk` |
 | kotlinc | `~/kotlin-dist/kotlinc/bin/kotlinc` + `kotlin-stdlib.jar` |
 | `vendor/` | **TIDAK termasuk di repo ini** — dependensi biner yang dipakai `build.py`: ONNX Runtime (`ort/classes.jar` + `libonnxruntime*.so` arm64), Bouncy Castle (`bcprov.jar`), SPAKE2 (3 jar), Conscrypt (`classes.jar` + `.so`), XZ (`xz.jar`), proot (`libproot*.so` arm64). Sediakan sendiri dari upstream masing-masing, lalu letakkan di `vendor/` sesuai path di `build.py`. |
@@ -65,11 +65,11 @@ apksigner langsung). Yang dibutuhkan:
 ```bash
 # Varian Pure (publik): paket com.harness.app, label "Harness"
 python3 build.py --flavor pure
-# -> Harness-v4.48.9.143-pure.apk
+# -> Harness-v4.48.9.164-pure.apk
 
 # Varian mainline (default bila tanpa --flavor): paket com.senzwh.deepharness
 python3 build.py --flavor senz
-# -> DeepSeekHarness-v4.48.9.143.apk
+# -> DeepSeekHarness-v4.48.9.164.apk
 ```
 
 `--flavor` juga bisa lewat environment: `FLAVOR=pure python3 build.py`.
@@ -86,7 +86,7 @@ keystore sendiri dan jangan pernah commit keystore ke repo.
 ## Struktur repo
 
 ```
-app/            Source Kotlin + resource + manifest (154 file)
+app/            Source Kotlin + resource + manifest (166 file)
   src/main/
     AndroidManifest.xml
     java/com/senzwh/deepharness/   # package source; --flavor pure me-rename

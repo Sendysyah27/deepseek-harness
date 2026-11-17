@@ -10,13 +10,24 @@ import javax.crypto.spec.SecretKeySpec
  *  Auth: token Bearer, banding waktu-konstan (tolak timing leak).
  *  Routing: parse method + path mentah -> aksi + parameter.
  *  Cap: baca hasil endpoint maks READ_MAX_CHARS; preview default
- *  PREVIEW_DEFAULT_CHARS, maks PREVIEW_MAX_CHARS (WorkerLogic). */
+ *  PREVIEW_DEFAULT_CHARS, maks PREVIEW_MAX_CHARS (WorkerLogic).
+ *
+ *  Slice 9 (vc325): tiap fun publik mencoba seam Rust dulu
+ *  (`WorkerEndpointSeam`, modul `worker_endpoint`), bila seam
+ *  tak-tersedia/gagal -> implementasi Kotlin lama (`*Kotlin`, body
+ *  ASLI vc316 yang diganti nama). API publik TETAP PERSIS — pemakai
+ *  (`WorkerEndpoint`, `WorkerQueue`) tidak berubah. */
 object WorkerEndpointLogic {
     const val PORT = 4200
     const val MAX_BODY_BYTES = 1024 * 1024
 
     /** Banding token waktu-konstan. Kosong -> tolak. */
     fun isAuthorized(provided: String?, expected: String): Boolean {
+        WorkerEndpointSeam.isAuthorized(provided, expected)?.let { return it }
+        return isAuthorizedKotlin(provided, expected)
+    }
+
+    private fun isAuthorizedKotlin(provided: String?, expected: String): Boolean {
         if (provided.isNullOrBlank() || expected.isBlank()) return false
         val p = provided.trim().toByteArray(Charsets.UTF_8)
         val e = expected.toByteArray(Charsets.UTF_8)
@@ -25,23 +36,55 @@ object WorkerEndpointLogic {
 
     /** Ambil token dari header Authorization "Bearer <token>". */
     fun bearerToken(authHeader: String?): String? {
+        // Seam mengembalikan null baik bila token tidak ada maupun
+        // bila seam gagal — keduanya dijawab fallback Kotlin yang
+        // menghitung hasil yang sama.
+        val viaRust = if (authHeader != null) WorkerEndpointSeam.bearerToken(authHeader) else null
+        if (viaRust != null) return viaRust
+        if (authHeader == null) return bearerTokenKotlin(null)
+        // Bila seam hidup tapi token memang tidak ada, fallback Kotlin
+        // mengembalikan null yang sama; bila seam mati, fallback yang bekerja.
+        return bearerTokenKotlin(authHeader)
+    }
+
+    private fun bearerTokenKotlin(authHeader: String?): String? {
         if (authHeader.isNullOrBlank()) return null
         val h = authHeader.trim()
         if (!h.startsWith("Bearer ")) return null
         return h.removePrefix("Bearer ").trim().takeIf { it.isNotEmpty() }
     }
 
-    fun previewChars(requested: Int): Int = WorkerLogic.previewChars(requested)
+    fun previewChars(requested: Int): Int {
+        WorkerEndpointSeam.previewChars(requested)?.let { return it }
+        return previewCharsKotlin(requested)
+    }
+
+    private fun previewCharsKotlin(requested: Int): Int = WorkerLogic.previewChars(requested)
 
     /** Potong teks ke maks char; kembalikan (potongan, terpotong?). */
-    fun slicePreview(text: String, max: Int): Pair<String, Boolean> =
+    fun slicePreview(text: String, max: Int): Pair<String, Boolean> {
+        WorkerEndpointSeam.slicePreview(text, max)?.let { return Pair(it.slice, it.truncated) }
+        return slicePreviewKotlin(text, max)
+    }
+
+    private fun slicePreviewKotlin(text: String, max: Int): Pair<String, Boolean> =
         WorkerLogic.slicePreview(text, max)
 
     /** Nama file tugas/hasil aman: tanpa "/" , ".." , backslash. */
-    fun isSafeName(name: String): Boolean =
+    fun isSafeName(name: String): Boolean {
+        WorkerEndpointSeam.isSafeName(name)?.let { return it }
+        return isSafeNameKotlin(name)
+    }
+
+    private fun isSafeNameKotlin(name: String): Boolean =
         name.isNotBlank() && !name.contains("/") && !name.contains("..") && !name.contains("\\")
 
     fun parseQuery(rawPath: String): Map<String, String> {
+        WorkerEndpointSeam.parseQuery(rawPath)?.let { return it }
+        return parseQueryKotlin(rawPath)
+    }
+
+    private fun parseQueryKotlin(rawPath: String): Map<String, String> {
         val q = rawPath.substringAfter("?", "")
         if (q.isBlank()) return emptyMap()
         val out = HashMap<String, String>()
@@ -61,6 +104,11 @@ object WorkerEndpointLogic {
      *  tetap di-parse di sini (penolakan di dispatcher, supaya pesan
      *  errornya jelas 400, bukan 404). */
     fun parseRoute(method: String, rawPath: String): Route? {
+        WorkerEndpointSeam.parseRoute(method, rawPath)?.let { return it.route }
+        return parseRouteKotlin(method, rawPath)
+    }
+
+    private fun parseRouteKotlin(method: String, rawPath: String): Route? {
         val path = rawPath.substringBefore("?").trim()
         val seg = path.split("/").filter { it.isNotEmpty() }.map {
             try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
@@ -114,6 +162,11 @@ object WorkerEndpointLogic {
     // vc261 N-m2: path cocok dengan rute yang dikenal tapi method-nya
     // salah (mis. DELETE /workers) -> pemanggil menjawab 405, bukan 404.
     fun pathMatchesOtherMethod(method: String, rawPath: String): Boolean {
+        WorkerEndpointSeam.pathMatchesOtherMethod(method, rawPath)?.let { return it }
+        return pathMatchesOtherMethodKotlin(method, rawPath)
+    }
+
+    private fun pathMatchesOtherMethodKotlin(method: String, rawPath: String): Boolean {
         if (parseRoute(method, rawPath) != null) return false
         return parseRoute("GET", rawPath) != null || parseRoute("POST", rawPath) != null
     }
@@ -140,6 +193,11 @@ object WorkerEndpointLogic {
     // dilabeli TIDAK TEPERCAYA di preview; tanda tangan TIDAK VALID =
     // DITOLAK di collectFromMirror).
     fun hmacSha256Hex(key: String, text: String): String {
+        WorkerEndpointSeam.hmacSha256Hex(key, text)?.let { return it }
+        return hmacSha256HexKotlin(key, text)
+    }
+
+    private fun hmacSha256HexKotlin(key: String, text: String): String {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
         val out = mac.doFinal(text.toByteArray(Charsets.UTF_8))
@@ -148,12 +206,31 @@ object WorkerEndpointLogic {
         return sb.toString()
     }
 
-    fun signQueueText(key: String, text: String): String =
+    fun signQueueText(key: String, text: String): String {
+        WorkerEndpointSeam.signQueueText(key, text)?.let { return it }
+        return signQueueTextKotlin(key, text)
+    }
+
+    private fun signQueueTextKotlin(key: String, text: String): String =
         "HMAC-SHA256:" + hmacSha256Hex(key, text) + "\n" + text
 
-    fun hasQueueSignature(text: String): Boolean = text.startsWith("HMAC-SHA256:")
+    fun hasQueueSignature(text: String): Boolean {
+        WorkerEndpointSeam.hasQueueSignature(text)?.let { return it }
+        return hasQueueSignatureKotlin(text)
+    }
+
+    private fun hasQueueSignatureKotlin(text: String): Boolean = text.startsWith("HMAC-SHA256:")
 
     fun verifyQueueText(key: String, signed: String): String? {
+        // Seam mengembalikan null baik bila tanda tangan tidak valid
+        // maupun bila seam gagal — keduanya dijawab fallback Kotlin
+        // yang menghitung hasil yang sama.
+        val viaRust = WorkerEndpointSeam.verifyQueueText(key, signed)
+        if (viaRust != null) return viaRust
+        return verifyQueueTextKotlin(key, signed)
+    }
+
+    private fun verifyQueueTextKotlin(key: String, signed: String): String? {
         if (!hasQueueSignature(signed)) return null
         val nl = signed.indexOf("\n")
         if (nl < 0) return null

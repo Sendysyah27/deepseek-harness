@@ -59,6 +59,29 @@ object Tools {
         } catch (e: Exception) { "" }
     }
 
+    // vc311 B14 bagian 2: guard anti-truncate create_skill (pure, tanpa
+    // Context/DB — bisa diuji JVM langsung). Dipanggil handler create_skill
+    // TEPAT sebelum forgeUpsert, sesudah cek LiveReadGateVc302.
+    // Return null = lolos; return pesan = DITOLAK, pemanggil JANGAN panggil
+    // forgeUpsert (tanpa snapshot, tanpa ubah DB).
+    // Aturan: skill yang SUDAH ADA (liveInstruction != null) dengan live
+    // tidak blank, dan instruction baru < 80% panjang live (aritmetika
+    // integer: ins.length * 100 < 80 * liveLen — tanpa float, tepat 80%
+    // LOLOS) -> tolak. Skill BARU (null) dan live blank -> lolos (tidak ada
+    // pembanding; forgeUpsert sendiri menolak instruction blank).
+    // Akar: telegram-gui #7 kena 3x — v8 15 char, v13 1535 char menimpa live
+    // ~7500 char karena create_skill menimpa SELURUH instruction.
+    fun createSkillTruncateGuardVc311(liveInstruction: String?, ins: String): String? {
+        if (liveInstruction.isNullOrBlank()) return null
+        val liveLen = liveInstruction.length
+        if (ins.length * 100 < 80 * liveLen) {
+            val pct = ins.length * 100 / liveLen
+            val minLen = (80 * liveLen + 99) / 100
+            return "create_skill DITOLAK (anti-truncate vc311): instruction baru ${ins.length} karakter hanya $pct% dari instruction live $liveLen karakter (ambang 80%, minimal $minLen karakter) — ini tampak seperti instruction yang terpotong, bukan rewrite penuh. Skill TIDAK disimpan; instruction live tetap utuh. Lanjutkan dengan salah satu: (1) kirim instruction LENGKAP (≥80% dari live); (2) bila hanya deskripsi yang berubah, pakai update_skill_description; (3) bila rewrite yang lebih pendek memang disengaja, pakai editor isi di app (Setup → Skill Agen → detail skill → Edit isi)."
+        }
+        return null
+    }
+
     fun slugifySkillName(raw: String): String {
         return raw.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-')
     }
@@ -151,8 +174,15 @@ object Tools {
     // MEMORY_WRITE = tulis/hapus memori (13 anggota — TIDAK BERUBAH dari
     // sebelum vc272, karena GroupChat/BgBrain memakainya di jalur
     // auto-approve). Pergerakan vs vc271 didokumentasikan di BUILD-VC272.md.
+    // vc313 K-03 (keputusan user 14 Nov 16:40, TANPA BATASAN): tool
+    // browser dikecualikan dari ToolGate sepenuhnya (tidak REVIEW, tidak
+    // HIGH), bahkan bila gerbang dihidupkan kembali — jadi RISKY_TOOLS
+    // = (WRITE + MEMORY) MINUS semua tool bernama "browser_*" (lama +
+    // baru). Tool WRITE/MEMORY non-browser tetap anggota. isRisky()
+    // memakai RISKY_TOOLS, jadi pengecualian mengalir otomatis ke
+    // ToolGate.level(), BgBrain, GroupChat, TeamRun, dan levelsText().
     val READ_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.READ)
-    val RISKY_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.WRITE) + ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)
+    val RISKY_TOOLS: Set<String> = (ToolRegistry.namesByKind(ToolRegistry.Kind.WRITE) + ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)) - ToolRegistry.ALL.filter { it.name.startsWith("browser_") }.map { it.name }.toSet()
     val MEMORY_WRITE_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)
 
     fun isRisky(name: String) = if (ToolGate.GATES_DISABLED) false else name in RISKY_TOOLS
@@ -220,6 +250,30 @@ object Tools {
         "browser_open" to "url",
         "browser_tap" to "ref",
         "browser_type" to "ref",
+        "browser_tabs" to "action",
+        "browser_find" to "query",
+        "browser_ua" to "mode",
+        // vc314 Worker B — Concat: argumen wajib 'project' (nama/path).
+        "concat_project_get" to "project",
+        "concat_project_open" to "project",
+        // vc315 Worker B — Concat gelombang 2: kunci argumen pertama yang
+        // wajib (tool tanpa argumen wajib tidak dapat entri: catalogue_list,
+        // template_list).
+        "concat_project_create" to "name",
+        "concat_project_close" to "project",
+        "concat_project_save" to "project",
+        "concat_project_set_video" to "project",
+        "concat_edit_apply" to "project",
+        "concat_edit_undo" to "project",
+        "concat_edit_redo" to "project",
+        "concat_media_probe" to "file",
+        "concat_media_import" to "project",
+        "concat_template_instantiate" to "template",
+        "concat_template_save" to "project",
+        "concat_export_run" to "project",
+        "concat_export_cancel" to "job",
+        "concat_export_status" to "job",
+        "concat_preview_frame" to "project",
         "delegate_session" to "task",
         "oc_checkpoint" to "action",
         "otak_write" to "file",
@@ -615,7 +669,12 @@ object Tools {
 
     // vc230 R-07(a): penanda pemotongan pola proot untuk semua take(N)
     // yang sampai ke model — hasil tool, dokumen, evidence.
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun truncateMarkedVc230(text: String, cap: Int, resultId: String): String {
+        return ToolsLeavesSeam.truncateMarked(text, cap, resultId) ?: truncateMarkedVc230Kotlin(text, cap, resultId)
+    }
+
+    private fun truncateMarkedVc230Kotlin(text: String, cap: Int, resultId: String): String {
         if (text.length <= cap) return text
         val rest = text.length - cap
         val idPart = if (resultId.isNotBlank()) ", pakai get_result[$resultId] untuk sisanya" else ""
@@ -817,6 +876,18 @@ object Tools {
                         else "\nterverifikasi: tidak (skill belum tercatat sesudah simpan: $slug)"
                     }
                 }
+                // vc311 B14: baca balik deskripsi (handler sudah baca
+                // balik sendiri; flag ini konsisten dengan create_skill).
+                "update_skill_description" -> {
+                    if (!raw.startsWith("Deskripsi skill '")) null
+                    else {
+                        val slug = slugifySkillName(args.optString("name"))
+                        val sk = try { MemoryDb.get(ctx).skillByName(slug) } catch (e: Exception) { null }
+                        val dsc = args.optString("description").trim()
+                        if (sk != null && sk.descr == dsc) "\nterverifikasi: ya (deskripsi tercatat: $slug)"
+                        else "\nterverifikasi: tidak (deskripsi belum tercatat sesudah simpan: $slug)"
+                    }
+                }
                 "make_plan" -> {
                     if (!raw.startsWith("Rencana tercatat dari jalur tool")) null
                     else {
@@ -880,6 +951,7 @@ object Tools {
                 "remember_fact" -> raw.startsWith("Tersimpan di memori permanen") || raw.contains("DITIMPA langsung")
                 "learn_rule" -> raw.startsWith("Aturan baru disimpan")
                 "create_skill" -> raw.startsWith("Skill '")
+                "update_skill_description" -> raw.startsWith("Deskripsi skill '")
                 "make_plan" -> raw.startsWith("Rencana tercatat dari jalur tool")
                 "update_plan" -> raw.startsWith("Langkah ") && raw.contains("ditandai selesai")
                 "make_goal" -> raw.startsWith("Tujuan dibuat: #")
@@ -1976,6 +2048,12 @@ object Tools {
                         val oldVerVc302 = try { if (existingVc302 != null) MemoryDb.get(ctx).latestSkillVersion(existingVc302.id)?.versionNo ?: 0 else 0 } catch (e: Exception) { 0 }
                         if (existingVc302 != null && !LiveReadGateVc302.mayOverwrite(slug, TurnMetrics.currentTurnNo())) "create_skill DITOLAK (verify-before-write vc302): skill '$slug' sudah ada — baca dulu live state: export_skill/list_skills/read_skill_version untuk '$slug' di giliran ini, lalu ulangi create_skill. Tidak ada yang ditulis."
                         else {
+                            // vc311 B14 bagian 2: guard anti-truncate —
+                            // SESUDAH LiveReadGate, SEBELUM forgeUpsert.
+                            // Penolakan di sini = TIDAK ada tulis.
+                            val guardVc311 = createSkillTruncateGuardVc311(existingVc302?.instruction, ins)
+                            if (guardVc311 != null) guardVc311
+                            else {
                             val res = MemoryDb.get(ctx).forgeUpsert(slug, ins, dsc)
                             if (res.first <= 0) "Gagal menyimpan skill '$slug'."
                             else {
@@ -1989,6 +2067,63 @@ object Tools {
                                 val sizeNoteVc302 = if (res.second) " (verify-before-write vc302: live lama $oldLenVc302 char tersimpan sebagai v$oldVerVc302; baru ${ins.length} char → v$newVerVc302)" else " (verify-before-write vc302: skill baru; ${ins.length} char → v$newVerVc302)"
                                 if (res.second) "Skill '$slug' DIPERBARUI (id #${res.first}) — status aktifnya TIDAK diubah (bila sebelumnya nonaktif, tetap nonaktif). Ekspor ke .md bila perlu via export_skill." + (if (wasActiveVc228) " Perubahan skill AKTIF ini disetujui lewat dialog REVIEW (diff ditampilkan sebelum eksekusi)." else "") + " " + SkillJudge.summaryLine(judgeVc293) + sizeNoteVc302
                                 else "Skill '$slug' tersimpan (id #${res.first}) dalam keadaan NONAKTIF. Agen TIDAK akan memakainya sampai user mengaktifkannya di Settings > Skill Agen. Ekspor ke .md bila perlu via export_skill. " + SkillJudge.summaryLine(judgeVc293) + sizeNoteVc302
+                            }
+                            }
+                        }
+                    }
+                }
+                // vc311 B14 BAGIAN 1: edit DESKRIPSI SAJA — JANGAN pakai
+                // create_skill untuk ini (create_skill menimpa SELURUH
+                // instruction; 3x kejadian instruction terpotong/15 char
+                // menimpa isi live ~7500 char, mis. skill telegram-gui
+                // v8/v13). Tool ini TIDAK menerima argumen instruction
+                // sama sekali (ditolak eksplisit di bawah): instruction
+                // baru = instruction live yang dibaca updateSkillMeta
+                // dari DB (kolom instruction TIDAK ditulis — ContentValues
+                // hanya name+descr), jadi byte-identik dijamin oleh
+                // konstruksi, bukan serialisasi ulang. TIDAK kena
+                // LiveReadGateVc302 (verify-before-write): gate itu
+                // melindungi instruction dari overwrite tanpa baca live —
+                // di sini tidak ada overwrite instruction yang bisa
+                // kehilangan data; tulis ini beraudit (snapshot pra/pasca
+                // source='meta' dalam satu transaksi) + eval hangus bila
+                // berubah, jadi bisa dipulihkan lewat
+                // restore_skill_version. Jalur UI Settings (meta-edit)
+                // memanggil updateSkillMeta yang sama tanpa gate —
+                // profil risiko sama.
+                "update_skill_description" -> {
+                    val rawName = args.optString("name").trim(); val dsc = args.optString("description").trim()
+                    val slug = slugifySkillName(rawName)
+                    if (rawName.isBlank() || slug.isBlank()) "update_skill_description ditolak: name kosong atau tidak menghasilkan slug yang valid (pakai huruf/angka, mis. 'rapikan-screenshot')."
+                    else if (slug in SYSTEM_SKILL_SLUGS) "update_skill_description ditolak: '$slug' adalah nama sistem yang dilindungi — skill builtin/sistem tidak boleh diubah deskripsinya lewat forge."
+                    else if (dsc.isBlank()) "update_skill_description ditolak: description wajib diisi — tulis pemicu singkat: kapan skill ini dipakai."
+                    else if (args.has("instruction")) "update_skill_description ditolak: tool ini HANYA mengubah description — argumen 'instruction' TIDAK diterima dan TIDAK akan disimpan. Instruction skill tidak disentuh tool ini; untuk mengubah instruction pakai create_skill nama sama (dengan isi LENGKAP, bukan potongan)."
+                    else if (slug.length > 80) "update_skill_description ditolak: nama slug ${slug.length} karakter, maks 80."
+                    else {
+                        val mdb = MemoryDb.get(ctx)
+                        val sk = mdb.skillByName(slug) ?: mdb.skills().firstOrNull { it.name.equals(rawName, ignoreCase = true) }
+                        if (sk == null) "Skill '$rawName' tidak ditemukan — update_skill_description hanya mengubah deskripsi skill yang SUDAH ada; buat skill baru lewat create_skill (dengan instruction lengkap)."
+                        else {
+                            val oldInstrVc311 = sk.instruction
+                            val oldEvalVc311 = sk.evalJson
+                            val oldVerVc311 = try { mdb.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                            val unchangedVc311 = sk.descr == dsc
+                            // namaSama = nama tersimpan (bukan slug input):
+                            // updateSkillMeta membandingkan nama+descr untuk
+                            // putusan hangus/pertahankan eval — nama harus
+                            // identik supaya hanya perubahan deskripsi yang
+                            // dihitung.
+                            mdb.updateSkillMeta(sk.id, sk.name, dsc)
+                            val afterVc311 = try { mdb.skillByName(sk.name) } catch (e: Exception) { null }
+                            if (afterVc311 == null || afterVc311.descr != dsc || afterVc311.instruction != oldInstrVc311) "Gagal menyimpan deskripsi baru skill '${sk.name}' — deskripsi dan instruction lama tetap utuh."
+                            else {
+                                val newVerVc311 = try { mdb.latestSkillVersion(sk.id)?.versionNo ?: 0 } catch (e: Exception) { 0 }
+                                val evalNoteVc311 = if (unchangedVc311) "evaluasi dipertahankan (deskripsi sama persis, tidak ada yang berubah)"
+                                else if (oldEvalVc311.isBlank()) "tidak ada benchmark lama yang dihanguskan (skill ini belum punya eval)"
+                                else "benchmark/evaluasi lama DIHANGUSKAN (deskripsi berubah — evaluasi wajib diulang)"
+                                val verNoteVc311 = if (unchangedVc311) "versi tetap v$oldVerVc311 (tidak ada versi baru — deskripsi sama)" else "versi v$oldVerVc311 → v$newVerVc311"
+                                val changeNoteVc311 = if (unchangedVc311) "Deskripsi skill '${sk.name}' TIDAK berubah (deskripsi baru sama dengan yang tersimpan)." else "Deskripsi skill '${sk.name}' diubah (id #${sk.id})."
+                                "$changeNoteVc311 Instruction TIDAK disentuh (${afterVc311.instruction.length} char, byte-identik dengan sebelum simpan); $verNoteVc311; $evalNoteVc311. Status aktif TIDAK diubah."
                             }
                         }
                     }
@@ -2591,7 +2726,19 @@ object Tools {
                     }
                 }
                 "web_fetch" -> webFetch(args.optString("url"))
-                "browser_open", "browser_read", "browser_tap", "browser_type", "browser_tabs", "browser_shot" -> AgentBrowser.run(name, args)
+                "browser_open", "browser_read", "browser_tap", "browser_type", "browser_tabs", "browser_shot", "browser_back", "browser_forward", "browser_reload", "browser_find", "browser_ua", "browser_downloads", "browser_console", "browser_network", "browser_shot_full", "browser_snapshot_full" -> AgentBrowser.run(name, args)
+                // vc314 Worker B — Concat (F1+F2 via API JSON-RPC; token dari
+                // SecureStore, gagal jujur tanpa fallback GUI — ConcatTools).
+                // vc315 Worker B — gelombang 2: 17 tool baru ikut jalur yang
+                // sama (ConcatTools.run). concat WRITE -> REVIEW bila gerbang
+                // hidup (turunan RISKY_TOOLS); BUKAN HIGH, tanpa pengecualian.
+                "concat_version", "concat_project_list", "concat_project_get", "concat_project_open",
+                "concat_project_create", "concat_project_close", "concat_project_save", "concat_project_set_video",
+                "concat_edit_apply", "concat_edit_undo", "concat_edit_redo",
+                "concat_media_probe", "concat_media_import",
+                "concat_catalogue_list", "concat_template_list", "concat_template_instantiate", "concat_template_save",
+                "concat_export_run", "concat_export_cancel", "concat_export_status",
+                "concat_preview_frame" -> ConcatTools.run(ctx, name, args)
                 "web_search" -> webSearch(args.optString("query"))
                 "search_youtube" -> searchYoutube(args.optString("query"), if (args.has("max_results")) args.optInt("max_results", 5) else args.optInt("limit", 5))
                 "http_request" -> httpRequest(args.optString("method", "GET"), args.optString("url"), args.optString("body", ""))
@@ -2798,6 +2945,13 @@ object Tools {
                 }
                 "use_skill" -> {
                     val nm = args.optString("name").trim()
+                    // vc313: dokumen skill browser (lazy-loaded) — bukan skill
+                    // Forge di DB; manifest-nya ada di katalog (PROSE_BROWSER_VC313),
+                    // detail dimuat on-demand lewat nama ini (tanpa tool baru).
+                    if (nm.equals("browser-vc313", ignoreCase = true)) {
+                        try { EventDb.get(ctx).add("skill", ctx.packageName, "Skill 'browser-vc313' dimuat lewat use_skill") } catch (e: Exception) {}
+                        "PROSEDUR SKILL 'browser-vc313' — ikuti langkah-langkah ini untuk menyelesaikan tugas yang sedang berjalan:\n" + ToolRegistry.browserSkillDetail()
+                    } else {
                     val all = try { MemoryDb.get(ctx).skills() } catch (e: Exception) { emptyList() }
                     val sk = all.firstOrNull { it.name.equals(nm, ignoreCase = true) }
                     if (sk == null) "Skill '$nm' tidak ditemukan. Skill tersedia: " + if (all.isEmpty()) "(belum ada — buat dengan create_skill)" else all.joinToString(", ") { it.name }
@@ -2805,6 +2959,7 @@ object Tools {
                     else {
                         try { EventDb.get(ctx).add("skill", ctx.packageName, "Skill '${sk.name}' dimuat lewat use_skill") } catch (e: Exception) {}
                         "PROSEDUR SKILL '${sk.name}' — ikuti langkah-langkah ini untuk menyelesaikan tugas yang sedang berjalan:\n${sk.instruction}"
+                    }
                     }
                 }
                 "run_team" -> {
@@ -3275,7 +3430,12 @@ object Tools {
         } catch (e: Exception) { "Kalender tidak terbaca: ${e.message} (izin READ_CALENDAR — Setup tombol 18)." }
     }
 
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun stripHtml(html: String): String {
+        return ToolsLeavesSeam.stripHtml(html) ?: stripHtmlKotlin(html)
+    }
+
+    private fun stripHtmlKotlin(html: String): String {
         var t = html
         t = t.replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
         t = t.replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
@@ -3889,14 +4049,24 @@ object Tools {
         } catch (e: Exception) { "Gagal mengambil $urlStr: ${e.message}" }
     }
 
+    // Slice 10 (vc326): parse DDG ke Rust; GET tetap Kotlin.
     private fun webSearch(query: String): String {
         if (query.isBlank()) return "web_search butuh query."
         return try {
             val html = httpGet("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"))
-            val results = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>").findAll(html)
-                .take(6).map { "- " + stripHtml(it.groupValues[2]) + "\n  " + it.groupValues[1] }.toList()
-            if (results.isEmpty()) "Tidak ada hasil terbaca untuk '$query' (coba web_fetch langsung ke situsnya)." else results.joinToString("\n")
+            parseDdg(html, query)
         } catch (e: Exception) { "Pencarian gagal: ${e.message}" }
+    }
+
+    /** Parse hasil DuckDuckGo (badan `webSearch` sesudah `httpGet`). */
+    private fun parseDdg(html: String, query: String): String {
+        return ToolsLeavesSeam.parseDdg(html, query) ?: parseDdgKotlin(html, query)
+    }
+
+    private fun parseDdgKotlin(html: String, query: String): String {
+        val results = Regex("class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>").findAll(html)
+            .take(6).map { "- " + stripHtmlKotlin(it.groupValues[2]) + "\n  " + it.groupValues[1] }.toList()
+        return if (results.isEmpty()) "Tidak ada hasil terbaca untuk '$query' (coba web_fetch langsung ke situsnya)." else results.joinToString("\n")
     }
 
     // vc219: YouTube finder khusus. Tanpa API key, tanpa login, tanpa cookie:
@@ -3905,7 +4075,43 @@ object Tools {
     // TIDAK mengunduh video, TIDAK mengambil transkrip, TIDAK memutar video.
     private data class YtHit(val id: String, val title: String, val channel: String, val meta: String)
 
+    // Slice 10 (vc326): konversi YtHit <-> JSON untuk seam Rust
+    // (YtHit private di object ini — seam mengembalikan teks JSON).
+    private fun ytHitFromJson(json: String): YtHit? {
+        return try {
+            val o = JSONObject(json)
+            YtHit(o.optString("id"), o.optString("title"), o.optString("channel"), o.optString("meta"))
+        } catch (e: Exception) { null }
+    }
+
+    private fun ytHitsFromJsonArray(json: String?): List<YtHit> {
+        if (json == null) return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            val out = ArrayList<YtHit>()
+            for (i in 0 until arr.length()) {
+                val h = arr.optJSONObject(i) ?: continue
+                out.add(YtHit(h.optString("id"), h.optString("title"), h.optString("channel"), h.optString("meta")))
+            }
+            out
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun ytHitsToJsonArray(hits: List<YtHit>): String {
+        val arr = JSONArray()
+        for (h in hits) {
+            arr.put(JSONObject().put("id", h.id).put("title", h.title).put("channel", h.channel).put("meta", h.meta))
+        }
+        return arr.toString()
+    }
+
+    // Slice 10 (vc326): daun murni ke Rust via ToolsLeavesSeam.
     private fun ytRunsText(o: JSONObject?): String {
+        if (o == null) return ""
+        return ToolsLeavesSeam.ytRunsText(o.toString()) ?: ytRunsTextKotlin(o)
+    }
+
+    private fun ytRunsTextKotlin(o: JSONObject?): String {
         if (o == null) return ""
         val runs = o.optJSONArray("runs")
         if (runs == null) return o.optString("simpleText", "")
@@ -3916,11 +4122,17 @@ object Tools {
     }
 
     private fun ytParseVideoRenderer(vr: JSONObject, forceMeta: String?): YtHit? {
+        val hitJson = ToolsLeavesSeam.ytParseVideoRenderer(vr.toString(), forceMeta)
+        if (hitJson != null) return ytHitFromJson(hitJson) ?: ytParseVideoRendererKotlin(vr, forceMeta)
+        return ytParseVideoRendererKotlin(vr, forceMeta)
+    }
+
+    private fun ytParseVideoRendererKotlin(vr: JSONObject, forceMeta: String?): YtHit? {
         val id = vr.optString("videoId", "")
         if (id.isBlank()) return null
-        val title = ytRunsText(vr.optJSONObject("title")).ifBlank { "-" }
-        var channel = ytRunsText(vr.optJSONObject("longBylineText"))
-        if (channel.isBlank()) channel = ytRunsText(vr.optJSONObject("ownerText"))
+        val title = ytRunsTextKotlin(vr.optJSONObject("title")).ifBlank { "-" }
+        var channel = ytRunsTextKotlin(vr.optJSONObject("longBylineText"))
+        if (channel.isBlank()) channel = ytRunsTextKotlin(vr.optJSONObject("ownerText"))
         if (channel.isBlank()) channel = "-"
         if (forceMeta != null) return YtHit(id, title, channel, forceMeta)
         var meta = ""
@@ -3939,6 +4151,20 @@ object Tools {
     }
 
     private fun extractBalancedJson(text: String, startBrace: Int): String? {
+        // Guard batas DI WRAPPER (bukan di *Kotlin): badan asli vc316
+        // TIDAK punya guard ini — start<0 melempar
+        // StringIndexOutOfBoundsException di `text[startBrace]`.
+        // Pemanggil produksi selalu menjaga (brace >= 0, lihat
+        // ytScanRenderersKotlin/parseYtSearchKotlin), jadi guard ini
+        // TIDAK mengubah perilaku yang terjangkau; ia hanya membuat
+        // mode rust dan mode kotlin SEPAKAT (keduanya null) alih-alih
+        // mode kotlin crash sementara mode rust null. *Kotlin tetap
+        // byte-identik merge/ (dikunci P12 §12.5).
+        if (startBrace < 0 || startBrace >= text.length) return null
+        return ToolsLeavesSeam.extractBalancedJson(text, startBrace) ?: extractBalancedJsonKotlin(text, startBrace)
+    }
+
+    private fun extractBalancedJsonKotlin(text: String, startBrace: Int): String? {
         var depth = 0
         var inStr = false
         var esc = false
@@ -3960,6 +4186,12 @@ object Tools {
     }
 
     private fun ytWalkResults(root: JSONObject): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.ytWalkResults(root.toString())
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return ytWalkResultsKotlin(root)
+    }
+
+    private fun ytWalkResultsKotlin(root: JSONObject): List<YtHit> {
         val out = ArrayList<YtHit>()
         val seen = HashSet<String>()
         fun add(h: YtHit?) { if (h != null && seen.add(h.id)) out.add(h) }
@@ -3970,14 +4202,14 @@ object Tools {
                 for (j in 0 until itemSection.length()) {
                     val item = itemSection.optJSONObject(j) ?: continue
                     try {
-                        if (item.has("videoRenderer")) add(ytParseVideoRenderer(item.getJSONObject("videoRenderer"), null))
+                        if (item.has("videoRenderer")) add(ytParseVideoRendererKotlin(item.getJSONObject("videoRenderer"), null))
                         else if (item.has("reelItemRenderer")) {
                             val rr = item.getJSONObject("reelItemRenderer")
                             val id = rr.optString("videoId", "")
                             if (id.isNotBlank()) {
-                                val title = ytRunsText(rr.optJSONObject("headline")).ifBlank { "-" }
-                                var ch = ytRunsText(rr.optJSONObject("longBylineText"))
-                                if (ch.isBlank()) ch = ytRunsText(rr.optJSONObject("shortBylineText"))
+                                val title = ytRunsTextKotlin(rr.optJSONObject("headline")).ifBlank { "-" }
+                                var ch = ytRunsTextKotlin(rr.optJSONObject("longBylineText"))
+                                if (ch.isBlank()) ch = ytRunsTextKotlin(rr.optJSONObject("shortBylineText"))
                                 if (ch.isBlank()) ch = "-"
                                 add(YtHit(id, title, ch, "Short"))
                             }
@@ -3990,6 +4222,12 @@ object Tools {
     }
 
     private fun ytScanRenderers(html: String): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.ytScanRenderers(html)
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return ytScanRenderersKotlin(html)
+    }
+
+    private fun ytScanRenderersKotlin(html: String): List<YtHit> {
         val out = ArrayList<YtHit>()
         val seen = HashSet<String>()
         var idx = 0
@@ -3997,10 +4235,10 @@ object Tools {
             val k = html.indexOf("\"videoRenderer\":{", idx)
             if (k < 0) break
             val brace = html.indexOf('{', k)
-            val json = if (brace >= 0) extractBalancedJson(html, brace) else null
+            val json = if (brace >= 0) extractBalancedJsonKotlin(html, brace) else null
             if (json != null) {
                 try {
-                    val h = ytParseVideoRenderer(JSONObject(json), null)
+                    val h = ytParseVideoRendererKotlin(JSONObject(json), null)
                     if (h != null && seen.add(h.id)) out.add(h)
                 } catch (e: Exception) { }
             }
@@ -4011,18 +4249,41 @@ object Tools {
     }
 
     private fun parseYtSearch(html: String): List<YtHit> {
+        val hitsJson = ToolsLeavesSeam.parseYtSearch(html)
+        if (hitsJson != null) return ytHitsFromJsonArray(hitsJson)
+        return parseYtSearchKotlin(html)
+    }
+
+    private fun parseYtSearchKotlin(html: String): List<YtHit> {
         val marker = html.indexOf("ytInitialData")
         if (marker >= 0) {
             val brace = html.indexOf('{', marker)
-            val json = if (brace >= 0) extractBalancedJson(html, brace) else null
+            val json = if (brace >= 0) extractBalancedJsonKotlin(html, brace) else null
             if (json != null) {
                 try {
-                    val walked = ytWalkResults(JSONObject(json))
+                    val walked = ytWalkResultsKotlin(JSONObject(json))
                     if (walked.isNotEmpty()) return walked
                 } catch (e: Exception) { }
             }
         }
-        return ytScanRenderers(html)
+        return ytScanRenderersKotlin(html)
+    }
+
+    /** Format hasil `searchYoutube` (ekor murni sesudah HTTP). */
+    private fun formatYtResults(results: List<YtHit>, maxResults: Int): String {
+        return ToolsLeavesSeam.formatYtResults(ytHitsToJsonArray(results), maxResults) ?: formatYtResultsKotlin(results, maxResults)
+    }
+
+    private fun formatYtResultsKotlin(results: List<YtHit>, maxResults: Int): String {
+        val limit = maxResults.coerceIn(1, 10)
+        val sb = StringBuilder()
+        results.take(limit).forEachIndexed { i, r ->
+            // vc246 GELOMBANG 5 (FT-m10): label Shorts bila meta
+            // menyebut shorts (hasil Shorts vs video panjang).
+            val shortsVc246 = if (r.meta.lowercase().contains("short")) " [Shorts]" else ""
+            sb.append("${i + 1}. ${r.title}$shortsVc246\n   Channel: ${r.channel} | ${r.meta}\n   https://www.youtube.com/watch?v=${r.id}\n")
+        }
+        return sb.toString().trim()
     }
 
     // vc246 GELOMBANG 5 (FT-M2): fallback pencarian gagal kini pesan
@@ -4031,7 +4292,6 @@ object Tools {
     // dilabeli Shorts.
     private fun searchYoutube(query: String, maxResults: Int): String {
         if (query.isBlank()) return "search_youtube butuh query."
-        val limit = maxResults.coerceIn(1, 10)
         var conn: HttpURLConnection? = null
         try {
             val urlStr = "https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8")
@@ -4051,14 +4311,9 @@ object Tools {
             }
             val results = parseYtSearch(html)
             if (results.isEmpty()) return "Pencarian YouTube GAGAL untuk '$query' (tidak ada video ter-parse; struktur halaman mungkin berubah) - ini BUKAN klaim tidak ada video tentang topik itu. COBA LAGI: kirim ulang perintah pencarian yang sama persis, atau coba kata kunci lain / web_search biasa sebagai alternatif."
-            val sb = StringBuilder()
-            results.take(limit).forEachIndexed { i, r ->
-                // vc246 GELOMBANG 5 (FT-m10): label Shorts bila meta
-                // menyebut shorts (hasil Shorts vs video panjang).
-                val shortsVc246 = if (r.meta.lowercase().contains("short")) " [Shorts]" else ""
-                sb.append("${i + 1}. ${r.title}$shortsVc246\n   Channel: ${r.channel} | ${r.meta}\n   https://www.youtube.com/watch?v=${r.id}\n")
-            }
-            return sb.toString().trim()
+            // Slice 10 (vc326): format hasil ke Rust (parse sudah di
+            // atas); `limit` di-coerceIn di `formatYtResultsKotlin`.
+            return formatYtResults(results, maxResults)
         } catch (e: Exception) {
             return "Pencarian YouTube gagal (jaringan): ${e.message}. Coba lagi, atau pakai web_search biasa sebagai alternatif."
         } finally {

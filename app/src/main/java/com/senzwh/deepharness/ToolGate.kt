@@ -100,7 +100,8 @@ object ToolGate {
         "cancel_reminder" to "Membatalkan pengingat (vc228: REVIEW + arsip 30 hari — bisa dipulihkan lewat Setup 66).",
         "delete_rule_trigger" to "Menghapus aturan pemicu notifikasi (vc228: REVIEW + arsip 30 hari — bisa dipulihkan lewat Setup 66).",
         "delete_geofence" to "Menghapus geofence (vc228: REVIEW + arsip 30 hari — bisa dipulihkan lewat Setup 66).",
-        "create_skill" to "Membuat/memperbarui skill agen (vc228: REVIEW — bila skill yang diubah sedang AKTIF, diff instruksinya ditampilkan di dialog; skill baru tetap NONAKTIF)."
+        "create_skill" to "Membuat/memperbarui skill agen (vc228: REVIEW — bila skill yang diubah sedang AKTIF, diff instruksinya ditampilkan di dialog; skill baru tetap NONAKTIF).",
+        "update_skill_description" to "Mengubah deskripsi skill agen (vc311 B14: HANYA deskripsi — instruction tidak disentuh; simpan = versi baru, eval hangus bila deskripsi berubah)."
     )
 
     private val PREVIEW_KEYS = listOf("command", "task", "text", "message", "path", "url", "prompt", "q", "query", "title", "server", "tool")
@@ -175,6 +176,7 @@ object ToolGate {
             "remember_fact" -> (args.optString("key").trim() + " = " + args.optString("value").trim()).take(140)
             "learn_rule" -> args.optString("rule").trim().take(140)
             "create_skill" -> ("skill: " + args.optString("name").trim()).take(140)
+            "update_skill_description" -> ("skill: " + args.optString("name").trim() + " — deskripsi baru: " + args.optString("description").trim()).take(140)
             "forget_fact" -> ("hapus fakta: " + args.optString("key").trim()).take(140)
             "delete_skill" -> ("hapus skill id=" + args.optLong("id", -1)).take(140)
             "cancel_schedule" -> ("hapus jadwal id=" + args.optLong("id", -1)).take(140)

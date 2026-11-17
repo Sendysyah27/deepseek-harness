@@ -151,14 +151,31 @@ object GroupChat {
     }
 
     fun personaNameFor(id: String): String =
+        GroupChatSeam.memberInfo(MEMBERS, id, id)?.first ?: personaNameForKotlin(id)
+
+    /** Slice 12 (vc329): nama persona dari id — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun personaNameForKotlin(id: String): String =
         MEMBERS.firstOrNull { it.id == id }?.name ?: "—"
 
     fun accentFor(name: String): String =
+        GroupChatSeam.memberInfo(MEMBERS, "", name)?.second ?: accentForKotlin(name)
+
+    /** Slice 12 (vc329): aksen dari nama — dipakai bila seam Rust
+     *  tak-tersedia. */
+    private fun accentForKotlin(name: String): String =
         MEMBERS.firstOrNull { it.name.equals(name, ignoreCase = true) }?.accent ?: "#4d8cff"
 
     /** Parse @mention (case-insensitive, urutan kemunculan): @asisten, @mandor,
      *  @mentor, @agen4 / @agen 4. Anggota yang sama hanya disebut sekali. */
     fun parseMentions(text: String): List<Member> {
+        val ids = GroupChatSeam.parseMentions(text, MEMBERS) ?: return parseMentionsKotlin(text)
+        return ids.mapNotNull { id -> MEMBERS.firstOrNull { it.id == id } }
+    }
+
+    /** Slice 12 (vc329): parse @mention — dipakai bila seam Rust
+     *  tak-tersedia. */
+    private fun parseMentionsKotlin(text: String): List<Member> {
         val norm = " " + text.lowercase().replace(Regex("\\s+"), " ") + " "
         val hits = ArrayList<Pair<Int, Member>>()
         for (m in MEMBERS) {
@@ -185,6 +202,98 @@ object GroupChat {
 
     /** Mesin ronde (foreground + latar F3). execMode=true hanya untuk
      *  foreground dengan Mode Eksekusi ON; latar selalu false (diskusi saja). */
+    private fun selectQueue(mentioned: List<Member>, allOn: Boolean, activeMembers: List<Member>): Triple<List<Member>, List<String>, String> {
+        val chairId = activeMembers.firstOrNull()?.id ?: "asisten"
+        val r = GroupChatSeam.selectQueue(mentioned.map { it.id }, allOn, activeMembers.map { it.id }, MEMBERS)
+        if (r != null) {
+            val queue = r.first.mapNotNull { id -> MEMBERS.firstOrNull { it.id == id } }
+            return Triple(queue, r.second, r.third)
+        }
+        return selectQueueKotlin(mentioned, allOn, activeMembers, chairId)
+    }
+
+    /** Slice 12 (vc329): pemilihan antrean ronde (catatan verbatim
+     *  dikembalikan sebagai data — pemanggil yang menulis ke DB +
+     *  listener) — dipakai bila seam Rust tak-tersedia. */
+    private fun selectQueueKotlin(mentioned: List<Member>, allOn: Boolean, activeMembers: List<Member>, chairId: String): Triple<List<Member>, List<String>, String> {
+        val queue = ArrayList<Member>()
+        val notes = ArrayList<String>()
+        if (activeMembers.isEmpty()) {
+            // Nol aktif: satu catatan, tanpa LLM dan tanpa slot.
+            notes.add("Tidak ada anggota grup yang aktif — aktifkan lewat ⚙️ Setting Grup.")
+        } else if (allOn) {
+            // Semua jawab: hanya aktif yang menjawab; nonaktif
+            // dilewati diam-diam (tanpa catatan, agar tidak spam).
+            queue.addAll(activeMembers)
+        } else if (mentioned.isNotEmpty()) {
+            for (mm in mentioned) {
+                if (activeMembers.any { it.id == mm.id }) queue.add(mm)
+                else {
+                    // Mention ke nonaktif: SATU catatan sistem
+                    // (bukan istirahat) per ronde untuk member itu.
+                    notes.add("💤 ${mm.name} nonaktif di grup — aktifkan lewat ⚙️ Setting Grup.")
+                }
+            }
+        } else queue.add(activeMembers[0])
+        return Triple(queue, notes, chairId)
+    }
+
+    /** Slice 12 (vc329): resolve slot anggota (terikat / fallback
+     *  slot bebas) — dipakai P15 untuk uji paritas. Null = tidak ada
+     *  slot ATAU seam gagal (fallback menghitung ulang, hasil sama). */
+    private fun resolveSlot(app: Context, memberId: String, used: Set<Int>, filled: List<Int>): Int? {
+        val bound = boundSlotFor(app, memberId)
+        val persona = (1..3).associateWith { slotPersona(app, it) }
+        val r = GroupChatSeam.slotResolve(bound, used.toList(), filled, persona)
+        if (r != null) return r
+        return resolveSlotKotlin(bound, used, filled, persona)
+    }
+
+    /** Slice 12 (vc329): resolve slot (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun resolveSlotKotlin(bound: Int?, used: Set<Int>, filled: List<Int>, slotPersona: Map<Int, String>): Int? {
+        return if (bound != null) {
+            // Terikat: pakai slot itu SAJA; sudah dipakai member
+            // lain dulu -> istirahat (tak terjadi bila unik).
+            if (used.contains(bound)) null else bound
+        } else {
+            // Tanpa ikatan: fallback lama, TAPI hanya slot yang
+            // tidak terikat ke agen lain (slot terikat = reservasi
+            // eksklusif, bukan kolam fallback).
+            filled.firstOrNull { !used.contains(it) && (slotPersona[it] ?: "").isBlank() }
+        }
+    }
+
+    /** Slice 12 (vc329): pesan berhenti-jujur cap 3 langkah per
+     *  anggota per ronde (vc277 O15(b)) — dipakai P15 untuk uji
+     *  paritas. */
+    private fun honestCapStopGroup(usedTools: List<String>, userText: String): String {
+        val doneVc277 = usedTools.distinct().joinToString(", ").ifBlank { "belum ada tool yang dijalankan" }
+        return GroupChatSeam.honestCapStopGroup(doneVc277, userText.take(300))
+            ?: honestCapStopGroupKotlin(doneVc277, userText)
+    }
+
+    /** Slice 12 (vc329): pesan cap grup (salinan asli) — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun honestCapStopGroupKotlin(done: String, userText: String): String =
+        "berhenti di tengah pada langkah 3 dari tugas: " + userText.take(300) + " — tiap anggota maks 3 langkah tool per ronde. Ini yang sudah selesai: " + done + "; ini yang belum: sisa tugas belum dikerjakan dalam ronde ini — lanjutkan di ronde berikutnya atau minta anggota lain."
+
+    /** Slice 12 (vc329): chair-hop — anggota yang disebut di balasan
+     *  ketua ikut menjawab satu hop (maks 2, tanpa yang sudah di
+     *  antrean). Dipakai P15 untuk uji paritas. */
+    private fun chairHop(clean: String, allOn: Boolean, mentionedEmpty: Boolean, isChair: Boolean, bubbles: Int, responded: Set<String>, queue: List<Member>): List<String> {
+        val r = GroupChatSeam.chairHop(clean, allOn, mentionedEmpty, isChair, bubbles, MAX_AGENT_BUBBLES, responded.toList(), queue.map { it.id }, MEMBERS)
+        if (r != null) return r
+        return chairHopKotlin(clean, allOn, mentionedEmpty, isChair, bubbles, responded, queue)
+    }
+
+    /** Slice 12 (vc329): chair-hop (salinan asli) — dipakai bila seam
+     *  Rust tak-tersedia. */
+    private fun chairHopKotlin(clean: String, allOn: Boolean, mentionedEmpty: Boolean, isChair: Boolean, bubbles: Int, responded: Set<String>, queue: List<Member>): List<String> {
+        if (allOn || !mentionedEmpty || !isChair || bubbles >= MAX_AGENT_BUBBLES) return emptyList()
+        return parseMentions(clean).filter { !responded.contains(it.id) && !queue.contains(it) }.map { it.id }
+    }
+
     private fun startRound(ctx: Context, userText: String, execMode: Boolean, listener: Listener, onFinish: (() -> Unit)? = null) {
         if (running) {
             // vc246 GELOMBANG 5 (GR-m7): pesan TIDAK dibuang — diantrekan
@@ -213,29 +322,15 @@ object GroupChat {
                 val mentioned = parseMentions(userText)
                 val allOn = isGroupAllOn(app)
                 val activeMembers = MEMBERS.filter { isMemberActive(app, it.id) }
-                val chairId = activeMembers.firstOrNull()?.id ?: "asisten"
-                val queue = ArrayList<Member>()
-                if (activeMembers.isEmpty()) {
-                    // Nol aktif: satu catatan, tanpa LLM dan tanpa slot.
-                    val note = "Tidak ada anggota grup yang aktif — aktifkan lewat ⚙️ Setting Grup."
+                // Slice 12 (vc329): pemilihan antrean lewat seam Rust
+                // (catatan verbatim diterapkan di sini — efek samping
+                // tetap Kotlin).
+                val (queueList, queueNotes, chairId) = selectQueue(mentioned, allOn, activeMembers)
+                val queue = ArrayList(queueList)
+                for (note in queueNotes) {
                     try { mdb.addGroupMsg("sistem", "Sistem", note) } catch (e: Exception) {}
                     listener.onSystem(note)
-                } else if (allOn) {
-                    // Semua jawab: hanya aktif yang menjawab; nonaktif
-                    // dilewati diam-diam (tanpa catatan, agar tidak spam).
-                    queue.addAll(activeMembers)
-                } else if (mentioned.isNotEmpty()) {
-                    for (mm in mentioned) {
-                        if (activeMembers.any { it.id == mm.id }) queue.add(mm)
-                        else {
-                            // Mention ke nonaktif: SATU catatan sistem
-                            // (bukan istirahat) per ronde untuk member itu.
-                            val note = "💤 ${mm.name} nonaktif di grup — aktifkan lewat ⚙️ Setting Grup."
-                            try { mdb.addGroupMsg("sistem", "Sistem", note) } catch (e: Exception) {}
-                            listener.onSystem(note)
-                        }
-                    }
-                } else queue.add(activeMembers[0])
+                }
                 val memories = retrieveMemories(app, userText)
                 val filled = try { AccountPool.filledSlots(app) } catch (e: Exception) { emptyList() }
                 val used = HashSet<Int>()
@@ -246,17 +341,7 @@ object GroupChat {
                     val m = queue[i]; i++
                     if (responded.contains(m.id)) continue
                     responded.add(m.id)
-                    val bound = boundSlotFor(app, m.id)
-                    val slot: Int? = if (bound != null) {
-                        // Terikat: pakai slot itu SAJA; sudah dipakai member
-                        // lain dulu -> istirahat (tak terjadi bila unik).
-                        if (used.contains(bound)) null else bound
-                    } else {
-                        // Tanpa ikatan: fallback lama, TAPI hanya slot yang
-                        // tidak terikat ke agen lain (slot terikat = reservasi
-                        // eksklusif, bukan kolam fallback).
-                        filled.firstOrNull { !used.contains(it) && slotPersona(app, it).isBlank() }
-                    }
+                    val slot: Int? = resolveSlot(app, m.id, used, filled)
                     if (slot == null) {
                         val note = "💤 ${m.name} sedang istirahat — isi slot di Setup untuk membangunkannya."
                         try { mdb.addGroupMsg("istirahat", m.name, note) } catch (e: Exception) {}
@@ -299,10 +384,7 @@ object GroupChat {
                         // berikutnya ditolak tanpa eksekusi dan tanpa memakan langkah.
                         var turnLockedGrpVc277 = false
                         // vc277 O15(b): berhenti yang jujur saat cap 3/ronde tercapai.
-                        fun honestCapStopGrpVc277(): String {
-                            val doneVc277 = roundToolsVc249.distinct().joinToString(", ").ifBlank { "belum ada tool yang dijalankan" }
-                            return "berhenti di tengah pada langkah 3 dari tugas: " + userText.take(300) + " — tiap anggota maks 3 langkah tool per ronde. Ini yang sudah selesai: " + doneVc277 + "; ini yang belum: sisa tugas belum dikerjakan dalam ronde ini — lanjutkan di ronde berikutnya atau minta anggota lain."
-                        }
+                        fun honestCapStopGrpVc277(): String = honestCapStopGroup(roundToolsVc249, userText)
                         // vc274 O6+O7: eksekusi batch multi-tool grup (per
                         // anggota). Fungsi lokal agar bisa memakai var ronde
                         // (toolIter, prompt, roundTools, roundCorpus) lewat
@@ -334,7 +416,9 @@ object GroupChat {
                                     if (oc.prereqFailed) "" else stuckWatchGrpVc263.observe(oc.tool, oc.args, oc.result)
                                 }
                             )
-                            prompt = buildPrompt(app, m, userText, memories, execMode) + "\n\n" + BatchToolVc274.combinedMessage("grup", reportGrpVc274)
+                            // vc321 IXL: lanjutan batch = delta (jangkar +
+                            // pesan gabungan), bukan rebuild prompt penuh.
+                            prompt = continuationPromptVc321(userText, BatchToolVc274.combinedMessage("grup", reportGrpVc274))
                             val stopGrpVc274 = reportGrpVc274.outcomes.firstOrNull { AgentPrompt.StuckWatch.isStop(it.stuckText) }
                             if (stopGrpVc274 != null) {
                                 turnLockedGrpVc277 = true
@@ -370,7 +454,9 @@ object GroupChat {
                                 val allMemGrpVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(visible), pinnedGrpVc266.lines(), userText)
                                 if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(visible) && roundToolsVc249.isNotEmpty() && !allMemGrpVc266 && !AgentPrompt.evidenceMarkerPresent(visible)) {
                                     gateRetriedVc249 = true
-                                    prompt = buildPrompt(app, m, userText, memories, execMode) + "\n\n" + AgentPrompt.EVIDENCE_GATE_NUDGE
+                                    // vc321 IXL: nudge gate bukti = delta,
+                                    // bukan rebuild prompt penuh.
+                                    prompt = continuationPromptVc321(userText, AgentPrompt.EVIDENCE_GATE_NUDGE)
                                     continue
                                 }
                                 finalText = visible.trim(); break
@@ -427,10 +513,14 @@ object GroupChat {
                             val toolText = ActivityTitle.formatText(tool, args, RedactSecrets.redact(result), msGrpVc254, !WorkLog.isFailed(result))
                             try { mdb.addGroupMsg("tool", m.name, toolText) } catch (e: Exception) {}
                             listener.onTool(m.name, m.accent, toolText)
-                            prompt = buildPrompt(app, m, userText, memories, execMode) +
-                                "\n\nHasil tool $tool" + (if (grpId != null) " [id=$grpId, total $grpTotal char]" else "") + ":\n${RedactSecrets.redact(result).take(8000)}\n" +
+                            // vc321 IXL: lanjutan sesudah tool = delta
+                            // (jangkar + hasil tool + ucapan + instruksi
+                            // lanjut), bukan rebuild prompt penuh. Isi
+                            // suffix byte-identik dengan versi lama.
+                            prompt = continuationPromptVc321(userText,
+                                "Hasil tool $tool" + (if (grpId != null) " [id=$grpId, total $grpTotal char]" else "") + ":\n${RedactSecrets.redact(result).take(8000)}\n" +
                                 (if (proseBeforeTool.isNotBlank()) "\nUcapanmu sebelum tool tadi: ${proseBeforeTool.take(2000)}\n" else "") +
-                                "\nLanjutkan: bila butuh tool lain keluarkan blok json tool (boleh sampai 4 blok sekaligus bila independen, maks 4 per respons), bila selesai jawab final TANPA blok json." + stuckSuffixGrpVc263
+                                "\nLanjutkan: bila butuh tool lain keluarkan blok json tool (boleh sampai 4 blok sekaligus bila independen, maks 4 per respons), bila selesai jawab final TANPA blok json." + stuckSuffixGrpVc263)
                         }
                         val cleanRaw = (finalText ?: "").trim()
                         // vc246 GELOMBANG 5 (K-07): strip blok ask dari teks
@@ -531,10 +621,10 @@ object GroupChat {
                             // mention dan penjawabnya ketua saat itu — bila
                             // balasannya menyebut agen lain, agen itu ikut
                             // menjawab SATU hop, cap tetap 6 bubble.
-                            if (!allOn && mentioned.isEmpty() && m.id == chairId && bubbles < MAX_AGENT_BUBBLES) {
-                                for (inv in parseMentions(clean)) {
-                                    if (!responded.contains(inv.id) && !queue.contains(inv)) queue.add(inv)
-                                }
+                            // Slice 12 (vc329): undangan hop lewat seam Rust.
+                            for (id in chairHop(clean, allOn, mentioned.isEmpty(), m.id == chairId, bubbles, responded, queue)) {
+                                val inv = MEMBERS.firstOrNull { it.id == id } ?: continue
+                                queue.add(inv)
                             }
                         }
                         // VC303-P2-11 (CX-4): akhir giliran anggota — tulis
@@ -587,9 +677,35 @@ object GroupChat {
             else MemoryDb.get(app).searchMemory(userText, 5)
         } catch (e: Exception) { "" }
         if (raw.isBlank()) return emptyList()
-        return raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        return GroupChatSeam.retrieveMemoriesFilter(raw) ?: retrieveMemoriesKotlin(raw)
+    }
+
+    /** Slice 12 (vc329): saring baris memori (trim, non-kosong,
+     *  bukan "Tidak ada memori"/"Kata kunci", maks 10 x 1000 char) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun retrieveMemoriesKotlin(raw: String): List<String> =
+        raw.lines().map { it.trim() }.filter { it.isNotEmpty() }
             .filter { !it.startsWith("Tidak ada memori") && !it.startsWith("Kata kunci") }
             .take(10).map { it.take(1000) }
+
+    /** vc321 IXL — lanjutan DELTA room (mirror sendContinuation 1-1
+     *  vc316): ronde lanjutan anggota yang sama TIDAK lagi membangun
+     *  ulang prompt penuh (base + katalog + transkrip ~70.000 char)
+     *  — cukup jangkar delta (~503 char) + isi baru (hasil tool /
+     *  pesan gabungan / nudge). Server sudah menyimpan prompt penuh
+     *  ronde pertama di sesi server slot ini (kunci
+     *  dsSlotSrv_<slot>_<harnessNo>, dipakai ulang). Bila wadah
+     *  server ternyata di-reset guard vc321 di tengah ronde, jangkar
+     *  membawa jalan keluar list_tools {} seperti 1-1. Ronde pertama
+     *  tiap anggota tetap kirim prompt penuh (buildPrompt). */
+    private fun continuationPromptVc321(userText: String, suffix: String): String {
+        return GroupChatSeam.continuationPromptRoom(userText, suffix) ?: continuationPromptVc321Kotlin(userText, suffix)
+    }
+
+    /** Slice 12 (vc329): lanjutan delta room (jangkar vc316 + isi
+     *  baru) — dipakai bila seam Rust tak-tersedia. */
+    private fun continuationPromptVc321Kotlin(userText: String, suffix: String): String {
+        return AgentPrompt.continuationAnchorVc316(userText) + "\n\n" + suffix
     }
 
     /** Grup Matang F1: prompt penuh — persona user + pak perilaku anggota +
@@ -599,8 +715,53 @@ object GroupChat {
      *  baris transkrip tertua dipotong dulu (minimal 5 baris dipertahankan).
      *  History 1-1 TIDAK disalin mentah — jembatan satu-satunya adalah
      *  cuplikan retrieval berlabel di bawah. toolsEnabled=true menyertakan
-     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog. */
+     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog.
+     *  vc321: katalog lewat selectCatalog (bukan penuh dicap 30.000);
+     *  lanjutan ronde memakai continuationPromptVc321 (delta), bukan
+     *  rebuild buildPrompt. */
     private fun buildPrompt(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
+        // Slice 12 (vc329): semua blok dihitung di Kotlin (DB/prefs/
+        // katalog + redact), perakitan string lewat seam Rust. Katalog
+        // lewat selectCatalog + backstop 30k vc321 — JANGAN kirim
+        // katalog penuh dari Rust. `memories` dikirim SUDAH di-redact
+        // (Rust tidak me-redact baris memori).
+        val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
+        val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
+        val pinnedRawGrpVc263 = try { MemoryDb.get(app).pinnedFactsText() } catch (e: Exception) { "" }
+        val pinnedGrpVc248 = try { RedactSecrets.redact(pinnedRawGrpVc263) } catch (e: Exception) { "" }
+        val memoriesVc241 = try { val keysVc241 = MemoryDb.get(app).factsAllWithStatus().map { it.first.lowercase() }.filter { it.length >= 4 }; memories.filter { ln -> keysVc241.none { k -> ln.lowercase().contains(k) } } } catch (e: Exception) { memories }
+        val factsVc240 = try { RedactSecrets.redact(MemoryDb.get(app).dedupFactsVsPinned(MemoryDb.get(app).factsText(userText), pinnedRawGrpVc263)) } catch (e: Exception) { "" }
+        val goalsVc240 = try { RedactSecrets.redact(MemoryDb.get(app).goalsText(userText)) } catch (e: Exception) { "" }
+        val workNotesVc303 = WorkNotesVc301.blockForKey(app, WorkNotesVc301.groupNotesKey())
+        val catSlimVc321 = if (toolsEnabled) AgentPrompt.catalogForTask(app, userText) else ""
+        val catVc240 = if (catSlimVc321.length > 30000) catSlimVc321.take(30000) + "\n…(katalog grup dipotong, sisa " + (catSlimVc321.length - 30000) + " char)…" else catSlimVc321
+        val skills = if (toolsEnabled) try { RedactSecrets.redact(MemoryDb.get(app).skillsText(userText)) } catch (e: Exception) { "" } else ""
+        val rows = try { MemoryDb.get(app).groupMessages(30) } catch (e: Exception) { emptyList() }
+        val transcript = ArrayList<String>()
+        for (r in rows) {
+            val who = when (r.role) {
+                "user" -> "User"
+                "sistem" -> "Sistem"
+                "tool" -> "Tool"
+                else -> r.name
+            }
+            transcript.add(who + ": " + (if (r.role == "user") r.text.take(2000) else RedactSecrets.redact(r.text.take(2000))))
+        }
+        val r = GroupChatSeam.buildPrompt(
+            me.name, persona, Behaviors.block(pack), AgentBrain.promptBlocksFor(app, me.id),
+            AgentPrompt.CTX_LABEL_RULES, AgentPrompt.PAGING_TOTAL_RULE_VC302,
+            pinnedGrpVc248, WorldState.line(app, false, true),
+            memoriesVc241.map { RedactSecrets.redact(it) }, factsVc240, goalsVc240, workNotesVc303,
+            toolsEnabled, catVc240, skills, AgentPrompt.modeBebasBlock(app),
+            AgentPrompt.BATCH_TERMINAL_RULE_VC302, transcript, userText
+        )
+        if (r != null) return r
+        return buildPromptKotlin(app, me, userText, memories, toolsEnabled)
+    }
+
+    /** Slice 12 (vc329): prompt penuh grup (salinan asli) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun buildPromptKotlin(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
         val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
         val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
         val base = StringBuilder()
@@ -637,12 +798,16 @@ object GroupChat {
         // tool ronde sebelumnya walau sudah keluar dari 30 pesan terakhir.
         run { val wbGrpVc303 = WorkNotesVc301.blockForKey(app, WorkNotesVc301.groupNotesKey()); if (wbGrpVc303.isNotBlank()) base.append("[CATATAN KERJA GRUP]\n").append(wbGrpVc303).append("\n\n") }
         if (toolsEnabled) {
-            // vc240 M18: cap base ditegakkan dengan memangkas katalog
-            // (bukan hanya transkrip) — katalog penuh dicap 6000 char
-            // dengan penanda sisa, agar base + transkrip minimal 5 baris
-            // tidak lagi fail-open diam-diam di atas 200000.
-            val catFullVc240 = AgentPrompt.toolCatalog(app)
-            val catVc240 = if (catFullVc240.length > 30000) catFullVc240.take(30000) + "\n…(katalog grup dipotong, sisa " + (catFullVc240.length - 30000) + " char)…" else catFullVc240
+            // vc321 IXL: katalog room kini lewat selectCatalog (pola vc316
+            // 1-1) — katalog penuh 94.809 char selama ini dicap 30.000,
+            // tapi tiap ronde rebuild + POST parent NULL mengakumulasi
+            // konteks server; slim ~12-22k char per tugas ("cek skill
+            // lists" 22.429 vs 30.000, "bro?" 13.726). Backstop 30.000
+            // dipertahankan (tugas kosong -> katalog penuh, kontrak lama).
+            // Trade-off sama seperti vc316: tool di luar seleksi didapat
+            // lewat list_tools {} (catatan fallback di tiap slim).
+            val catSlimVc321 = AgentPrompt.catalogForTask(app, userText)
+            val catVc240 = if (catSlimVc321.length > 30000) catSlimVc321.take(30000) + "\n…(katalog grup dipotong, sisa " + (catSlimVc321.length - 30000) + " char)…" else catSlimVc321
             base.append("KATALOG TOOL (sama seperti chat 1-1 — pakai bila tugas butuh aksi HP):\n").append(catVc240).append("\n\n")
             // vc262 N-m23: teruskan teks tugas sebagai query agar ranking
             // relevansi skill hidup (tanpa query semua skor 0).
@@ -709,50 +874,82 @@ object GroupChat {
      *  sendiri. */
     private fun runGroupTool(app: Context, tool: String, args: JSONObject, listener: Listener, callId: String = ""): String {
         return try {
-            // vc229 R-06(d): intersepsi analyze_photo di grup — jangan sampai
-            // jatuh ke else "tidak dikenal" lalu model mendeskripsikan tebakan.
-            if (tool == "analyze_photo") return "analyze_photo tidak tersedia di grup/latar — analisis foto hanya dari chat 1-1. Bila foto belum dianalisis, tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan isi foto." 
-            // vc247: gate dimatikan — eksekusi langsung tanpa syarat
-            // auto-approve, tanpa dialog listener, tanpa antrean.
-            // vc262 GR-M6 (visibilitas, BUKAN gate): eksekusi tool grup
-            // tercatat di ledger (panel membaca ledger); tidak ada
-            // approval grup yang menggantung — gate vc247 nonaktif.
-            if (ToolGate.GATES_DISABLED) {
-                try { DecisionLedger.add(app, "grup", "tool", (if (callId.isNotBlank()) "[$callId] " else "") + tool + " " + RedactSecrets.redact(args.toString().take(200))) } catch (e: Exception) {}
-                return Tools.execute(app, tool, args, callId)
+            // Slice 12 (vc329): keputusan rute lewat seam Rust;
+            // ledger/eksekusi/dialog listener tetap Kotlin.
+            val route = runGroupToolDecision(app, tool, args)
+            when (route.first) {
+                "msg_analyze_photo" -> route.second ?: ""
+                // vc247: gate dimatikan — eksekusi langsung tanpa syarat
+                // auto-approve, tanpa dialog listener, tanpa antrean.
+                // vc262 GR-M6 (visibilitas, BUKAN gate): eksekusi tool grup
+                // tercatat di ledger (panel membaca ledger); tidak ada
+                // approval grup yang menggantung — gate vc247 nonaktif.
+                "execute_gates" -> {
+                    try { DecisionLedger.add(app, "grup", "tool", (if (callId.isNotBlank()) "[$callId] " else "") + tool + " " + RedactSecrets.redact(args.toString().take(200))) } catch (e: Exception) {}
+                    Tools.execute(app, tool, args, callId)
+                }
+                "execute" -> Tools.execute(app, tool, args, callId)
+                else -> {
+                    val req = ToolGate.describe(tool, args, app)
+                    val latch = CountDownLatch(1)
+                    val approved = AtomicBoolean(false)
+                    try {
+                        listener.onToolApproval(req) { ok -> approved.set(ok); latch.countDown() }
+                    } catch (e: Exception) { latch.countDown() }
+                    val decided = try { latch.await(180, TimeUnit.SECONDS) } catch (e: Exception) { false }
+                    if (!decided || !approved.get()) {
+                        "DITOLAK USER: tool $tool tidak diizinkan (atau dialog persetujuan tidak tampil karena app tidak di depan). Lanjutkan tugas tanpa tool itu — alternatif atau jawaban final."
+                    } else Tools.execute(app, tool, args, callId)
+                }
             }
-            // vc233 K2a: tool tulis/hapus memori TIDAK PERNAH lewat shortcut
-            // auto-approve maupun autoAllow — selalu jatuh ke dialog listener
-            // di bawah, walau auto-approve grup ON. Shortcut di bawah hanya
-            // untuk tool non-memori, perilaku auto-approve lainnya tidak berubah.
-            // vc242 K-01/GR-M7: shortcut auto-approve/autoAllow TIDAK
-            // berlaku untuk tool tulis/hapus memori, kelas terkunci mandat
-            // (termasuk priv_input HIGH), maupun create_subroom — ketiganya
-            // selalu jatuh ke dialog listener di bawah.
-            if (!Tools.isMemoryWrite(tool) && tool != "create_subroom" && !ApprovalPanelStore.isAutoAllowBlocked(tool)) {
-                if (isGroupAutoApproveOn(app)) return Tools.execute(app, tool, args, callId)
-                if (!Tools.isRisky(tool, args)) return Tools.execute(app, tool, args, callId)
-                // vc229 R-04(a)(b): autoAllow grup memakai gerbang yang sama
-                // (blokir kelas terkunci + TTL 24 jam; tanpa ikatan sesi di grup).
-                if (ApprovalPanelStore.autoAllowValid(app, tool, -1L)) return Tools.execute(app, tool, args, callId)
-            }
-            val req = ToolGate.describe(tool, args, app)
-            val latch = CountDownLatch(1)
-            val approved = AtomicBoolean(false)
-            try {
-                listener.onToolApproval(req) { ok -> approved.set(ok); latch.countDown() }
-            } catch (e: Exception) { latch.countDown() }
-            val decided = try { latch.await(180, TimeUnit.SECONDS) } catch (e: Exception) { false }
-            if (!decided || !approved.get()) {
-                "DITOLAK USER: tool $tool tidak diizinkan (atau dialog persetujuan tidak tampil karena app tidak di depan). Lanjutkan tugas tanpa tool itu — alternatif atau jawaban final."
-            } else Tools.execute(app, tool, args, callId)
         } catch (e: Exception) { "Tool $tool gagal: ${(e.message ?: "").take(200)}" }
+    }
+
+    /** Slice 12 (vc329): keputusan `runGroupTool` (route + pesan) —
+     *  dipakai P15 untuk uji paritas. Route: "execute" |
+     *  "execute_gates" | "dialog" | "msg_analyze_photo". */
+    private fun runGroupToolDecision(app: Context, tool: String, args: JSONObject): Pair<String, String?> {
+        val r = GroupChatSeam.groupToolRoute(
+            tool, ToolGate.GATES_DISABLED, Tools.isMemoryWrite(tool),
+            ApprovalPanelStore.isAutoAllowBlocked(tool), isGroupAutoApproveOn(app),
+            Tools.isRisky(tool, args), ApprovalPanelStore.autoAllowValid(app, tool, -1L)
+        )
+        if (r != null) return r
+        return runGroupToolDecisionKotlin(app, tool, args)
+    }
+
+    /** Slice 12 (vc329): keputusan `runGroupTool` (salinan asli:
+     *  intersepsi analyze_photo, gate, shortcut, dialog) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun runGroupToolDecisionKotlin(app: Context, tool: String, args: JSONObject): Pair<String, String?> {
+        // vc229 R-06(d): intersepsi analyze_photo di grup — jangan sampai
+        // jatuh ke else "tidak dikenal" lalu model mendeskripsikan tebakan.
+        if (tool == "analyze_photo") return "msg_analyze_photo" to "analyze_photo tidak tersedia di grup/latar — analisis foto hanya dari chat 1-1. Bila foto belum dianalisis, tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan isi foto."
+        // vc247: gate dimatikan — eksekusi langsung tanpa syarat
+        // auto-approve, tanpa dialog listener, tanpa antrean.
+        if (ToolGate.GATES_DISABLED) return "execute_gates" to null
+        // vc233 K2a: tool tulis/hapus memori TIDAK PERNAH lewat shortcut
+        // auto-approve maupun autoAllow — selalu jatuh ke dialog listener
+        // di bawah, walau auto-approve grup ON. Shortcut di bawah hanya
+        // untuk tool non-memori, perilaku auto-approve lainnya tidak berubah.
+        // vc242 K-01/GR-M7: shortcut auto-approve/autoAllow TIDAK
+        // berlaku untuk tool tulis/hapus memori, kelas terkunci mandat
+        // (termasuk priv_input HIGH), maupun create_subroom — ketiganya
+        // selalu jatuh ke dialog listener di bawah.
+        if (!Tools.isMemoryWrite(tool) && tool != "create_subroom" && !ApprovalPanelStore.isAutoAllowBlocked(tool)) {
+            if (isGroupAutoApproveOn(app)) return "execute" to null
+            if (!Tools.isRisky(tool, args)) return "execute" to null
+            // vc229 R-04(a)(b): autoAllow grup memakai gerbang yang sama
+            // (blokir kelas terkunci + TTL 24 jam; tanpa ikatan sesi di grup).
+            if (ApprovalPanelStore.autoAllowValid(app, tool, -1L)) return "execute" to null
+        }
+        return "dialog" to null
     }
 
     /** F3a: jam hening eksplisit ronde grup latar (23:00-05:00, D2). */
     private fun isQuietHour(): Boolean {
         val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-        return h >= 23 || h < 5
+        return GroupChatSeam.quietHourGroup(h) ?: (h >= 23 || h < 5)
     }
 
     /** F3a: ronde grup latar (DISKUSI SAJA, tanpa tools — tidak ada dialog
@@ -765,20 +962,11 @@ object GroupChat {
      *  pesan user bernama "Sistem" sebelum ronde dimulai. */
     fun runBackgroundRound(ctx: Context, topic: String, jobId: String): Boolean {
         val app = ctx.applicationContext
-        if (running) {
-            try { MemoryDb.get(app).logJob(jobId, "sibuk", "grup sibuk — ronde foreground sedang berjalan") } catch (e: Exception) {}
-            return false
-        }
-        val prefs = app.getSharedPreferences("harness", Context.MODE_PRIVATE)
-        val blockReason = when {
-            prefs.getBoolean("f1Off", false) -> "F1 dimatikan (kill switch)"
-            BgBrain.jobsOff(app) -> "job dimatikan"
-            isQuietHour() -> "jam hening 23:00-05:00"
-            !BgBrain.batteryOk(app) -> "baterai di bawah 20% dan tidak dicas"
-            else -> null
-        }
-        if (blockReason != null) {
-            try { MemoryDb.get(app).logJob(jobId, "diblokir", blockReason) } catch (e: Exception) {}
+        // Slice 12 (vc329): gerbang lewat seam Rust (keputusan murni);
+        // logJob + startRound tetap Kotlin.
+        val (decision, reason, jobStatus) = bgRoundGateDecision(app)
+        if (decision != "proceed") {
+            try { MemoryDb.get(app).logJob(jobId, jobStatus ?: "diblokir", reason ?: "") } catch (e: Exception) {}
             return false
         }
         try { MemoryDb.get(app).addGroupMsg("user", "Sistem", topic) } catch (e: Exception) {}
@@ -792,6 +980,7 @@ object GroupChat {
             notifyGroupDone(app, topic)
         })
         if (!running) {
+            val prefs = app.getSharedPreferences("harness", Context.MODE_PRIVATE)
             val reason = if (prefs.getBoolean("f1Off", false)) "F1 dimatikan (kill switch)" else "grup sibuk — ronde lain dimulai bersamaan"
             val status = if (prefs.getBoolean("f1Off", false)) "diblokir" else "sibuk"
             try { MemoryDb.get(app).logJob(jobId, status, reason) } catch (e: Exception) {}
@@ -799,6 +988,31 @@ object GroupChat {
         }
         try { MemoryDb.get(app).logJob(jobId, "berjalan", topic.take(120)) } catch (e: Exception) {}
         return true
+    }
+
+    /** Slice 12 (vc329): gerbang `runBackgroundRound` — dipakai P15
+     *  untuk uji paritas. Decision: "proceed" | "busy" | "blocked". */
+    private fun bgRoundGateDecision(app: Context): Triple<String, String?, String?> {
+        val prefs = app.getSharedPreferences("harness", Context.MODE_PRIVATE)
+        val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val r = GroupChatSeam.bgRoundGate(running, prefs.getBoolean("f1Off", false), BgBrain.jobsOff(app), h, BgBrain.batteryOk(app))
+        if (r != null) return r
+        return bgRoundGateKotlin(app)
+    }
+
+    /** Slice 12 (vc329): gerbang ronde latar (salinan asli) — dipakai
+     *  bila seam Rust tak-tersedia. */
+    private fun bgRoundGateKotlin(app: Context): Triple<String, String?, String?> {
+        if (running) return Triple("busy", "grup sibuk — ronde foreground sedang berjalan", "sibuk")
+        val prefs = app.getSharedPreferences("harness", Context.MODE_PRIVATE)
+        val reason = when {
+            prefs.getBoolean("f1Off", false) -> "F1 dimatikan (kill switch)"
+            BgBrain.jobsOff(app) -> "job dimatikan"
+            isQuietHour() -> "jam hening 23:00-05:00"
+            !BgBrain.batteryOk(app) -> "baterai di bawah 20% dan tidak dicas"
+            else -> null
+        }
+        return if (reason == null) Triple("proceed", null, null) else Triple("blocked", reason, "diblokir")
     }
 
     /** F3a: notifikasi selesai ronde latar (pola BgBrain, channel sama). */
@@ -812,7 +1026,8 @@ object GroupChat {
             val body = last ?: topic
             // vc262 GR-m9: render notifikasi dibatasi wajar — judul + 3
             // baris pertama + penanda sisa, agar tidak tenggelam di bawah.
-            val renderGrpVc262 = run { val linesVc262 = body.lines(); if (linesVc262.size <= 3) body else linesVc262.take(3).joinToString("\n") + "\n…(" + (linesVc262.size - 3) + " baris lagi)…" }
+            // Slice 12 (vc329): render lewat seam Rust.
+            val renderGrpVc262 = GroupChatSeam.renderNotif3Lines(body) ?: renderNotif3LinesKotlin(body)
             val n = Notification.Builder(app, "harness-alert")
                 .setContentTitle("👥 Grup Agen — ronde latar selesai")
                 .setContentText(body.take(180))
@@ -823,6 +1038,13 @@ object GroupChat {
         } catch (e: Exception) {}
     }
 
+    /** Slice 12 (vc329): render notifikasi 3 baris — dipakai bila
+     *  seam Rust tak-tersedia. */
+    private fun renderNotif3LinesKotlin(body: String): String {
+        val linesVc262 = body.lines()
+        return if (linesVc262.size <= 3) body else linesVc262.take(3).joinToString("\n") + "\n…(" + (linesVc262.size - 3) + " baris lagi)…"
+    }
+
     /** F3d: plan grup (pref planJson_group, TERPISAH dari planJson_<session>).
      *  Ringkasan tersimpan, BUKAN auto-continue T15 (Command Center tak disentuh). */
     data class GroupPlan(val title: String, val body: String, val ts: Long)
@@ -831,14 +1053,20 @@ object GroupChat {
         return try {
             val raw = app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("planJson_group", "") ?: ""
             if (raw.isBlank()) return emptyList()
-            val arr = org.json.JSONArray(raw)
-            val out = ArrayList<GroupPlan>()
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                out.add(GroupPlan(o.optString("title"), o.optString("body"), o.optLong("ts")))
-            }
-            out.sortedByDescending { it.ts }
+            GroupChatSeam.parsePlans(raw) ?: groupPlansKotlin(raw)
         } catch (e: Exception) { emptyList() }
+    }
+
+    /** Slice 12 (vc329): parse + sort plan grup (salinan asli) —
+     *  dipakai bila seam Rust tak-tersedia. */
+    private fun groupPlansKotlin(raw: String): List<GroupPlan> {
+        val arr = org.json.JSONArray(raw)
+        val out = ArrayList<GroupPlan>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            out.add(GroupPlan(o.optString("title"), o.optString("body"), o.optLong("ts")))
+        }
+        return out.sortedByDescending { it.ts }
     }
 
     private fun saveGroupPlans(app: Context, plans: List<GroupPlan>) {
@@ -853,6 +1081,27 @@ object GroupChat {
      *  sama (judul + isi identik) tidak disimpan dua kali — tombol header
      *  jadi aman dipakai juga untuk membuka dialog plan. */
     fun saveLastRoundAsPlan(app: Context): String {
+        return try {
+            val rows = MemoryDb.get(app).groupMessages(200)
+            val plans = groupPlans(app)
+            // Slice 12 (vc329): dedup + cap + serialisasi lewat seam
+            // Rust; tulis prefs tetap Kotlin.
+            val rowsJson = org.json.JSONArray()
+            for (r in rows) rowsJson.put(JSONObject().put("role", r.role).put("name", r.name).put("text", r.text))
+            val plansJson = org.json.JSONArray()
+            for (pl in plans) plansJson.put(JSONObject().put("title", pl.title).put("body", pl.body).put("ts", pl.ts))
+            val (message, newPlansJson) = GroupChatSeam.saveLastRoundPlan(rowsJson, plansJson, System.currentTimeMillis())
+                ?: return saveLastRoundAsPlanKotlin(app)
+            if (newPlansJson != null) {
+                app.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("planJson_group", newPlansJson).apply()
+            }
+            message
+        } catch (e: Exception) { "Gagal menyimpan rencana grup: ${(e.message ?: "").take(100)}" }
+    }
+
+    /** Slice 12 (vc329): simpan ronde terakhir sebagai plan (salinan
+     *  asli) — dipakai bila seam Rust tak-tersedia. */
+    private fun saveLastRoundAsPlanKotlin(app: Context): String {
         return try {
             val rows = MemoryDb.get(app).groupMessages(200)
             val lastUser = rows.indexOfLast { it.role == "user" }

@@ -1,5 +1,6 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -20,7 +21,25 @@ object OcClient {
 
     fun base(port: Int) = "http://127.0.0.1:$port"
 
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustOcClient = RustCore.available
+
     private fun http(method: String, url: String, body: String? = null,
+                     connectMs: Int = 4000, readMs: Int = 15000): Pair<Int, String> {
+        if (rustOcClient) {
+            val r = HttpSeam.request(
+                method, url, mapOf("Content-Type" to "application/json"),
+                body, connectMs, readMs, 2_000_000
+            )
+            if (r != null) return Pair(r.code, r.body)
+            // null = transport gagal (fallback Kotlin, saklar hidup) ATAU
+            // seam rusak (HttpSeam.rustHttp mati -> matikan saklar file ini).
+            if (!HttpSeam.rustHttp) rustOcClient = false
+        }
+        return httpKotlin(method, url, body, connectMs, readMs)
+    }
+
+    private fun httpKotlin(method: String, url: String, body: String? = null,
                      connectMs: Int = 4000, readMs: Int = 15000): Pair<Int, String> {
         var conn: HttpURLConnection? = null
         return try {

@@ -5,6 +5,7 @@ import android.os.Looper
 import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.WebView
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -20,8 +21,18 @@ import java.util.concurrent.TimeUnit
  * Tiap completion: create session -> create_pow_challenge -> solve PoW (DeepSeekHashV1)
  * -> POST completion (SSE, format JSON-Patch difragments) dengan header x-ds-pow-response.
  * Token TIDAK pernah disimpan ke disk oleh kelas ini; dibaca segar dari WebView tiap panggilan.
+ * Slice 11 (vc328): transport JSON (postJson/getJson) + parse stream SSE
+ * + PoW -> Rust (seam httpJson slice 8 + dsApiJson slice 11 + pow_solver
+ * slice 2); panen cookie/token (WebView/CookieManager) + mesin sesi
+ * (runChat/chat, guard/primed/cooldown) + loop baca stream + onPartial
+ * tetap Kotlin.
  */
 class DsApiClient(private val webView: WebView) {
+
+    // Slice 11 (vc328): saklar seam Rust — default ikut `RustCore.available`.
+    // Bila .so absen/rusak atau seam mati, semua wrapper di bawah memakai
+    // implementasi Kotlin lama (`*Kotlin`).
+    var rustDsApi = RustCore.available
 
     private val main = Handler(Looper.getMainLooper())
     // vc271 O5: antrean FIFO ganti penolakan busy (lihat ApiRequestQueue).
@@ -29,7 +40,7 @@ class DsApiClient(private val webView: WebView) {
 
     fun chat(prompt: String, thinking: Boolean, search: Boolean,
              onPartial: (String) -> Unit, onDone: (String, String) -> Unit, onError: (String) -> Unit,
-             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false) {
+             bgMode: Boolean = false, reviewer: Boolean = false, forceFresh: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null) {
         val run: () -> Unit = {
             Thread {
                 // vc271 O5: Governor dihitung di pintu masuk EKSEKUSI request,
@@ -46,87 +57,132 @@ class DsApiClient(private val webView: WebView) {
                 // pada percobaan pertama. Panggilan biasa tidak berubah
                 // (forceFresh=false diteruskan apa adanya).
                 val res = try {
-                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
+                    runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
                 } catch (e: Exception) {
+                    // vc316 P1: klasifikasi via DsFailure.classifyFailure —
+                    // JANGAN lagi contains(...) manual di sini. Kode HTTP di-parse
+                    // dari pesan ("HTTP <code> di ...") dan/atau dari body;
+                    // Retry-After dibaca dari suffix "[retry_after=<n>]"
+                    // yang ditempel postJson/postCompletion.
+                    val failure = DsFailure.classifyFailure(0, "", e)
                     val m = e.message ?: ""
-                    // Gangguan jaringan sesaat (termasuk DNS ngadat: "Unable to resolve
-                    // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
-                    // sebelum menyerah ke jalur WebView.
-                    val rateLimited = m.contains("rate_limit", ignoreCase = true) || m.contains("too frequent", ignoreCase = true)
-                    val transient = rateLimited ||
-                        m.contains("failed to connect", ignoreCase = true) ||
-                        m.contains("timeout", ignoreCase = true) ||
-                        m.contains("resolve host", ignoreCase = true) ||
-                        m.contains("No address associated", ignoreCase = true) ||
-                        m.contains("UnknownHost", ignoreCase = true)
-                    val streamCut = m.contains("stream_terputus", ignoreCase = true) ||
-                        m.contains("jawaban_kosong", ignoreCase = true)
-                    if (streamCut) {
+                    if (DsFailure.isStreamCut(m)) {
                         // v4.12.2: stream putus / selesai tanpa jawaban —
-                        // ulang maks 2x di sesi yang sama (klien stateless:
-                        // POST ulang tidak menumpuk konteks server).
+                        // ulang di sesi yang sama (klien stateless: POST
+                        // ulang tidak menumpuk konteks server). vc327:
+                        // maks 3x (jeda 2/5/15 dtk) untuk giliran biasa —
+                        // sinyal lemah butuh kesempatan lebih lama SEBELUM
+                        // membakar sesi baru; reviewer tetap 2x (2/5 dtk,
+                        // jalurnya tidak diubah).
                         var lastErr2: Exception = e
                         var out2: Pair<String, String>? = null
-                        val waits2 = longArrayOf(2_000, 5_000)
+                        val waits2 = if (reviewer) longArrayOf(2_000, 5_000) else longArrayOf(2_000, 5_000, 15_000)
                         for (w in waits2) {
                             onPartial("⏳ Stream DeepSeek terputus sebelum jawaban selesai — mengulang di sesi yang sama…")
                             Thread.sleep(w)
-                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
+                            try { out2 = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
                             catch (e2: Exception) {
                                 val m2 = e2.message ?: ""
-                                if (isSuspendSignal(m2)) throw e2
-                                if (!(m2.contains("stream_terputus", ignoreCase = true) || m2.contains("jawaban_kosong", ignoreCase = true))) throw e2
+                                if (DsFailure.isSuspendSignal(m2)) throw e2
+                                if (!DsFailure.isStreamCut(m2)) throw e2
                                 lastErr2 = e2
                             }
                         }
                         out2 ?: run {
-                            // v4.43.17: sesi yang sama putus 2x — jangan bakar
-                            // waktu di sesi beracun itu lagi. SEKALI coba sesi
-                            // server baru (forceFresh menimpa simpanan), baru
-                            // menyerah. Error terbaru dilempar: paling
-                            // informatif (401 berarti auth, putus lagi
-                            // berarti bukan sesi penyebabnya).
-                            onPartial("⏳ Stream putus 2x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
-                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode) }
+                            // vc327 SESI — TAHAN forceFresh: stream putus
+                            // berulang BUKAN bukti sesi beracun (sinyal 4G
+                            // lemah memutus stream sehat juga). Tiap
+                            // forceFresh = 1 sesi server baru; tanpa batas,
+                            // 1 giliran = 1 sesi baru (bukti live 00:15).
+                            // Aturan baru: maks 1 forceFresh per 10 menit
+                            // per sesi harness (TurnMetrics
+                            // .allowForceFreshVc327); di dalam jendela,
+                            // giliran ini GAGAL dengan pesan jelas, bukan
+                            // membakar sesi diam-diam. Reviewer (BgBrain)
+                            // TIDAK digate — jalurnya sendiri (forceFresh
+                            // =true sejak awal, di luar cakupan fix).
+                            // Error terbaru dilempar: paling informatif
+                            // (401 berarti auth, putus lagi berarti bukan
+                            // sesi penyebabnya).
+                            val cutNvc327 = if (reviewer) 2 else 3
+                            val harnessNoVc327 = if (bgMode) -100L else try { hprefs().getLong("currentSession", 1L) } catch (e3: Exception) { 1L }
+                            val ffKeyVc327 = "ffVc327_ds_" + harnessNoVc327
+                            if (!reviewer && !TurnMetrics.allowForceFreshVc327(webView.context, ffKeyVc327, System.currentTimeMillis())) {
+                                logSessEvent("Wadah PENGGANTI DITAHAN vc327 (stream putus ${cutNvc327}x di sesi yang sama — sesi server baru terakhir dibuat <10 mnt lalu; sesi lama TIDAK dibakar. Coba lagi sesudah jeda / periksa sinyal).")
+                                throw Exception((lastErr2.message ?: "") + " [sesi server baru ditahan vc327: stream putus berulang, sesi baru terakhir <10 mnt lalu — coba lagi sesudah jeda / periksa sinyal]")
+                            }
+                            if (!reviewer) TurnMetrics.noteForceFreshVc327(webView.context, ffKeyVc327, System.currentTimeMillis())
+                            onPartial("⏳ Stream putus ${cutNvc327}x di sesi yang sama — coba SATU sesi server baru sebelum menyerah…")
+                            try { runChat(prompt, thinking, search, onPartial, forceFresh = true, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
                             catch (e3: Exception) { throw e3 }
                         }
-                    } else if (isSuspendSignal(m)) {
+                    } else if (DsFailure.isSuspendSignal(m)) {
                         // v4.10.2: akun suspend — runChat sudah menandai akun
                         // ini mati. Pindah SEKALI ke akun sehat (failover kini
                         // melewati akun mati), lalu coba sekali. Tanpa akun
                         // sehat: menyerah dengan alasan yang sebenarnya.
+                        // (Failover NONAKTIF — AccountPool.FAILOVER_ENABLED
+                        // = false — jadi cabang ini praktis melempar dengan
+                        // suffix di bawah; jangan hapus, failover bisa
+                        // dihidupkan lagi sesudah SlotManager dispek ulang.)
                         val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
                         if (!switched) throw Exception((e.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         onPartial("⏳ Akun DeepSeek ter-suspended — pindah ke akun cadangan yang sehat, lanjut…")
-                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
-                    } else if (!transient) throw e
-                    else if (!rateLimited) {
-                        Thread.sleep(1500)
-                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode)
-                    } else {
-                        // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
-                        // langkah tidak boleh putus hanya karena jendela laju server.
-                        var lastErr: Exception = e
-                        var out: Pair<String, String>? = null
-                        val waits = longArrayOf(10_000, 20_000, 35_000)
-                        for (w in waits) {
-                            onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
-                            Thread.sleep(w)
-                            try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode); break }
-                            catch (e2: Exception) {
-                                val m2 = e2.message ?: ""
-                                if (!(m2.contains("rate_limit", ignoreCase = true) || m2.contains("too frequent", ignoreCase = true))) throw e2
-                                lastErr = e2
+                        runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
+                    } else when (failure.kind) {
+                        FailureKind.RATE_LIMIT -> {
+                            // v4.6.0: tangga backoff rate-limit — tugas panjang banyak
+                            // langkah tidak boleh putus hanya karena jendela laju server.
+                            // vc316 P1: jeda PERTAMA = header Retry-After bila
+                            // server mengirimnya (fallback 10/20/35 dtk).
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            val waits = DsFailure.rateLimitWaits(DsFailure.parseRetryAfterSeconds(m))
+                            for (w in waits) {
+                                onPartial("⏳ Kena batas laju DeepSeek — jeda ${w / 1000} detik, lanjut otomatis…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
+                                catch (e2: Exception) {
+                                    if (DsFailure.classifyFailure(0, "", e2).kind != FailureKind.RATE_LIMIT) throw e2
+                                    lastErr = e2
+                                }
                             }
-                        }
-                        if (out == null) {
-                            val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
-                            if (switched) {
-                                onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
-                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode) } catch (e4: Exception) { lastErr = e4 }
+                            if (out == null) {
+                                val switched = try { AccountPool.failover(webView.context) } catch (e3: Exception) { false }
+                                if (switched) {
+                                    onPartial("⏳ Slot akun kena batas laju — pindah ke slot akun cadangan, lanjut…")
+                                    try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) } catch (e4: Exception) { lastErr = e4 }
+                                }
                             }
+                            out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
                         }
-                        out ?: throw Exception((lastErr.message ?: "") + " [failover antar slot dinonaktifkan — akun cadangan tidak dipakai otomatis]")
+                        FailureKind.UPSTREAM, FailureKind.OVERLOADED -> {
+                            // vc316 P1: 5xx kini RETRYABLE (dulu langsung
+                            // dilempar — kebalikan dari yang benar). Maks 2x,
+                            // jeda pendek 2/5 dtk; gagal ketiga dilempar apa
+                            // adanya. Error lain di tengah jalan dilempar.
+                            var lastErr: Exception = e
+                            var out: Pair<String, String>? = null
+                            for (w in DsFailure.UPSTREAM_WAITS_MS) {
+                                onPartial("⏳ Server DeepSeek error (HTTP ${failure.statusCode}) — coba lagi sebentar lagi…")
+                                Thread.sleep(w)
+                                try { out = runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330); break }
+                                catch (e2: Exception) {
+                                    val k2 = DsFailure.classifyFailure(0, "", e2).kind
+                                    if (k2 != FailureKind.UPSTREAM && k2 != FailureKind.OVERLOADED) throw e2
+                                    lastErr = e2
+                                }
+                            }
+                            out ?: throw lastErr
+                        }
+                        FailureKind.TIMEOUT, FailureKind.UNAVAILABLE -> {
+                            // Gangguan jaringan sesaat (termasuk DNS ngadat: "Unable to resolve
+                            // host", terbukti screenshot 2026-10-22 09:05) -> coba sekali lagi
+                            // sebelum menyerah ke jalur WebView.
+                            Thread.sleep(DsFailure.TRANSIENT_WAIT_MS)
+                            runChat(prompt, thinking, search, onPartial, forceFresh = forceFresh, bgMode = bgMode, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
+                        }
+                        else -> throw e // AUTH / CONTEXT_WINDOW: non-retryable.
                     }
                 }
                 queue.finish()
@@ -141,7 +197,7 @@ class DsApiClient(private val webView: WebView) {
         if (!accepted) onError("Mode API: antrean penuh (maks 3 menunggu). Coba lagi sebentar lagi.")
     }
 
-    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false): Pair<String, String> {
+    private fun runChat(prompt: String, thinking: Boolean, search: Boolean, onPartial: (String) -> Unit, fileIds: List<String> = emptyList(), forceFresh: Boolean = false, bgMode: Boolean = false, deltaPrompt: String? = null, silentKindVc330: String? = null): Pair<String, String> {
         val pooled = authOverride ?: try { AccountPool.resolve(webView.context) } catch (e: Exception) { null }
         val token = pooled?.first ?: extractToken() ?: throw Exception("token sesi tidak ditemukan di WebView (userToken kosong). Pastikan tab Web sudah LOGIN, lalu coba lagi.")
         val cookie = pooled?.second ?: (CookieManager.getInstance().getCookie("https://chat.deepseek.com") ?: "")
@@ -166,21 +222,83 @@ class DsApiClient(private val webView: WebView) {
         val harnessNo = if (bgMode) -100L else try { hprefs().getLong("currentSession", 1L) } catch (e: Exception) { 1L }
         val sessLabel = if (bgMode) "latar" else "#$harnessNo"
         // v4.43.17: forceFresh melewati sesi tersimpan sepenuhnya (dipakai
-        // chat() sesudah stream putus 2x di sesi yang sama — sesi lama
+        // chat() sesudah stream putus berulang di sesi yang sama — sesi lama
         // diduga beracun, jangan dipakai lagi untuk percobaan ini).
-        val storedPair = if (forceFresh) null else storedServerSessionAny(fp, harnessNo)
-        val stored = storedPair?.second
+        var storedPair = if (forceFresh) null else storedServerSessionAny(fp, harnessNo)
+        var stored = storedPair?.second
+        // vc321 IXL — RESET PROAKTIF wadah server (mirror SlotClient):
+        // akumulasi + prompt berikut akan menembus DEFAULT_CAP =
+        // wadah lama dibuang SEBELUM POST. Kunci akumulasi = kunci sesi
+        // yang tersimpan (sidik pemilik wadah, bukan sidik token saat
+        // ini — samakan dengan storedServerSessionAny). Tanpa ini, sesi
+        // panjang menabrak input_exceeds_limit walau tiap prompt di
+        // bawah cap (akumulasi ~90.500 char/giliran, terukur probe
+        // vc321); tutup-buka app tidak membantu (kunci dsSrvSessId_
+        // tersimpan di prefs "harness").
+        val accumKeyVc321 = "dsSrvSessId_" + (storedPair?.first ?: fp) + "_" + harnessNo
+        // vc322 SESI — kirim DELTA bila wadah sudah ada DAN sudah primed
+        // (pernah menerima satu prompt penuh sukses): sesi server
+        // menyimpan konteks antar POST, jadi giliran lanjutan hanya
+        // membawa yang baru (~1-2k char, bukan ~90-150k). Prompt PENUH
+        // tetap dipakai bila wadah belum ada / baru di-reset / forceFresh.
+        // Guard reset vc321 TIDAK berubah: hanya berlaku untuk giliran
+        // yang mengirim prompt penuh (delta tidak pernah memicu reset —
+        // akumulasi + delta selalu di bawah cap bila shouldSendDelta
+        // benar, dan bila tidak, giliran ini mengirim penuh + guard
+        // jalan seperti biasa).
+        val accumVc321 = TurnMetrics.serverAccumVc321(ctx, accumKeyVc321)
+        // vc327 SESI — MIGRASI PRIMED satu kali (H1): wadah vc321 punya
+        // stored + accum > 0 tapi tanpa kunci primed -> giliran pertama
+        // vc322 mengirim PENUH dan bisa me-reset (1 sesi baru per
+        // upgrade). accum > 0 hanya mungkin sesudah satu POST penuh
+        // sukses ke wadah ini, jadi migrasi ini aman (lihat
+        // TurnMetrics.migratePrimedOnceVc327).
+        val wasPrimedVc327 = TurnMetrics.isServerSessionPrimedVc322(ctx, accumKeyVc321)
+        val primedVc327 = TurnMetrics.migratePrimedOnceVc327(ctx, accumKeyVc321, stored != null, accumVc321)
+        if (!wasPrimedVc327 && primedVc327) {
+            logSessEvent("Wadah lama vc321 dimigrasikan ke primed vc327 (sudah ada $accumVc321 char terkirim — delta langsung aktif, tanpa prompt penuh).")
+        }
+        val useDeltaVc322 = TurnMetrics.shouldSendDeltaVc322(stored != null, deltaPrompt != null, forceFresh, false, false, primedVc327, accumVc321, deltaPrompt?.length ?: 0)
+        val sendPromptVc322 = if (useDeltaVc322) deltaPrompt!! else prompt
+        // vc330 KATUP PENGAMAN (cermin SlotClient): giliran senyap
+        // (verifikasi/ekstraksi) yang akan menembak guard reset
+        // DILEWATI tanpa POST — giliran senyap tidak boleh membuat
+        // wadah baru. DsApiClient tidak punya freshEphemeral (teruskan
+        // false). Guard user-visible di bawah TIDAK berubah.
+        if (TurnMetrics.shouldSkipSilentVc330(silentKindVc330, useDeltaVc322, stored != null, TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length), false)) {
+            logSessEvent("⏭️ " + (if (silentKindVc330 == "extract") "Ekstraksi" else "Verifikasi") + " DILEWATI vc330 (wadah penuh: akumulasi $accumVc321 char + prompt ${prompt.length} char) — giliran senyap tidak boleh membuat wadah baru.")
+            return Pair(AgentPrompt.silentSkippedResponseVc330(silentKindVc330), "")
+        }
+        if (!useDeltaVc322 && stored != null && TurnMetrics.shouldResetServerSessionVc321(accumVc321, prompt.length)) {
+            logSessEvent("Wadah server di-reset proaktif vc321 (akumulasi $accumVc321 char + prompt ${prompt.length} char mendekati batas input server) — giliran ini memakai wadah baru; konteks dikirim ulang penuh di prompt awal.")
+            clearServerSession(storedPair!!.first, harnessNo)
+            TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+            TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
+            storedPair = null
+            stored = null
+        }
         try {
             val sid = stored ?: run {
                 val c = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, c)
+                // vc327 SESI — ANTI-CASCADE (H2): wadah BARU mulai dari
+                // 0. Sebelumnya accum wadah lama yang ditinggal
+                // forceFresh ikut menumpuk di kunci yang sama -> giliran
+                // PENUH berikut hampir pasti kena guard reset -> sesi
+                // baru KEDUA dari satu episode putus.
+                TurnMetrics.resetServerAccumVc321(ctx, accumKeyVc321)
+                // vc322 SESI: wadah baru belum primed (belum menerima
+                // prompt penuh sukses) + hitung kelahiran untuk
+                // penghitung sesi per akun (JEJAK SESI SERVER).
+                TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, false)
+                val sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyVc321)
                 // v4.10.8: kelahiran wadah pertama untuk sesi harness yang
                 // SUDAH punya riwayat wajib terlihat — bukan kelahiran diam.
                 val hadHistory = try { MemoryDb.get(ctx).historyForSession(harnessNo, 1).isNotEmpty() } catch (e: Exception) { false }
                 if (forceFresh) {
-                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus 2x di sesi lama — coba sesi baru).")
+                    logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " (stream putus berulang di sesi lama — coba sesi baru). [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 } else {
-                    logSessEvent("Wadah BARU lahir untuk sesi harness " + sessLabel + (if (hadHistory) " (sesi lama, wadah pertamanya di rezim pemetaan)" else " (sesi baru)"))
+                    logSessEvent("Wadah BARU lahir untuk sesi harness " + sessLabel + (if (hadHistory) " (sesi lama, wadah pertamanya di rezim pemetaan)" else " (sesi baru)") + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                     if (hadHistory) {
                         val note4109 = "♻️ Sesi harness ini belum punya wadah server — membuat satu sekarang. Selanjutnya wadah ini dipakai ulang terus untuk sesi ini."
                         try { onPartial(note4109) } catch (e: Exception) {}
@@ -189,7 +307,12 @@ class DsApiClient(private val webView: WebView) {
                 }
                 c
             }
-            val res = completeWithSession(sid, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+            val res = completeWithSession(sid, sendPromptVc322, thinking, search, token, cookie, ua, onPartial, fileIds)
+            // vc321 IXL: POST sukses menambah akumulasi wadah ini —
+            // vc322: yang dihitung panjang prompt YANG DIKIRIM (delta
+            // bila giliran ini delta). Prompt penuh sukses = wadah primed.
+            TurnMetrics.addServerAccumVc321(ctx, accumKeyVc321, sendPromptVc322.length)
+            if (!useDeltaVc322) TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyVc321, true)
             // v4.14.2: satu sukses membuktikan token ini HIDUP — hapus
             // tanda matinya (sembuh otomatis sesudah login ulang/rotasi).
             try { AccountPool.clearDead(ctx, fp) } catch (e: Exception) {}
@@ -219,15 +342,28 @@ class DsApiClient(private val webView: WebView) {
                 // laju) TIDAK membakar sesi baru — error dilempar apa adanya
                 // dan tangga retry di chat() memakai ulang sesi yang sama.
                 val noteR = "♻️ " + (if (isSessionInvalidSignal(e.message)) "Sesi server tersimpan ditolak server (kemungkinan terhapus)" else "Sesi server tersimpan gagal dipakai setelah ganti akun/token") + " — membuat SATU sesi pengganti untuk sesi harness ini. (Alasan: " + (e.message ?: "").take(120) + ")"
-                logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " — " + (e.message ?: "").take(80))
                 try { onPartial(noteR) } catch (e3: Exception) {}
                 try { MemoryDb.get(ctx).addHistory("asisten", noteR, harnessNo) } catch (e3: Exception) {}
                 clearServerSession(fp, harnessNo)
                 if (storedPair != null && storedPair.first != fp) clearServerSession(storedPair.first, harnessNo)
                 val fresh = createServerSession(token, cookie, ua)
                 storeServerSession(fp, harnessNo, fresh)
+                // vc322 SESI: pengganti lahir = hitung + belum primed;
+                // JEJAK dicatat sesudah wadah benar-benar lahir (bila
+                // create gagal, tidak ada kelahiran untuk dicatat).
+                // Kunci akumulasi = sidik token saat ini (wadah baru
+                // disimpan di bawah fp, bukan sidik pemilik wadah lama).
+                val accumKeyFreshVc321 = "dsSrvSessId_" + fp + "_" + harnessNo
+                TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyFreshVc321, false)
+                val sessNvc322 = TurnMetrics.noteServerSessionCreatedVc322(ctx, accumKeyFreshVc321)
+                logSessEvent("Wadah PENGGANTI lahir untuk sesi harness " + sessLabel + " — " + (e.message ?: "").take(80) + " [Sesi server ke-" + sessNvc322 + " untuk sesi harness ini.]")
                 try {
-                    return completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+                    val res2 = completeWithSession(fresh, prompt, thinking, search, token, cookie, ua, onPartial, fileIds)
+                    // vc321 IXL: wadah pengganti mulai dari 0 + prompt ini.
+                    TurnMetrics.resetServerAccumVc321(ctx, accumKeyFreshVc321)
+                    TurnMetrics.addServerAccumVc321(ctx, accumKeyFreshVc321, prompt.length)
+                    TurnMetrics.setServerSessionPrimedVc322(ctx, accumKeyFreshVc321, true)
+                    return res2
                 } catch (e2: Exception) {
                     if (isSuspendSignal(e2.message)) {
                         try { AccountPool.markDeadSmart(ctx, fp, e2.message) } catch (e3: Exception) {}
@@ -282,21 +418,14 @@ class DsApiClient(private val webView: WebView) {
         } catch (e: Exception) {}
     }
 
-    /** v4.10.2: sinyal suspend/blokir akun dari teks error server. */
-    private fun isSuspendSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        return m.contains("suspended") || m.contains("violation") || m.contains("40003") ||
-            m.contains("invalid_token") || m.contains("account_banned")
-    }
+    /** v4.10.2: sinyal suspend/blokir akun dari teks error server.
+     *  vc316 P1: daftar sinyal hidup di DsFailure (satu tempat). */
+    private fun isSuspendSignal(msg: String?): Boolean = DsFailure.isSuspendSignal(msg)
 
     /** v4.10.6: sinyal EKSPLISIT dari server bahwa sesi chat tidak berlaku
-     * lagi. Hanya sinyal ini yang boleh memicu pembuatan sesi pengganti. */
-    private fun isSessionInvalidSignal(msg: String?): Boolean {
-        val m = (msg ?: "").lowercase()
-        if (m.contains("session_not_found") || m.contains("invalid_session") || m.contains("session not found")) return true
-        return m.contains("session") && (m.contains("not found") || m.contains("invalid") ||
-            m.contains("not exist") || m.contains("does not exist") || m.contains("deleted") || m.contains("no such"))
-    }
+     *  lagi. Hanya sinyal ini yang boleh memicu pembuatan sesi pengganti.
+     *  vc316 P1: daftar sinyal hidup di DsFailure (satu tempat). */
+    private fun isSessionInvalidSignal(msg: String?): Boolean = DsFailure.isSessionInvalidSignal(msg)
 
     /** v4.10.6: cari sesi server tersimpan untuk sesi harness ini — sidik
      * token persis. H1 (4.48.8.1): adopsi lintas sidik dinonaktifkan;
@@ -408,19 +537,65 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun headers(conn: HttpURLConnection, token: String, cookie: String, ua: String, powHeader: String?) {
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        if (cookie.isNotBlank()) conn.setRequestProperty("Cookie", cookie)
-        conn.setRequestProperty("User-Agent", ua)
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "*/*")
-        conn.setRequestProperty("Origin", "https://chat.deepseek.com")
-        conn.setRequestProperty("Referer", "https://chat.deepseek.com/")
-        conn.setRequestProperty("x-client-platform", "web")
-        conn.setRequestProperty("x-client-locale", "id_ID")
-        if (powHeader != null) conn.setRequestProperty("x-ds-pow-response", powHeader)
+        for ((k, v) in headersMap(token, cookie, ua, powHeader)) conn.setRequestProperty(k, v)
+    }
+
+    /** Header yang sama dengan `headers(conn, ...)` — sebagai map untuk seam Rust. */
+    private fun headersMap(token: String, cookie: String, ua: String, powHeader: String?): Map<String, String> {
+        val h = mutableMapOf<String, String>()
+        h["Authorization"] = "Bearer $token"
+        if (cookie.isNotBlank()) h["Cookie"] = cookie
+        h["User-Agent"] = ua
+        h["Content-Type"] = "application/json"
+        h["Accept"] = "*/*"
+        h["Origin"] = "https://chat.deepseek.com"
+        h["Referer"] = "https://chat.deepseek.com/"
+        h["x-client-platform"] = "web"
+        h["x-client-locale"] = "id_ID"
+        if (powHeader != null) h["x-ds-pow-response"] = powHeader
+        return h
     }
 
     private fun postJson(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
+        // Slice 11 (vc328): transport JSON via Rust (HttpSeam.request,
+        // seam httpJson slice 8) bila saklar hidup; null = transport
+        // gagal -> fallback Kotlin (saklar hidup). recordDiag + mapping
+        // error tetap di postJsonResult (sama untuk kedua jalur).
+        if (rustDsApi) {
+            val r = HttpSeam.request(
+                "POST", "https://chat.deepseek.com$path",
+                headersMap(token, cookie, ua, powHeader),
+                body.toString(), 20000, 30000,
+                wantHeaders = listOf("Retry-After")
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustDsApi = false
+                return postJsonResult(path, r.code, r.body, r.headers["Retry-After"], token, powHeader)
+            }
+            if (!HttpSeam.rustHttp) rustDsApi = false
+            // null = transport gagal -> fallback Kotlin (saklar hidup).
+        }
+        return postJsonKotlin(path, body, token, cookie, ua, powHeader)
+    }
+
+    /** Bagian sesudah transport postJson: recordDiag Mode Operator + mapping
+     *  error (Retry-After -> suffix "[retry_after=<n>]") + parse JSON
+     *  (sama untuk Rust/Kotlin). */
+    private fun postJsonResult(path: String, code: Int, text: String, retryAfter: String?, token: String, powHeader: String?): JSONObject {
+        if (code !in 200..299) {
+            // vc316 P1: baca Retry-After; ditempel sebagai suffix
+            // "[retry_after=<n>]" supaya DsFailure.classifyFailure di
+            // chat() bisa memakainya sebagai jeda pertama tangga
+            // rate-limit (tanpa state bersama antar-thread).
+            val retryAfterSec = DsFailure.parseRetryAfterHeader(retryAfter)
+            recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "HTTP $code", text.take(200))
+            throw Exception("HTTP $code di $path: ${text.take(250)}" + DsFailure.retryAfterSuffix(retryAfterSec))
+        }
+        recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "", "")
+        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+    }
+
+    private fun postJsonKotlin(path: String, body: JSONObject, token: String, cookie: String, ua: String, powHeader: String?): JSONObject {
         val conn = URL("https://chat.deepseek.com$path").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 20000
@@ -433,12 +608,7 @@ class DsApiClient(private val webView: WebView) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
-        if (code !in 200..299) {
-            recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "HTTP $code", text.take(200))
-            throw Exception("HTTP $code di $path: ${text.take(250)}")
-        }
-        recordDiag(path, code, 0, false, token, powHeader?.length ?: 0, "", "")
-        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+        return postJsonResult(path, code, text, conn.getHeaderField("Retry-After"), token, powHeader)
     }
 
     private fun postCompletion(body: JSONObject, token: String, cookie: String, ua: String, powHeader: String, onPartial: (String) -> Unit): Pair<String, String> {
@@ -450,14 +620,27 @@ class DsApiClient(private val webView: WebView) {
         headers(conn, token, cookie, ua, powHeader)
         conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = conn.responseCode
+        // vc316 P1: tangkap Retry-After SEKALI di sini — dipakai (a) untuk
+        // error HTTP non-2xx di bawah, dan (b) untuk rate_limit yang baru
+        // ketahuan dari body SSE (HTTP 200 tapi stream kosong).
+        val retryAfterSec = DsFailure.parseRetryAfterHeader(conn.getHeaderField("Retry-After"))
         if (code !in 200..299) {
             val err = try { conn.errorStream?.bufferedReader()?.readText()?.take(250) ?: "" } catch (e: Exception) { "" }
             recordDiag("completion", code, 0, false, token, powHeader.length, "HTTP $code", err)
-            throw Exception("HTTP $code di completion: $err")
+            throw Exception("HTTP $code di completion: $err" + DsFailure.retryAfterSuffix(retryAfterSec))
         }
         val content = StringBuilder()
         val thinkingBuf = StringBuilder()
         val state = StreamState()
+        // Slice 11 (vc328): mesin parse SSE Rust (state JSON) bila saklar
+        // hidup; bila seam mati di awal, langsung jalur Kotlin. Bila seam
+        // mati DI TENGAH stream, baris dilewati + saklar dimatikan — stream
+        // ini berakhir stream_terputus lalu retry chat() memakai Kotlin
+        // (pola SlotClient slice 8).
+        val useRust = rustDsApi && HttpSeam.rustHttp
+        if (rustDsApi && !HttpSeam.rustHttp) rustDsApi = false
+        var sseStateJson = HttpSeam.sseInitState()
+        var sawFinish = false
         val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
         var lastPartialAt = 0L
         val rawSample = StringBuilder()
@@ -474,10 +657,23 @@ class DsApiClient(private val webView: WebView) {
             if (rawSample.length < 900) rawSample.append(payload.take(300)).append(" | ")
             val obj = try { JSONObject(payload) } catch (e: Exception) { continue }
             if (obj.has("code") && obj.optInt("code", 0) != 0) {
-                recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "SERVER ${obj.optInt("code")}", rawSample.toString())
+                recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "SERVER ${obj.optInt("code")}", rawSample.toString())
                 throw Exception("SERVER ${obj.optInt("code")}: ${obj.optString("msg")}")
             }
-            applyChunk(obj, content, thinkingBuf, state)
+            if (useRust) {
+                val step = HttpSeam.sseApply(sseStateJson, payload)
+                if (step == null) {
+                    rustDsApi = false
+                } else {
+                    sseStateJson = step.state
+                    content.append(step.contentDelta)
+                    thinkingBuf.append(step.thinkingDelta)
+                    sawFinish = step.sawFinish
+                }
+            } else {
+                applyChunkKotlin(obj, content, thinkingBuf, state)
+                sawFinish = state.sawFinish
+            }
             val now = System.currentTimeMillis()
             if (content.isNotEmpty() && now - lastPartialAt > 250) {
                 lastPartialAt = now
@@ -493,20 +689,20 @@ class DsApiClient(private val webView: WebView) {
         if (full.isBlank()) {
             val rawStr = rawSample.toString()
             if (rawStr.contains("rate_limit") || rawStr.contains("too frequent", ignoreCase = true)) {
-                recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "rate_limit", rawStr)
-                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final.")
+                recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "rate_limit", rawStr)
+                throw Exception("rate_limit_reached — server DeepSeek membatasi laju permintaan (Messages too frequent); stream berhenti tanpa jawaban final." + DsFailure.retryAfterSuffix(retryAfterSec))
             }
             // v4.12.2: bedakan PUTUS (tanpa penanda selesai resmi) dari
             // selesai-resmi-tanpa-jawaban. Keduanya ditandai agar chat()
             // mengulang di sesi yang sama alih-alih menyerah ke WebView.
-            if (!state.sawFinish) {
+            if (!sawFinish) {
                 recordDiag("completion", code, dataLines, false, token, powHeader.length, "stream_terputus", rawStr)
                 throw Exception("stream_terputus: koneksi ke server putus sebelum jawaban selesai (baris data: $dataLines, fragmen berpikir ${thinkingBuf.length} karakter). Cuplikan mentah: ${rawStr.take(400)}")
             }
             recordDiag("completion", code, dataLines, true, token, powHeader.length, "jawaban_kosong", rawStr)
             throw Exception("jawaban_kosong: stream selesai resmi tapi tanpa fragmen jawaban (fragmen berpikir ${thinkingBuf.length} karakter dibuang, baris data: $dataLines). Cuplikan mentah: ${rawStr.take(400)}")
         }
-        recordDiag("completion", code, dataLines, state.sawFinish, token, powHeader.length, "", rawSample.toString())
+        recordDiag("completion", code, dataLines, sawFinish, token, powHeader.length, "", rawSample.toString())
         return Pair(DsSafetyStrip.strip(full), DsSafetyStrip.strip(thinkingBuf.toString().trim()))
     }
 
@@ -527,14 +723,14 @@ class DsApiClient(private val webView: WebView) {
     private val fragIdxRe = Regex("fragments/(-?\\d+)")
 
     /** Daftarkan tipe sebuah fragmen; opsional jadikan fragmen berjalan. */
-    private fun declareFragment(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
+    private fun declareFragmentKotlin(state: StreamState, idx: Int, isThink: Boolean, makeCurrent: Boolean = true) {
         state.fragmentThinking[idx] = isThink
         if (idx >= state.fragmentCount) state.fragmentCount = idx + 1
         if (makeCurrent) state.currentThinking = isThink
     }
 
     /** Tentukan apakah chunk pada path ini milik fragmen berpikir (THINK) atau jawaban (RESPONSE). */
-    private fun routeIsThinking(state: StreamState, path: String): Boolean {
+    private fun routeIsThinkingKotlin(state: StreamState, path: String): Boolean {
         if (path.contains("thinking", ignoreCase = true) || path.contains("reasoning", ignoreCase = true)) return true
         val m = fragIdxRe.find(path) ?: return state.currentThinking
         val raw = m.groupValues[1].toIntOrNull() ?: return state.currentThinking
@@ -544,7 +740,7 @@ class DsApiClient(private val webView: WebView) {
         // Indeks baru tepat sesudah fragmen terakhir = fragmen berikutnya; sesudah
         // fase berpikir selesai, fragmen baru selalu fragmen jawaban.
         if (raw == state.fragmentCount && state.fragmentCount > 0) {
-            declareFragment(state, raw, false)
+            declareFragmentKotlin(state, raw, false)
             return false
         }
         return state.currentThinking
@@ -559,7 +755,7 @@ class DsApiClient(private val webView: WebView) {
      * Versi lama merutekan berdasar "p" chunk itu sendiri saja (p kosong ->
      * jawaban) sehingga potongan berpikir bocor ke bubble jawaban.
      */
-    private fun applyChunk(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyChunkKotlin(obj: JSONObject, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val p = obj.optString("p", "")
         if (p == "response/status" && obj.optString("v") == "FINISHED") state.sawFinish = true
         // Path status BUKAN path isi: jangan jadikan path efektif, supaya chunk isi
@@ -571,7 +767,7 @@ class DsApiClient(private val webView: WebView) {
             val arr = obj.optJSONArray("v") ?: return
             for (i in 0 until arr.length()) {
                 val sub = arr.optJSONObject(i) ?: continue
-                applyChunk(sub, content, thinking, state)
+                applyChunkKotlin(sub, content, thinking, state)
             }
             return
         }
@@ -600,7 +796,7 @@ class DsApiClient(private val webView: WebView) {
                 val contentish = effPath.isEmpty() || effPath.endsWith("content") || effPath.endsWith("fragments") ||
                     effPath.contains("thinking") || effPath.contains("reasoning")
                 if (!contentish) return
-                if (routeIsThinking(state, effPath)) thinking.append(v) else content.append(v)
+                if (routeIsThinkingKotlin(state, effPath)) thinking.append(v) else content.append(v)
             }
             is JSONArray -> {
                 // Deklarasi fragmen bisa datang sebagai ARRAY berisi objek fragmen:
@@ -610,19 +806,19 @@ class DsApiClient(private val webView: WebView) {
                 // jawaban + isi pembukanya hilang, sisa teks salah rute, jawaban kosong.
                 for (i in 0 until v.length()) {
                     val el = v.optJSONObject(i)
-                    if (el != null) applyValueObject(obj, el, effPath, content, thinking, state)
+                    if (el != null) applyValueObjectKotlin(obj, el, effPath, content, thinking, state)
                     else {
                         val s = v.optString(i, "")
-                        if (s.isNotEmpty()) { if (routeIsThinking(state, effPath)) thinking.append(s) else content.append(s) }
+                        if (s.isNotEmpty()) { if (routeIsThinkingKotlin(state, effPath)) thinking.append(s) else content.append(s) }
                     }
                 }
             }
-            is JSONObject -> applyValueObject(obj, v, effPath, content, thinking, state)
+            is JSONObject -> applyValueObjectKotlin(obj, v, effPath, content, thinking, state)
         }
     }
 
     /** Terapkan satu objek nilai stream: deklarasi fragmen / objek berisi content / keadaan awal. */
-    private fun applyValueObject(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
+    private fun applyValueObjectKotlin(obj: JSONObject, v: JSONObject, effPath: String, content: StringBuilder, thinking: StringBuilder, state: StreamState) {
         val typeStr = v.optString("type", "")
         if (typeStr.isNotEmpty()) {
             // Deklarasi/append SATU fragmen — daftarkan tipenya WALAU content
@@ -634,7 +830,7 @@ class DsApiClient(private val webView: WebView) {
             val isThink = typeStr.contains("THINK", ignoreCase = true)
             val raw = fragIdxRe.find(effPath)?.groupValues?.get(1)?.toIntOrNull()
             val idx = if (raw != null && raw >= 0) raw else state.fragmentCount
-            declareFragment(state, idx, isThink)
+            declareFragmentKotlin(state, idx, isThink)
             val c = v.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
             return
@@ -642,7 +838,7 @@ class DsApiClient(private val webView: WebView) {
         // Objek berisi content tanpa type: rute berdasar fragmen berjalan.
         val directContent = v.optString("content", "")
         if (directContent.isNotEmpty()) {
-            if (routeIsThinking(state, effPath)) thinking.append(directContent) else content.append(directContent)
+            if (routeIsThinkingKotlin(state, effPath)) thinking.append(directContent) else content.append(directContent)
             return
         }
         // Keadaan awal: v.response.fragments[]
@@ -653,7 +849,7 @@ class DsApiClient(private val webView: WebView) {
             val f = frags.optJSONObject(i) ?: continue
             val isThink = f.optString("type", "").contains("THINK", ignoreCase = true)
             // Deklarasi massal tidak menggeser fragmen berjalan (kecuali awal stream).
-            declareFragment(state, i, isThink, makeCurrent = false)
+            declareFragmentKotlin(state, i, isThink, makeCurrent = false)
             val c = f.optString("content", "")
             if (c.isNotEmpty()) { if (isThink) thinking.append(c) else content.append(c) }
         }
@@ -664,6 +860,18 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun findSessionId(root: JSONObject): String? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin
+        // (menghitung ulang hasil yang sama).
+        if (rustDsApi) {
+            val v = DsApiSeam.findSessionId(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findSessionIdKotlin(root)
+    }
+
+    private fun findSessionIdKotlin(root: JSONObject): String? {
         // data.biz_data.chat_session.id | data.biz_data.id
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
@@ -673,6 +881,17 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun findChallenge(root: JSONObject): JSONObject? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.findChallenge(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findChallengeKotlin(root)
+    }
+
+    private fun findChallengeKotlin(root: JSONObject): JSONObject? {
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
         return biz.optJSONObject("challenge") ?: if (biz.has("challenge")) biz else null
@@ -792,7 +1011,18 @@ class DsApiClient(private val webView: WebView) {
      * diterima — dikalibrasi dengan tokenizer DeepSeek asli (terukur:
      * prosa Indonesia 3,92 kar/token; JSON tool 3,14; campuran prompt 3,44;
      * keluaran memakai 3,7). Hanya giliran yang SELESAI yang tercatat. */
-    private fun estTokens(chars: Int, perChar: Double): Long =
+    private fun estTokens(chars: Int, perChar: Double): Long {
+        // Slice 11 (vc328): hitung via Rust (DsApiSeam) bila saklar hidup;
+        // null = seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.estTokens(chars, perChar)
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return estTokensKotlin(chars, perChar)
+    }
+
+    private fun estTokensKotlin(chars: Int, perChar: Double): Long =
         if (chars <= 0) 0L else maxOf(1L, Math.round(chars / perChar))
 
     private val tokLock = Object()
@@ -822,6 +1052,32 @@ class DsApiClient(private val webView: WebView) {
     }
 
     private fun getJson(path: String, token: String, cookie: String, ua: String): JSONObject {
+        // Slice 11 (vc328): transport via Rust (HttpSeam.request, seam
+        // httpJson slice 8) bila saklar hidup; null = transport gagal ->
+        // fallback Kotlin (saklar hidup).
+        if (rustDsApi) {
+            val r = HttpSeam.request(
+                "GET", "https://chat.deepseek.com$path",
+                headersMap(token, cookie, ua, null),
+                null, 20000, 30000
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustDsApi = false
+                return getJsonResult(path, r.code, r.body)
+            }
+            if (!HttpSeam.rustHttp) rustDsApi = false
+        }
+        return getJsonKotlin(path, token, cookie, ua)
+    }
+
+    /** Bagian sesudah transport getJson: mapping error + parse JSON
+     *  (sama untuk Rust/Kotlin). */
+    private fun getJsonResult(path: String, code: Int, text: String): JSONObject {
+        if (code !in 200..299) throw Exception("HTTP $code di $path: ${text.take(250)}")
+        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+    }
+
+    private fun getJsonKotlin(path: String, token: String, cookie: String, ua: String): JSONObject {
         val conn = URL("https://chat.deepseek.com$path").openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 20000
@@ -832,8 +1088,7 @@ class DsApiClient(private val webView: WebView) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             stream?.bufferedReader()?.readText() ?: ""
         } catch (e: Exception) { "" }
-        if (code !in 200..299) throw Exception("HTTP $code di $path: ${text.take(250)}")
-        return try { JSONObject(text) } catch (e: Exception) { throw Exception("respon bukan JSON di $path: ${text.take(200)}") }
+        return getJsonResult(path, code, text)
     }
 
     /** v4.10.5: kontrak upload ASLI (riset kode RE terawat, terverifikasi 2026-10):
@@ -841,27 +1096,7 @@ class DsApiClient(private val webView: WebView) {
      * lalu polling GET /api/v0/file/fetch_files sampai status SUCCESS. */
     private fun uploadFile(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String): String? {
         val powHeader = solvePowHeader("/api/v0/file/upload_file", token, cookie, ua, null)
-        val boundary = "----WebKitFormBoundaryTB0pXOQR2RL219Hu"
-        val safeName = fileName.map { c -> if (c.code in 32..126 && c != '"') c else '_' }.joinToString("").ifBlank { "file.bin" }
-        val conn = URL("https://chat.deepseek.com/api/v0/file/upload_file").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 20000
-        conn.readTimeout = 120000
-        conn.doOutput = true
-        headers(conn, token, cookie, ua, powHeader)
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
-        conn.setRequestProperty("x-file-size", bytes.size.toString())
-        conn.outputStream.use { out ->
-            val head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"\r\nContent-Type: " + mime + "\r\n\r\n"
-            out.write(head.toByteArray(Charsets.UTF_8))
-            out.write(bytes)
-            out.write(("\r\n--" + boundary + "--\r\n").toByteArray(Charsets.UTF_8))
-        }
-        val code = conn.responseCode
-        val text = try {
-            val s = if (code in 200..299) conn.inputStream else conn.errorStream
-            s?.bufferedReader()?.readText() ?: ""
-        } catch (e: Exception) { "" }
+        val (code, text) = uploadPost(bytes, fileName, mime, token, cookie, ua, powHeader)
         if (code !in 200..299) throw Exception("HTTP $code di upload berkas: ${text.take(250)}")
         val root = try { JSONObject(text) } catch (e: Exception) { throw Exception("respons upload bukan JSON: ${text.take(200)}") }
         if (root.has("code") && root.optInt("code", 0) != 0) throw Exception("SERVER ${root.optInt("code")}: ${root.optString("msg")}")
@@ -883,7 +1118,64 @@ class DsApiClient(private val webView: WebView) {
         throw Exception("status berkas di server: '" + status + "' (bukan SUCCESS) — file_id=" + fileId)
     }
 
+    /** Transport POST multipart unggahan: Rust dulu, Kotlin bila gagal.
+     *  Kembalikan (code, body) — pemanggil yang memutuskan throw/return. */
+    private fun uploadPost(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String, powHeader: String): Pair<Int, String> {
+        // Slice 11 (vc328): transport unggah via Rust (DsApiSeam.uploadFile,
+        // seam dsApiJson) bila saklar hidup; null = transport gagal ->
+        // fallback Kotlin (saklar hidup).
+        if (rustDsApi) {
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val r = DsApiSeam.uploadFile(
+                "https://chat.deepseek.com/api/v0/file/upload_file",
+                headersMap(token, cookie, ua, powHeader), b64, fileName, mime, 20000, 120000
+            )
+            if (r != null) {
+                if (!DsApiSeam.rustDsApi) rustDsApi = false
+                return Pair(r.code, r.body)
+            }
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return uploadPostKotlin(bytes, fileName, mime, token, cookie, ua, powHeader)
+    }
+
+    private fun uploadPostKotlin(bytes: ByteArray, fileName: String, mime: String, token: String, cookie: String, ua: String, powHeader: String): Pair<Int, String> {
+        val boundary = "----WebKitFormBoundaryTB0pXOQR2RL219Hu"
+        val safeName = fileName.map { c -> if (c.code in 32..126 && c != '"') c else '_' }.joinToString("").ifBlank { "file.bin" }
+        val conn = URL("https://chat.deepseek.com/api/v0/file/upload_file").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.connectTimeout = 20000
+        conn.readTimeout = 120000
+        conn.doOutput = true
+        headers(conn, token, cookie, ua, powHeader)
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
+        conn.setRequestProperty("x-file-size", bytes.size.toString())
+        conn.outputStream.use { out ->
+            val head = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"\r\nContent-Type: " + mime + "\r\n\r\n"
+            out.write(head.toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+            out.write(("\r\n--" + boundary + "--\r\n").toByteArray(Charsets.UTF_8))
+        }
+        val code = conn.responseCode
+        val text = try {
+            val s = if (code in 200..299) conn.inputStream else conn.errorStream
+            s?.bufferedReader()?.readText() ?: ""
+        } catch (e: Exception) { "" }
+        return Pair(code, text)
+    }
+
     private fun findFileId(root: JSONObject): String? {
+        // Slice 11 (vc328): ekstraksi JSON via Rust (DsApiSeam) bila saklar
+        // hidup; null = tidak ketemu ATAU seam gagal -> fallback *Kotlin.
+        if (rustDsApi) {
+            val v = DsApiSeam.findFileId(root.toString())
+            if (v != null) return v
+            if (!DsApiSeam.rustDsApi) rustDsApi = false
+        }
+        return findFileIdKotlin(root)
+    }
+
+    private fun findFileIdKotlin(root: JSONObject): String? {
         val data = root.optJSONObject("data") ?: return null
         val biz = data.optJSONObject("biz_data") ?: data
         biz.optString("id").ifBlank { null }?.let { return it }

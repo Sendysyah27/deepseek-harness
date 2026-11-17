@@ -268,7 +268,7 @@ object ApprovalPanelStore {
     // Ini PELABELAN INFORMASIONAL saja di panel legacy/stale — bukan gate,
     // tidak menahan eksekusi apa pun.
     private val STATIC_HIGH = setOf("delete_session", "memory_forget", "run_terminal", "run_privileged", "priv_input", "priv_app", "priv_settings", "coord_rule", "sync_memory", "gmail_send", "send_sms", "http_request", "api_write", "mcp_call", "ask_operator", "delegate_session", "chain_tasks", "oc_checkpoint", "write_file", "edit_file", "generate_document", "generate_presentation", "schedule_task", "create_subroom", "run_team", "open_app", "tap", "swipe", "type_text", "tap_ref", "set_text_ref", "go_home", "go_back", "reply_notification", "otak_write", "forget_fact", "delete_skill", "delete_rule_trigger", "delete_geofence", "cancel_schedule", "cancel_reminder")
-    private val STATIC_REVIEW = setOf("create_skill", "remember_fact", "learn_rule", "memory_add", "make_plan", "update_plan", "make_goal", "update_goal", "analyze_photo", "browser_tap", "browser_type", "browser_open", "delegate_task", "mcp_list_tools", "use_skill", "wait_confirm", "wait_change", "wait_for_app")
+    private val STATIC_REVIEW = setOf("create_skill", "remember_fact", "learn_rule", "memory_add", "make_plan", "update_plan", "make_goal", "update_goal", "analyze_photo", "delegate_task", "mcp_list_tools", "use_skill", "wait_confirm", "wait_change", "wait_for_app")
 
     fun riskForTool(tool: String): PanelRisk = when (tool) {
         in STATIC_HIGH -> PanelRisk.TINGGI

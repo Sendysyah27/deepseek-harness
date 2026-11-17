@@ -1,6 +1,7 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import harness.core.RustCore
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
@@ -15,6 +16,9 @@ import org.json.JSONObject
  * Token TIDAK pernah ditulis ke log/hasil — hanya dikirim sebagai header.
  */
 object McpHttp {
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustMcpHttp = RustCore.available
+
     private const val PROTO = "2024-11-05"
 
     private fun headersFor(headerKind: String, token: String?): Map<String, String> {
@@ -31,6 +35,28 @@ object McpHttp {
     }
 
     private fun post(url: String, headers: Map<String, String>, body: String, sessionId: String?): Pair<String, String?> {
+        if (rustMcpHttp) {
+            val h = headers.toMutableMap()
+            if (!sessionId.isNullOrBlank()) h["Mcp-Session-Id"] = sessionId
+            val r = HttpSeam.request(
+                "POST", url, h, body, 30000, 60000,
+                wantHeaders = listOf("Mcp-Session-Id")
+            )
+            if (r != null) {
+                if (!HttpSeam.rustHttp) rustMcpHttp = false
+                val code = r.code
+                val text = r.body
+                val sid = r.headers["Mcp-Session-Id"]
+                if (code !in 200..299) throw Exception("HTTP $code: ${text.take(300)}")
+                return text to sid
+            }
+            if (!HttpSeam.rustHttp) rustMcpHttp = false
+            // null = transport gagal -> fallback Kotlin (saklar hidup).
+        }
+        return postKotlin(url, headers, body, sessionId)
+    }
+
+    private fun postKotlin(url: String, headers: Map<String, String>, body: String, sessionId: String?): Pair<String, String?> {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
@@ -52,6 +78,15 @@ object McpHttp {
     }
 
     private fun extractResult(raw: String): JSONObject? {
+        HttpSeam.mcpExtract(raw)?.let { return it }
+        // HttpSeam.mcpExtract mengembalikan null HANYA bila seam gagal
+        // (MCP error dari server dilempar, bukan null) — fallback Kotlin.
+        // Bila seam mati, matikan juga saklar file ini.
+        if (!HttpSeam.rustHttp) rustMcpHttp = false
+        return extractResultKotlin(raw)
+    }
+
+    private fun extractResultKotlin(raw: String): JSONObject? {
         val trimmed = raw.trim()
         if (trimmed.startsWith("{")) {
             try {

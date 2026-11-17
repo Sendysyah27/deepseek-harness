@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import harness.core.RustCore
 
 // vc305 H-K1 — Store DURABLE antrean parkir persetujuan (SQLite).
 //
@@ -44,6 +45,31 @@ import org.json.JSONObject
 // tanpa membaca prefs lagi.
 class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
     SQLiteOpenHelper(ctx.applicationContext, DB_NAME, null, DB_VERSION) {
+
+    // ---- Slice 7: seam rusqlite (vc322) ----
+    @Volatile
+    var rustParkedApproval: Boolean = true
+    private val dbPath: String =
+        ctx.applicationContext.getDatabasePath(DB_NAME).absolutePath
+    @Volatile
+    private var ensuredRust = false
+
+    private fun ensureRust(): Boolean {
+        if (!rustParkedApproval || !RustCore.available) return false
+        if (ensuredRust) return true
+        val ok = try {
+            SqliteSeam.ensure(dbPath, "parked")
+        } catch (t: Throwable) {
+            false
+        }
+        if (!ok) {
+            rustParkedApproval = false
+            return false
+        }
+        ensuredRust = true
+        return true
+    }
+
 
     companion object {
         const val DB_NAME = "parked_approvals.db"
@@ -173,7 +199,7 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
     }
 
     @Synchronized
-    fun insertIfAbsent(row: Row): Boolean {
+    private fun insertIfAbsentKotlin(row: Row): Boolean {
         return try {
             val db = writableDatabase
             val cv = ContentValues().apply {
@@ -196,7 +222,7 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
      *  masih PENDING (WHERE status='PENDING'); timeoutOwnerMs ditulis
      *  SEKALI di sini (= nowMs) dan tidak pernah diubah lagi. */
     @Synchronized
-    fun claim(pid: String, nowMs: Long): Boolean {
+    private fun claimKotlin(pid: String, nowMs: Long): Boolean {
         return try {
             val db = writableDatabase
             db.beginTransaction()
@@ -221,7 +247,7 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
      *  Status akhir APPROVED / REJECTED / EXPIRED. Mengembalikan
      *  false bila baris tidak ada atau sudah diputuskan. */
     @Synchronized
-    fun decide(pid: String, decision: String, nowMs: Long): Boolean {
+    private fun decideKotlin(pid: String, decision: String, nowMs: Long): Boolean {
         val terminal = when (decision) {
             "APPROVED" -> "APPROVED"
             "REJECTED" -> "REJECTED"
@@ -253,7 +279,7 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
     fun markExpired(pid: String, nowMs: Long): Boolean = decide(pid, "EXPIRED", nowMs)
 
     @Synchronized
-    fun get(pid: String): Row? {
+    private fun getKotlin(pid: String): Row? {
         return try {
             readableDatabase.query(
                 TABLE, null, "pid = ?", arrayOf(pid),
@@ -264,11 +290,11 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
 
     /** PENDING saja (belum diklaim). */
     @Synchronized
-    fun listPending(): List<Row> = listByStatus("PENDING")
+    private fun listPendingKotlin(): List<Row> = listByStatus("PENDING")
 
     /** PENDING + PROCESSING — antrean aktif untuk UI (parkedList). */
     @Synchronized
-    fun listActive(): List<Row> {
+    private fun listActiveKotlin(): List<Row> {
         return try {
             readableDatabase.query(
                 TABLE, null, "status IN ('PENDING','PROCESSING')",
@@ -392,4 +418,120 @@ class ParkedApprovalStoreVc305 private constructor(ctx: Context) :
         } catch (e: Exception) {}
         return Pair(imported, expired)
     }
+
+    // ---- Slice 7: jalur Rust (seam rusqlite); gagal -> *Kotlin ----
+    private fun rowFromRow(row: List<Any?>): Row = Row(
+        pid = SqliteSeam.rowStr(row, 0), sessionId = SqliteSeam.rowStr(row, 1),
+        tool = SqliteSeam.rowStr(row, 2), args = SqliteSeam.rowStr(row, 3),
+        risk = SqliteSeam.rowStr(row, 4), status = SqliteSeam.rowStr(row, 5),
+        decision = row.getOrNull(6) as? String,
+        decidedAtMs = SqliteSeam.rowLong(row, 7),
+        createdAtMs = SqliteSeam.rowLong(row, 8),
+        timeoutMs = SqliteSeam.rowLong(row, 9),
+        timeoutOwnerMs = SqliteSeam.rowLong(row, 10),
+        notifId = SqliteSeam.rowInt(row, 11),
+        task = SqliteSeam.rowStr(row, 12), origin = SqliteSeam.rowStr(row, 13),
+        title = SqliteSeam.rowStr(row, 14), transcript = SqliteSeam.rowStr(row, 15),
+        steps = SqliteSeam.rowInt(row, 16), job = SqliteSeam.rowStr(row, 17),
+        tools = SqliteSeam.rowStr(row, 18),
+        ownerSession = SqliteSeam.rowLong(row, 19)
+    )
+
+    private val ROW_SELECT = "SELECT pid, sessionId, tool, args, risk, status, decision, " +
+        "decidedAtMs, createdAtMs, timeoutMs, timeoutOwnerMs, notifId, task, origin, " +
+        "title, transcript, steps, job, tools, ownerSession FROM $TABLE"
+
+    @Synchronized
+    fun insertIfAbsent(row: Row): Boolean {
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "INSERT OR IGNORE INTO $TABLE(pid, sessionId, tool, args, risk, status, decision, " +
+                    "decidedAtMs, createdAtMs, timeoutMs, timeoutOwnerMs, notifId, task, origin, " +
+                    "title, transcript, steps, job, tools, ownerSession) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                listOf(
+                    row.pid, row.sessionId, row.tool, row.args, row.risk, row.status,
+                    row.decision, row.decidedAtMs, row.createdAtMs, row.timeoutMs,
+                    row.timeoutOwnerMs, row.notifId, row.task, row.origin, row.title,
+                    row.transcript, row.steps, row.job, row.tools, row.ownerSession
+                )
+            )
+            if (r != null) return r.changes > 0
+            rustParkedApproval = false
+        }
+        return insertIfAbsentKotlin(row)
+    }
+
+    @Synchronized
+    fun claim(pid: String, nowMs: Long): Boolean {
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE $TABLE SET status = 'PROCESSING', timeoutOwnerMs = ? WHERE pid = ? AND status = 'PENDING'",
+                listOf(nowMs, pid)
+            )
+            if (r != null) return r.changes == 1L
+            rustParkedApproval = false
+        }
+        return claimKotlin(pid, nowMs)
+    }
+
+    @Synchronized
+    fun decide(pid: String, decision: String, nowMs: Long): Boolean {
+        val terminal = when (decision) {
+            "APPROVED" -> "APPROVED"
+            "REJECTED" -> "REJECTED"
+            "EXPIRED" -> "EXPIRED"
+            else -> return false
+        }
+        if (ensureRust()) {
+            val r = SqliteSeam.exec(
+                dbPath,
+                "UPDATE $TABLE SET status = ?, decision = ?, decidedAtMs = ? WHERE pid = ? AND decision IS NULL",
+                listOf(terminal, decision, nowMs, pid)
+            )
+            if (r != null) return r.changes == 1L
+            rustParkedApproval = false
+        }
+        return decideKotlin(pid, decision, nowMs)
+    }
+
+    @Synchronized
+    fun get(pid: String): Row? {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(dbPath, "$ROW_SELECT WHERE pid = ?", listOf(pid))
+            if (rows != null) {
+                return if (rows.isEmpty()) null else rowFromRow(rows[0])
+            }
+            rustParkedApproval = false
+        }
+        return getKotlin(pid)
+    }
+
+    @Synchronized
+    fun listPending(): List<Row> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath, "$ROW_SELECT WHERE status = ? ORDER BY createdAtMs ASC", listOf("PENDING")
+            )
+            if (rows != null) return rows.map { rowFromRow(it) }
+            rustParkedApproval = false
+        }
+        return listPendingKotlin()
+    }
+
+    @Synchronized
+    fun listActive(): List<Row> {
+        if (ensureRust()) {
+            val rows = SqliteSeam.query(
+                dbPath,
+                "$ROW_SELECT WHERE status IN ('PENDING','PROCESSING') ORDER BY createdAtMs ASC",
+                emptyList()
+            )
+            if (rows != null) return rows.map { rowFromRow(it) }
+            rustParkedApproval = false
+        }
+        return listActiveKotlin()
+    }
+
 }

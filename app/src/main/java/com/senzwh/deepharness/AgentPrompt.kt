@@ -1,6 +1,7 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import harness.core.RustCore
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -956,6 +957,19 @@ object AgentPrompt {
     // sehingga indeks reviewer selaras. FASE VERIFIKASI: bukan tool step,
     // tidak memakan cap langkah, tidak mengeksekusi tool apa pun.
     fun applyDoublePass(answer: String, claims: List<String>, unsupported: List<Int>): String {
+        try {
+            val req = JSONObject().put("op", "applyDoublePass").put("answer", answer)
+                .put("claims", JSONArray(claims))
+                .put("unsupported", JSONArray(unsupported))
+            rustAgentValue(req)?.let { return it }
+        } catch (e: Throwable) {
+            rustAgentPrompt = false
+        }
+        return applyDoublePassKotlin(answer, claims, unsupported)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun applyDoublePassKotlin(answer: String, claims: List<String>, unsupported: List<Int>): String {
         var out = answer
         for (idx in unsupported) {
             val cl = claims.getOrNull(idx - 1) ?: continue
@@ -1043,27 +1057,74 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
             .replace("/data/data/com.senzwh.deepharness/files/proot/ubuntu", ctx.packageName + "/files/proot/ubuntu")
     }
 
-    // vc241 O1: katalog tool per tugas. Pesan tanpa kata aksi dan tanpa
-    // menyebut nama tool mendapat katalog ringkas (hanya baris tool yang
-    // relevan + daftar nama sisanya + baris list_tools), bukan katalog
-    // penuh. Katalog PENUH tetap dikirim bila: pesan kosong (pemanggil
-    // lama tanpa teks tugas), pesan mengandung kata aksi, atau pesan
-    // menyebut nama tool. Deskripsi tool TIDAK PERNAH diubah — hanya
-    // seleksi barisnya. Fallback on-demand: tool list_tools mengembalikan
-    // katalog penuh (cabang Tools.execute).
-    private val ACTION_WORDS_VC241 = listOf("buat", "buatkan", "bikin", "kirim", "kirimkan", "hapus", "hapuskan", "pindah", "pindahkan", "salin", "buka", "bukakan", "jalankan", "jalanin", "eksekusi", "cari", "carikan", "cek", "cekkan", "lihat", "liatkan", "baca", "bacakan", "tulis", "tuliskan", "unduh", "download", "unggah", "upload", "telepon", "telpon", "hubungi", "jadwal", "jadwalkan", "catat", "catatkan", "simpan", "simpankan", "ubah", "ganti", "gantikan", "tambah", "tambahkan", "kurangi", "hitung", "hitungkan", "terjemah", "terjemahkan", "putar", "mainkan", "foto", "rekam", "bagikan", "kerjakan", "kerjain", "lakukan", "lakuin", "tolong", "atur", "setel", "nyalakan", "matikan", "sunting", "edit", "pasang", "scan", "pindai", "potret", "tandai", "arsip", "pulih", "mulai", "berhenti", "hentikan", "ingatkan", "rencanakan", "susun", "rapikan", "bersihkan", "rekap", "ringkas", "rangkum", "pantau", "lacak", "telusur", "daftarkan", "login", "logout", "ingat", "ingatkan")
+    // vc316 IXL — katalog tool per tugas, DIPERBAIKI (ukur dulu, baru
+    // perbaiki — lihat UKURAN-INPUT-VC316.md):
+    // (1) Katalog PENUH (94.817 char ≈ 27.887 token) HANYA bila pesan
+    // KOSONG (pemanggil lama tanpa teks tugas — kontrak lama, mis.
+    // TeamRun/systemPrompt). Pesan berisi kata aksi ("cek concat") atau
+    // nama tool ("concat_version") TIDAK LAGI memaksa katalog penuh:
+    // justru giliran tool-lah yang paling sering menembus batas input
+    // server, jadi semua pesan berisi tugas kini lewat jalur ringkas.
+    // (2) Skor vc241 DIPERBAIKI: skor lama memakai substring mentah
+    // ("tes" cocok di "latest"/"protes"/"kontes") sehingga anggaran
+    // 6000 char habis di baris tak relevan dan "kita tes concat" hanya
+    // menyimpan 2 dari 21 tool concat_*. Skor baru: awalan nama tool
+    // (10) + kata-utuh di deskripsi (5 per kata) — tanpa substring.
+    // (3) Prose DIPISAH dari anggaran tool (anggaran prose sendiri
+    // 6000 char): prose CONCAT vc315 (4.240 char) tidak lagi mengusir
+    // baris tool concat_* dari anggaran 6000. Deskripsi tool TIDAK
+    // PERNAH diubah — hanya seleksi barisnya. Fallback on-demand tetap:
+    // list_tools mengembalikan katalog penuh (cabang Tools.execute).
+    // Logika seleksi murni ada di selectCatalog(full, task) (tanpa
+    // Context) supaya bisa diuji di JVM; catalogForTask hanya membungkus
+    // toolCatalog(ctx) + selectCatalog.
     private val TASK_STOPWORDS_VC241 = setOf("yang", "dan", "atau", "di", "ke", "dari", "untuk", "dengan", "saya", "aku", "kami", "kita", "kamu", "anda", "ini", "itu", "ada", "adalah", "bisa", "saja", "juga", "lagi", "apa", "bagaimana", "kenapa", "kapan", "dimana", "siapa", "berapa", "dong", "sih", "ya", "tidak", "bukan", "sudah", "belum", "akan", "mau")
 
-    fun catalogForTask(ctx: Context, taskText: String): String {
-        val full = toolCatalog(ctx)
+    /** Anggaran baris tool di katalog ringkas (sama seperti vc241). */
+    const val CATALOG_TOOL_BUDGET_VC316 = 6000
+    /** Anggaran baris prose di katalog ringkas (BARU vc316 — terpisah
+     *  dari anggaran tool, lihat komentar di atas). */
+    const val CATALOG_PROSE_BUDGET_VC316 = 6000
+
+    private val TOOL_LINE_RE_VC316 = Regex("^- ([a-z][a-z0-9_]+) \\{")
+
+    // ---- Seam Rust (slice 6, vc320) ----
+    // Fungsi murni di bawah jalan di Rust bila core tersedia (.so ke-load
+    // + versi seam cocok); bila tidak, fallback ke implementasi Kotlin
+    // lama (*Kotlin — JANGAN dihapus). Sekali Rust gagal, saklar dimatikan.
+    /** Saklar A/B slice 6: false = pakai Kotlin lama. */
+    var rustAgentPrompt: Boolean = true
+
+    /** Panggil seam JSON; null = Rust gagal / respons bukan ok:true. */
+    private fun rustAgentValue(request: JSONObject): String? {
+        if (!rustAgentPrompt || !RustCore.available) return null
+        return try {
+            val obj = JSONObject(RustCore.agentPromptJson(request.toString()))
+            if (!obj.optBoolean("ok", false)) {
+                rustAgentPrompt = false
+                null
+            } else obj.getString("value")
+        } catch (e: Throwable) {
+            rustAgentPrompt = false
+            null
+        }
+    }
+
+    /** Seleksi katalog ringkas dari katalog penuh (murni, tanpa Context).
+     *  Pesan kosong -> katalog penuh (kontrak lama). Selain itu: baris
+     *  tool + baris prose dinilai terpisah (awalan nama / kata-utuh),
+     *  masing-masing dibatasi anggarannya sendiri; list_tools selalu
+     *  dipertahankan; sisanya hanya disebut namanya + catatan fallback. */
+    fun selectCatalog(full: String, taskText: String): String {
+        rustAgentValue(JSONObject().put("op", "selectCatalog").put("full", full).put("task", taskText))?.let { return it }
+        return selectCatalogKotlin(full, taskText)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun selectCatalogKotlin(full: String, taskText: String): String {
         val task = taskText.trim()
         if (task.isEmpty()) return full
         val low = task.lowercase()
-        if (ACTION_WORDS_VC241.any { low.contains(it) }) return full
-        val toks = low.split(Regex("[^a-z0-9_]+")).filter { it.isNotEmpty() }.toSet()
-        if ("tool" in toks || "tools" in toks) return full
-        val names = validToolNames(ctx)
-        if (names.any { it in toks }) return full
         val headEnd = full.indexOf("Daftar tool:")
         val trailStart = full.indexOf("\nAturan: kalau pertanyaan bisa dijawab")
         if (headEnd < 0 || trailStart < 0 || trailStart <= headEnd) return full
@@ -1071,44 +1132,230 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
         val section = full.substring(headEnd + "Daftar tool:".length, trailStart)
         val trailing = full.substring(trailStart)
         val scoreToks = low.split(Regex("[^a-z0-9]+")).filter { it.length >= 3 && it !in TASK_STOPWORDS_VC241 }.distinct()
-        val cands = ArrayList<Triple<Int, String, Int>>()
+        val toolRe = TOOL_LINE_RE_VC316
+        val lines = section.lines()
+        val headerIdx = lines.indexOfFirst { it.trim() == "Tool lanjutan:" }
+        // Nilai tiap baris "- ": tool = awalan nama (10) + kata-utuh (5);
+        // prose = kata kepala topik (20, mis. "CONCAT" pada baris
+        // "- CONCAT (vc315) — ...") + kata-utuh di isi (10). Tanpa
+        // pencocokan substring. Kata kepala didahulukan supaya prose
+        // topik yang dicari (mis. CONCAT vc315, 4.240 char) tidak
+        // diusir prose lain yang kebetulan mengandung kata query di
+        // isinya (mis. "tes" di prose LOOP MEMORI / ROTE).
+        fun lineScore(ln: String): Pair<Boolean, Int> {
+            val m = toolRe.find(ln)
+            if (m != null) {
+                val name = m.groupValues[1]
+                var sc = 0
+                if (scoreToks.any { name.startsWith(it) }) sc += 10
+                val desc = ln.substringAfter(" — ", ln).lowercase()
+                val words = desc.split(Regex("[^a-z0-9_]+")).toSet()
+                sc += 5 * scoreToks.count { it in words }
+                return Pair(true, sc)
+            }
+            val head = ln.removePrefix("- ").trim().split(Regex("[^a-z0-9_]+")).firstOrNull().orEmpty().lowercase()
+            if (head.isNotEmpty() && scoreToks.any { head.startsWith(it) }) return Pair(false, 20)
+            val words = ln.lowercase().split(Regex("[^a-z0-9_]+")).toSet()
+            val sc = if (scoreToks.any { it in words }) 10 else 0
+            return Pair(false, sc)
+        }
         val passthrough = ArrayList<String>()
-        val nameRe = Regex("([a-z][a-z0-9_]*)\\s*\\{")
-        for ((i, ln) in section.lines().withIndex()) {
+        val toolCands = ArrayList<Triple<Int, String, Int>>()
+        val proseCands = ArrayList<Triple<Int, String, Int>>()
+        for ((i, ln) in lines.withIndex()) {
             if (ln.startsWith("- ")) {
-                val sc = scoreToks.count { ln.lowercase().contains(it) }
-                cands.add(Triple(i, ln, sc))
+                val (isTool, sc) = lineScore(ln)
+                if (isTool) toolCands.add(Triple(i, ln, sc)) else proseCands.add(Triple(i, ln, sc))
             } else if (ln.isNotBlank() && ln.trim() != "Tool lanjutan:") {
                 passthrough.add(ln)
             }
         }
-        val kept = ArrayList<Triple<Int, String, Int>>()
-        var used = 0
-        val byScore = cands.sortedWith(compareByDescending<Triple<Int, String, Int>> { it.third }.thenBy { it.first })
-        for (c in byScore) {
-            val isListTools = c.second.startsWith("- list_tools ")
-            if (c.third <= 0 && !isListTools) continue
-            if (used > 0 && used + c.second.length + 1 > 6000) continue
-            kept.add(c)
-            used += c.second.length + 1
+        fun pick(cands: List<Triple<Int, String, Int>>, budget: Int, forceListTools: Boolean): List<Triple<Int, String, Int>> {
+            val kept = ArrayList<Triple<Int, String, Int>>()
+            var used = 0
+            for (c in cands.sortedWith(compareByDescending<Triple<Int, String, Int>> { it.third }.thenBy { it.first })) {
+                val isListTools = forceListTools && c.second.startsWith("- list_tools ")
+                if (c.third <= 0 && !isListTools) continue
+                if (used > 0 && used + c.second.length + 1 > budget) continue
+                kept.add(c)
+                used += c.second.length + 1
+            }
+            if (forceListTools && kept.none { it.second.startsWith("- list_tools ") }) {
+                val lt = cands.firstOrNull { it.second.startsWith("- list_tools ") }
+                if (lt != null) kept.add(lt)
+            }
+            return kept
         }
-        if (kept.none { it.second.startsWith("- list_tools ") }) {
-            val lt = cands.firstOrNull { it.second.startsWith("- list_tools ") }
-            if (lt != null) kept.add(lt)
-        }
-        kept.sortBy { it.first }
+        val keptTools = pick(toolCands, CATALOG_TOOL_BUDGET_VC316, true)
+        val keptProse = pick(proseCands, CATALOG_PROSE_BUDGET_VC316, false)
+        val kept = (keptTools + keptProse).sortedBy { it.first }
+        val nameRe = Regex("([a-z][a-z0-9_]*)\\s*\\{")
         val keptNames = HashSet<String>()
         for (c in kept) for (m in nameRe.findAll(c.second)) keptNames.add(m.groupValues[1])
-        val rest = names.filter { it !in keptNames }
+        val rest = ToolRegistry.names().filter { it !in keptNames }
         val sb = StringBuilder()
         sb.append(head).append("\n")
-        for (c in kept) sb.append(c.second).append("\n")
+        var headerEmitted = false
+        for (c in kept) {
+            if (!headerEmitted && headerIdx >= 0 && c.first > headerIdx) {
+                sb.append("Tool lanjutan:\n")
+                headerEmitted = true
+            }
+            sb.append(c.second).append("\n")
+        }
         for (p in passthrough) sb.append(p).append("\n")
         if (rest.isNotEmpty()) sb.append("Tool lain yang tersedia (nama saja — bila tugas butuh salah satunya, panggil list_tools {} untuk katalog lengkapnya): ").append(rest.joinToString(", ")).append("\n")
         sb.append("Catatan: katalog di atas dipangkas ke tool yang relevan dengan pesan ini; deskripsi tool tidak diubah, hanya seleksinya. Katalog lengkap tersedia kapan saja lewat list_tools {}.")
         sb.append(trailing)
         return sb.toString()
     }
+
+    fun catalogForTask(ctx: Context, taskText: String): String {
+        return selectCatalog(toolCatalog(ctx), taskText)
+    }
+
+    /** vc316 IXL — jangkar lanjutan DELTA (dipakai MainActivity
+     *  .sendContinuation): pengingat ringkas bahwa konteks giliran ini
+     *  (system prompt, katalog, memori, riwayat) SUDAH diterima model
+     *  di pesan sebelumnya DALAM SESI SERVER YANG SAMA, jadi lanjutan
+     *  tidak perlu mengirim ulang semuanya. Jangkar ini sengaja membawa
+     *  format tool-call + perintah user + jalan keluar list_tools,
+     *  supaya lanjutan tetap bisa memanggil tool walau server ternyata
+     *  tidak menyimpan konteks antar POST (kasus terburuk: model cukup
+     *  memanggil list_tools {} sekali untuk katalog lengkap). Murni,
+     *  tanpa Context — bisa diuji di JVM. Perintah user dicap 500 char. */
+    fun continuationAnchorVc316(userCommand: String): String {
+        rustAgentValue(JSONObject().put("op", "continuationAnchor").put("command", userCommand))?.let { return it }
+        return continuationAnchorVc316Kotlin(userCommand)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun continuationAnchorVc316Kotlin(userCommand: String): String {
+        val cmd = userCommand.trim().take(500)
+        return "[LANJUTAN SISTEM — vc316 delta: JANGAN minta konteks diulang. System prompt, katalog tool, memori, dan riwayat giliran ini SUDAH kamu terima di pesan sebelumnya DALAM SESI SERVER YANG SAMA — semuanya masih berlaku. Perintah user giliran ini: \"$cmd\". Lanjutkan dari situ memakai JEJAK + HASIL TOOL di bawah. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]"
+    }
+
+    /** vc322 SESI — prompt delta giliran 1-1: jangkar vc316 + perintah
+     *  user verbatim + work-notes segar (cap 5.000). Murni, tanpa
+     *  Context — bisa diuji di JVM. Dikirim HANYA ke wadah server yang
+     *  sudah primed (TurnMetrics.shouldSendDeltaVc322); wadah baru /
+     *  reset / pengganti selalu menerima prompt PENUH. System prompt,
+     *  katalog, memori, dan riwayat TIDAK diulang — semuanya sudah ada
+     *  di sesi server yang sama dari prompt penuh giliran pertama
+     *  (mekanisme yang sama seperti lanjutan tool vc316). Work-notes
+     *  dibawa segar karena isinya ("jangan ulangi") bisa berubah antar
+     *  giliran; digest TIDAK dibawa (ringkasan giliran lalu sudah ada
+     *  verbatim di sesi server). */
+    fun deltaTurnPromptVc322(userCommand: String, workNotes: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[USER — TUGAS 1-1 VERBATIM]:\n").append(userCommand).append("\n[/USER]")
+        val wn = workNotes.trim()
+        if (wn.isNotBlank()) {
+            sb.append("\n\n").append(if (wn.length > 5000) wn.take(5000) + "…(dipotong, sisa " + (wn.length - 5000) + " char)…" else wn)
+        }
+        return sb.toString()
+    }
+
+    /** vc327 SESI — ambil blok "[SISTEM — AUTO-SAVE vc298 ... ]" dari
+     *  prompt penuh (dibangun MainActivity:5880: header instruksi +
+     *  note simpanan + "]\n\n"). Null bila giliran ini bukan auto-save.
+     *  Blok dicap 2000 char supaya delta auto-save tetap kecil (note
+     *  panjang dipotong + penanda sisa — isi penuh tetap ada di prompt
+     *  penuh yang dikirim bila wadah belum primed). Pemotongan memakai
+     *  penanda akhir blok PERTAMA "]\n\n" — baris note sendiri memakai
+     *  "[STATUS: ...]" + "\n" (tanpa "]\n\n"), jadi tidak terpotong
+     *  di tengah butir. Murni, tanpa Context — bisa diuji di JVM. */
+    fun autoSaveBlockVc327(promptNoUser: String): String? {
+        val start = promptNoUser.indexOf("[SISTEM — AUTO-SAVE vc298")
+        if (start < 0) return null
+        val end = promptNoUser.indexOf("]\n\n", start)
+        val raw = if (end < 0) promptNoUser.substring(start) else promptNoUser.substring(start, end + 1)
+        return if (raw.length > 2000) raw.take(2000) + "…(dipotong, sisa " + (raw.length - 2000) + " char)…" else raw
+    }
+
+    /** vc327 SESI — delta giliran 1-1 + penanda auto-save ringkas:
+     *  delta vc322 + blok AUTO-SAVE (bila ada, dicap 2000). Model tetap
+     *  membaca instruksi auto-save + isi simpanan, dan tetap
+     *  menyampaikan konfirmasi simpanan ke user dalam jawaban final —
+     *  tanpa mengirim prompt penuh ~90k. Bila bukan auto-save, hasilnya
+     *  PERSIS deltaTurnPromptVc322 (tanpa tambahan apa pun). Murni,
+     *  tanpa Context — bisa diuji di JVM. */
+    fun deltaTurnPromptVc327(userCommand: String, workNotes: String, autoSaveBlock: String?): String {
+        val base = deltaTurnPromptVc322(userCommand, workNotes)
+        if (autoSaveBlock.isNullOrBlank()) return base
+        return base + "\n\n" + autoSaveBlock
+    }
+
+    // ---- vc330 SESI (fix bocor sesi: verifikasi + ekstraksi delta +
+    // katup pengaman; bukti live user 17 Nov 09:07, vc329) ----
+    // AKAR: giliran VERIFIKASI DIRI + TUGAS LATAR (ekstraksi) mengirim
+    // prompt PENUH tanpa deltaPrompt — verifikasi membawa ulang ctxHist
+    // 20.000 char, ekstraksi membawa ulang hist 40 pesan / 40.000 char.
+    // Begitu accum + prompt penuh > DEFAULT_CAP 200.000, guard vc321
+    // menembak -> clearServerSession + createServerSession = wadah BARU
+    // (notifikasi "sesi browser 2 membuat wadah baru") padahal sesi
+    // Harness tetap "Utama". Fix vc327 H3 hanya mencakup auto-save.
+    // Jendela ekstraksi vc330 = 13 pesan (10 sejak ekstraksi terakhir +
+    // overlap 3, komentar vc241 O7 — kode lama memakai 40/40.000,
+    // padahal niatnya 13); cap char 8.000 (tipikal 13 pesan jauh di
+    // bawah 40.000; delta ekstraksi tipikal ~2-3k + jangkar).
+    /** Jumlah pesan jendela ekstraksi vc330 (10 baru + overlap 3). */
+    const val EXTRACT_WINDOW_N_VC330 = 13
+    /** Cap char jendela riwayat ekstraksi vc330 (≪ 40.000 lama). */
+    const val EXTRACT_WINDOW_CHARS_VC330 = 8000
+
+    /** Sentinel yang dikembalikan klien bila giliran verifikasi
+     *  DILEWATI katup vc330 (wadah penuh — tanpa POST). MainActivity
+     *  WAJIB mengecek sentinel ini SEBELUM cleanVerdict: teks ini
+     *  TIDAK diawali "LULUS" dan TIDAK mengandung "koreksi", tapi
+     *  cleanVerdict akan mengembalikannya utuh sebagai "koreksi" bila
+     *  lolos ke sana (cabang else, panjang < 350). */
+    const val VERIFY_SKIPPED_VC330 = "VERIFIKASI-DILEWATI-VC330"
+
+    /** Respons netral katup vc330 untuk giliran senyap yang dilewati
+     *  (tanpa POST). "verify" -> sentinel verifikasi (MainActivity
+     *  menampilkannya sebagai "dilewati"); "extract" -> persis
+     *  "TIDAK ADA" (itu yang model sendiri jawab bila tak ada fakta
+     *  baru — cabang internalTurn lalu menutup giliran tanpa proposal).
+     *  Murni, tanpa Context — bisa diuji di JVM. */
+    fun silentSkippedResponseVc330(kind: String?): String =
+        if (kind == "extract") "TIDAK ADA" else VERIFY_SKIPPED_VC330
+
+    /** vc330 SESI — delta VERIFIKASI DIRI: jangkar vc316 + instruksi
+     *  verifikasi yang sama seperti prompt penuh (aturan output ketat
+     *  verbatim supaya cleanVerdict tetap bekerja) + JEJAK TOOL +
+     *  WorldState + JAWABAN FINAL — TANPA pengiriman ulang ctxHist
+     *  (20.000 char). Riwayat SUDAH ada di konteks sesi server yang
+     *  sama, dinyatakan eksplisit supaya model tidak memintanya ulang.
+     *  Prompt PENUH (argumen pertama sendToAgent) tetap teks lama
+     *  lengkap — fallback bila wadah belum primed. Murni, tanpa
+     *  Context — bisa diuji di JVM. */
+    fun deltaVerifyPromptVc330(userCommand: String, trailTxt: String, wsLine: String, finalAnswer: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[VERIFIKASI DIRI — vc330 delta (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH di bawah ini. RIWAYAT percakapan SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: ").append(wsLine).append(" — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.]")
+        sb.append("\n\nJEJAK TOOL GILIRAN INI:\n").append(trailTxt)
+        sb.append("\n\nJAWABAN FINAL YANG DIPERIKSA:\n").append(finalAnswer)
+        return sb.toString()
+    }
+
+    /** vc330 SESI — delta TUGAS LATAR (ekstraksi): jangkar vc316 +
+     *  instruksi ekstraksi yang sama seperti prompt penuh + jendela
+     *  RIWAYAT BARU sejak ekstraksi terakhir SAJA (13 pesan terakhir,
+     *  cap 8.000 char — BUKAN 40 pesan / 40.000 char). Riwayat lebih
+     *  lama SUDAH ada di konteks sesi server yang sama. Prompt PENUH
+     *  (40/40.000) tetap dikirim sebagai argumen pertama sendToAgent —
+     *  fallback bila wadah belum primed. Murni, tanpa Context — bisa
+     *  diuji di JVM. */
+    fun deltaExtractPromptVc330(userCommand: String, recentHist: String): String {
+        val sb = StringBuilder()
+        sb.append(continuationAnchorVc316(userCommand))
+        sb.append("\n\n[TUGAS LATAR — vc330 delta (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut jendela RIWAYAT BARU sejak ekstraksi terakhir (13 pesan terakhir; riwayat lebih lama SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang). Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.]")
+        sb.append("\n\nRIWAYAT BARU (13 pesan terakhir):\n").append(recentHist)
+        return sb.toString()
+    }
+
 
     // vc272 O2: daftar nama tool VALID berasal dari ToolRegistry — sumber
     // yang sama dengan teks katalog (satu sumber, dua pemakaian). TIDAK ADA
@@ -1308,19 +1555,28 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
             visible = visible.lines()
                 .filter { it.trim() !in listOf("json", "Copy", "Download", "```json", "```") }
                 .joinToString("\n").trim()
-            return Pair(trimLongFencedBlocks(visible), normalized)
+            // vc316 Worker BR (a): markup tool mentah (DSML/tag) di luar
+            // span JSON ikut dibersihkan dari teks tampil.
+            return Pair(trimLongFencedBlocks(stripRawToolMarkupForDisplay(visible)), normalized)
         }
         // v4.13.1: tidak ada JSON pagar — coba format DSML natif model.
         val norm = normalizeDsmlDelimiters(text)
         val dsml = extractDsmlCall(norm)
         if (dsml != null) {
-            val cleaned = norm.replace(Regex("""<[^>]*DSML[^>]*>"""), "").trim()
+            // vc316 Worker BR (a): dulu hanya tag DSML yang dihapus
+            // (<[^>]*DSML[^>]*>) sehingga isi parameter JSON ({"path":...})
+            // tetap bocor ke bubble chat. Kini blok DSML utuh (tag + isi)
+            // dibersihkan — tool call-nya sendiri tetap dieksekusi.
+            val cleaned = stripRawToolMarkupForDisplay(norm)
             return Pair(trimLongFencedBlocks(cleaned), assignCallId(dsml))
         }
         // v4.18.3: dialek tag <tool=nama>{json}.
         val tag = extractTagCall(text)
-        if (tag != null) return Pair(trimLongFencedBlocks(tag.first), assignCallId(tag.second))
-        return Pair(text.trim(), null)
+        if (tag != null) return Pair(trimLongFencedBlocks(stripRawToolMarkupForDisplay(tag.first)), assignCallId(tag.second))
+        // vc316 Worker BR (a): DSML yang GAGAL diparse (invoke rusak /
+        // terpotong / tanpa wrapper calls) dulu jatuh ke sini mentah-mentah
+        // dan tampil apa adanya di bubble chat. Bersihkan sebelum tampil.
+        return Pair(stripRawToolMarkupForDisplay(text.trim()), null)
     }
 
     /** vc229 R-05(b) + vc273 O6(a): semua tool call yang diakui findToolSpans.
@@ -1666,7 +1922,85 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
      *  ＜ (U+FF1C) -> <, ＞ (U+FF1E) -> >. Input ASCII murni tidak berubah
      *  (identitas), jadi tidak ada regresi untuk tool call normal. */
     fun normalizeDsmlDelimiters(text: String): String {
+        rustAgentValue(JSONObject().put("op", "normalizeDsmlDelimiters").put("text", text))?.let { return it }
+        return normalizeDsmlDelimitersKotlin(text)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun normalizeDsmlDelimitersKotlin(text: String): String {
         return text.replace('｜', '|').replace('＜', '<').replace('＞', '>')
+    }
+
+    /** vc316 Worker BR (a): bersihkan markup tool MENTAH dari teks TAMPIL
+     *  sebelum masuk bubble chat / riwayat. Menghapus blok DSML utuh
+     *  (calls/invoke/parameter: tag + isi JSON parameter), blok DSML yang
+     *  terpotong (tanpa penutup, sampai akhir teks), sisa tag <...DSML...>,
+     *  dan dialek <tool=nama>{json}. HANYA untuk tampilan — jalur eksekusi
+     *  (extractDsmlCall / extractTagCall / findToolSpans) TIDAK memakai
+     *  fungsi ini, jadi isi DSML yang sah tetap diteruskan ke tool/server
+     *  apa adanya. Idempotent. Sebutan "DSML" tanpa kurung sudut (prosa
+     *  biasa) TIDAK dihapus. Trade-off: contoh markup DSML di dalam blok
+     *  kode ikut terhapus dari tampilan — harga untuk "DSML mentah tidak
+     *  pernah lolos ke chat". */
+    fun stripRawToolMarkupForDisplay(text: String): String {
+        rustAgentValue(JSONObject().put("op", "stripRawToolMarkup").put("text", text))?.let { return it }
+        return stripRawToolMarkupForDisplayKotlin(text)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun stripRawToolMarkupForDisplayKotlin(text: String): String {
+        if (!text.contains("DSML") && !text.contains("<tool=")) return text
+        var t = normalizeDsmlDelimiters(text)
+        // Blok DSML tertutup utuh (tag + isi parameter JSON).
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*calls\s*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*calls\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*invoke\b[^>]*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*invoke\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*parameter\b[^>]*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*parameter\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        // Blok DSML tanpa penutup (respons terpotong): dari tag pembuka
+        // calls/invoke sampai akhir teks — hanya bila sesudahnya ada '{'
+        // (debris JSON args); tag telanjang (contoh/penyebutan) dibiarkan
+        // untuk regex tag di bawah supaya prosa sesudahnya tidak hilang.
+        val unterminated = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*(calls|invoke)\b""").find(t)
+        if (unterminated != null) {
+            val tail = t.substring(unterminated.range.first)
+            if (tail.contains('{')) t = t.substring(0, unterminated.range.first)
+        }
+        // Sisa tag DSML apa pun (yatim / varian tanpa wrapper).
+        t = Regex("""<[^>]*DSML[^>]*>""").replace(t, "")
+        // Dialek <tool=nama>{json}.
+        t = stripTagCallSpans(t)
+        t = Regex("\n{3,}").replace(t, "\n\n")
+        return t.trim()
+    }
+
+    /** Hapus span <tool=nama>{...} (kurung seimbang) dari teks tampil. */
+    private fun stripTagCallSpans(text: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            val m = Regex("""<tool=[A-Za-z0-9_]+>""").find(text, i)
+            if (m == null) { sb.append(text.substring(i)); break }
+            sb.append(text.substring(i, m.range.first))
+            var spanEnd = m.range.last + 1
+            val braceStart = text.indexOf('{', m.range.last + 1)
+            if (braceStart >= 0) {
+                var depth = 0; var inStr = false; var esc = false; var end = -1
+                var j = braceStart
+                while (j < text.length) {
+                    val c = text[j]
+                    if (esc) { esc = false; j++; continue }
+                    if (c == '\\') { esc = true; j++; continue }
+                    if (c == '"') { inStr = !inStr; j++; continue }
+                    if (!inStr) {
+                        if (c == '{') depth++
+                        else if (c == '}') { depth--; if (depth == 0) { end = j; break } }
+                    }
+                    j++
+                }
+                if (end > braceStart) spanEnd = end + 1
+            }
+            i = spanEnd
+        }
+        return sb.toString()
     }
 
     /** v4.48.9.20 (Q2b): pangkas blok kode pagar PANJANG dari teks tampil

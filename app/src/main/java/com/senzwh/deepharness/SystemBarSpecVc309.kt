@@ -1,5 +1,7 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
+
 // SystemBarSpecVc309.kt — pemetaan MURNI tema -> system bars (vc309 Worker A).
 //
 // File ini SENGAJA murni Kotlin tanpa import Android (pola ChatThemeVc306 /
@@ -13,12 +15,43 @@ package com.senzwh.deepharness
 //   ikon: tema gelap -> ikon TERANG (appearance flag MATI);
 //         tema cerah -> ikon GELAP (appearance flag NYALA).
 object SystemBarSpecVc309 {
+    /**
+     * Saklar A/B slice 4 (vc317): bila core Rust tersedia, pemetaan
+     * jalan di Rust; bila tidak, fallback ke implementasi Kotlin lama
+     * di bawah (specKotlin — JANGAN dihapus).
+     */
+    var rustSystemBarSpec: Boolean = true
 
     /** Hasil pemetaan: warna status bar, warna nav bar, dan apakah ikon
      *  system bar harus terang (true = tema gelap, flag appearance MATI). */
     data class Spec(val statusColor: Int, val navColor: Int, val lightIcons: Boolean)
 
-    fun spec(isDark: Boolean): Spec =
+    fun spec(isDark: Boolean): Spec {
+        rustSpec(isDark)?.let { return it }
+        return specKotlin(isDark)
+    }
+
+    // ---- Seam Rust (vc317) ----
+
+    private fun rustSpec(isDark: Boolean): Spec? {
+        if (!rustSystemBarSpec || !RustCore.available) return null
+        return try {
+            val json = RustCore.systemBarSpecJson(isDark)
+            if (!json.contains("\"ok\":true")) return null
+            fun i(k: String): Int? = Regex("\"" + k + "\":(-?\\d+)").find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            Spec(
+                i("statusColor") ?: return null,
+                i("navColor") ?: return null,
+                json.contains("\"lightIcons\":true")
+            )
+        } catch (e: Throwable) {
+            rustSystemBarSpec = false
+            null
+        }
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun specKotlin(isDark: Boolean): Spec =
         if (isDark) Spec(ChatThemeVc306.darkBgTop, ChatThemeVc306.darkSurface, true)
         else Spec(ChatThemeVc306.lightBgTop, ChatThemeVc306.lightCard, false)
 }

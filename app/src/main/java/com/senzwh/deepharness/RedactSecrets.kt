@@ -1,5 +1,7 @@
 package com.senzwh.deepharness
 
+import harness.core.RustCore
+
 /** v4.48.8 — Redaksi pola kredensial KEYAKINAN TINGGI saja, satu fungsi untuk
  *  semua jalur presentasi (live, JEJAK, digest, get_result, grep_result, dump,
  *  lapisan memori). Store tetap mentah; redaksi HANYA saat disajikan, supaya
@@ -9,8 +11,33 @@ package com.senzwh.deepharness
  *  lolos utuh. Redaksi IDEMPOTEN: redact(redact(x)) == redact(x) — guard
  *  [REDAKSI mencegah penanda menimpa dirinya sendiri. App password hanya
  *  dikenali bila satu baris utuh 4x4 huruf ATAU berlabel, supaya kalimat
- *  biasa ("saya suka baca buku di rumah") tidak kena. */
+ *  biasa ("saya suka baca buku di rumah") tidak kena.
+ *
+ *  CATATAN IDEMPOTENCE (slice 3, hasil port Rust — JANGAN "diperbaiki"
+ *  diam-diam): klaim idempotence di atas hanya terbukti untuk SAMPEL
+ *  self-test. Guard lookahead `(?!\[REDAKSI\])` memeriksa literal
+ *  "[REDAKSI]" (tutup kurung), sementara semua marker berbentuk
+ *  "[REDAKSI: ...]" — dan BEARER (?i) ikut me-match kata "bearer" DI
+ *  DALAM marker. Akibatnya redact(redact(x)) != redact(x) untuk teks
+ *  yang SUDAH ter-redaksi (mis. "Bearer [REDAKSI: bearer token]"
+ *  menjadi "... Bearer [REDAKSI: bearer token]"). Itu perilaku ASLI
+ *  Kotlin (dibuktikan model independen saat port); port Rust
+ *  mereproduksinya 1:1. Perubahan perilaku = keputusan koordinator.
+ *
+ *  Saklar A/B slice 3 (vc317): bila core Rust tersedia (.so ke-load
+ *  + versi seam cocok), redaksi jalan di Rust; bila tidak, fallback ke
+ *  implementasi Kotlin lama di bawah (redactKotlin — JANGAN dihapus).
+ *  Rust TIDAK dipanggil di main thread (pemanggil sudah di worker
+ *  thread). `RustCore.redactSecrets` mengembalikan null bila Rust
+ *  gagal di boundary -> fallback + saklar dimatikan. */
 object RedactSecrets {
+    /**
+     * Saklar A/B slice 3 (vc317): bila core Rust tersedia, redaksi jalan
+     * di Rust; bila tidak / bila Rust mengembalikan null, fallback ke
+     * implementasi Kotlin lama (redactKotlin — JANGAN dihapus).
+     */
+    var rustRedactSecrets: Boolean = true
+
     private val PEM_RE = Regex("-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", RegexOption.DOT_MATCHES_ALL)
     private val APP_LABELED_RE = Regex("(?i)(app[- ]?password|kata sandi aplikasi|sandi aplikasi)\\s*[:=]?\\s*[a-z]{4}( [a-z]{4}){3}")
     private val BEARER_RE = Regex("(?i)Bearer\\s+(?!\\[REDAKSI\\])\\S+")
@@ -18,7 +45,32 @@ object RedactSecrets {
     private val PREFIXED_RE = Regex("(sk-(live|test|proj|ant)-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|AKIA[0-9A-Z]{16})")
     private val APP_LINE_RE = Regex("(?m)^[a-z]{4}( [a-z]{4}){3}$")
 
+    // ---- Seam Rust (vc317) ----
+
+    /** Redaksi via Rust bila tersedia; null -> pakai fallback Kotlin.
+     *  String kosong tidak menyeberang seam (hasilnya sama). */
+    private fun rustRedact(s: String): String? {
+        if (!rustRedactSecrets || !RustCore.available) return null
+        if (s.isEmpty()) return s
+        return try {
+            RustCore.redactSecrets(s) ?: run {
+                rustRedactSecrets = false
+                null
+            }
+        } catch (e: Throwable) {
+            rustRedactSecrets = false
+            null
+        }
+    }
+
     fun redact(s: String): String {
+        rustRedact(s)?.let { return it }
+        return redactKotlin(s)
+    }
+
+    /** Implementasi Kotlin lama (fallback bila core Rust tidak tersedia).
+     *  DIPERTAHANKAN — jangan dihapus. */
+    private fun redactKotlin(s: String): String {
         if (s.isEmpty()) return s
         var out = PEM_RE.replace(s, "[REDAKSI: kunci privat PEM]")
         out = APP_LABELED_RE.replace(out, "[REDAKSI: app-password, 16 karakter]")
@@ -29,11 +81,24 @@ object RedactSecrets {
         return out
     }
 
-    fun containsSecret(s: String): Boolean = redact(s) != s
+    fun containsSecret(s: String): Boolean {
+        rustRedact(s)?.let { return it != s }
+        return redactKotlin(s) != s
+    }
 
     fun countMatches(s: String): Int {
+        rustRedact(s)?.let { redacted ->
+            val before = Regex("\\[REDAKSI").findAll(s).count()
+            val after = Regex("\\[REDAKSI").findAll(redacted).count()
+            return (after - before).coerceAtLeast(0)
+        }
+        return countMatchesKotlin(s)
+    }
+
+    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
+    private fun countMatchesKotlin(s: String): Int {
         val before = Regex("\\[REDAKSI").findAll(s).count()
-        val after = Regex("\\[REDAKSI").findAll(redact(s)).count()
+        val after = Regex("\\[REDAKSI").findAll(redactKotlin(s)).count()
         return (after - before).coerceAtLeast(0)
     }
 

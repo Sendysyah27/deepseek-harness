@@ -21,7 +21,11 @@ object MdMini {
     private val TOKEN = Regex("(\\*\\*[^*]+\\*\\*)|(\\*[^*\\n]+\\*)|(`[^`\\n]+`)|(\\[[^\\]]+\\]\\([^)\\s]+\\))")
     private val NUMBERED = Regex("^\\d+[.)]\\s+.*")
 
-    fun render(src: String): CharSequence {
+    // G11 vc310: warna kode dari tema (bukan hardcode). Default = token
+    // dark supaya pemanggil lama (render histori) tampil sama seperti
+    // vc309; pemanggil jalur blok baru (buildBlocksContentVc310) wajib
+    // mengisi dari currentTheme() (terang/gelap).
+    fun render(src: String, codeTextColor: Int = ChatThemeVc306.darkCodeText, codeInlineBgColor: Int = ChatThemeVc306.darkTileBg): CharSequence {
         val out = SpannableStringBuilder()
         val lines = src.replace("\r\n", "\n").split("\n")
         var inFence = false
@@ -35,31 +39,31 @@ object MdMini {
                 val s = out.length
                 out.append(line)
                 out.setSpan(TypefaceSpan("monospace"), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                out.setSpan(ForegroundColorSpan(Color.rgb(190, 220, 255)), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                out.setSpan(ForegroundColorSpan(codeTextColor), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 continue
             }
             when {
-                t.startsWith("### ") -> appendInline(out, t.substring(4), 1.1f, true)
-                t.startsWith("## ") -> appendInline(out, t.substring(3), 1.25f, true)
-                t.startsWith("# ") -> appendInline(out, t.substring(2), 1.4f, true)
+                t.startsWith("### ") -> appendInline(out, t.substring(4), 1.1f, true, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
+                t.startsWith("## ") -> appendInline(out, t.substring(3), 1.25f, true, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
+                t.startsWith("# ") -> appendInline(out, t.substring(2), 1.4f, true, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
                 t.startsWith("|") -> {
                     val s = out.length
                     out.append(line)
                     out.setSpan(TypefaceSpan("monospace"), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
-                t.startsWith("> ") -> appendInline(out, t.substring(2), 1f, false, dim = true)
-                t.startsWith("☐") || t.startsWith("☑") -> appendPlanLine(out, t)
-                t.startsWith("- ") || t.startsWith("* ") || t.startsWith("• ") -> { out.append("• "); appendInline(out, t.substring(2), 1f, false) }
-                NUMBERED.matches(t) -> appendInline(out, t, 1f, false)
-                else -> appendInline(out, line, 1f, false)
+                t.startsWith("> ") -> appendInline(out, t.substring(2), 1f, false, dim = true, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
+                t.startsWith("☐") || t.startsWith("☑") -> appendPlanLine(out, t, codeTextColor, codeInlineBgColor)
+                t.startsWith("- ") || t.startsWith("* ") || t.startsWith("• ") -> { out.append("• "); appendInline(out, t.substring(2), 1f, false, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor) }
+                NUMBERED.matches(t) -> appendInline(out, t, 1f, false, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
+                else -> appendInline(out, line, 1f, false, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
             }
         }
         return out
     }
 
-    private fun appendPlanLine(out: SpannableStringBuilder, line: String) {
+    private fun appendPlanLine(out: SpannableStringBuilder, line: String, codeTextColor: Int = ChatThemeVc306.darkCodeText, codeInlineBgColor: Int = ChatThemeVc306.darkTileBg) {
         val s0 = out.length
-        appendInline(out, line, 1f, false)
+        appendInline(out, line, 1f, false, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
         val done = line.contains('☑')
         val cb = if (done) line.indexOf('☑') else line.indexOf('☐')
         if (cb >= 0) out.setSpan(
@@ -67,7 +71,13 @@ object MdMini {
             s0 + cb, s0 + cb + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
-    private fun appendInline(out: SpannableStringBuilder, text: String, sizeMul: Float, bold: Boolean, dim: Boolean = false) {
+    // vc311 Worker D: kode inline kini SELALU dapat ForegroundColorSpan
+    // eksplisit (codeTextColor) — sebelumnya hanya BackgroundColorSpan +
+    // monospace, sehingga di mode cerah teks memakai warna default
+    // TextView (gelap) di atas latar default darkTileBg (#232730, hampir
+    // hitam) = blok hitam tak terbaca. Default tetap token dark supaya
+    // pemanggil lama yang kelewat tidak berubah perilaku.
+    private fun appendInline(out: SpannableStringBuilder, text: String, sizeMul: Float, bold: Boolean, dim: Boolean = false, codeTextColor: Int = ChatThemeVc306.darkCodeText, codeInlineBgColor: Int = ChatThemeVc306.darkTileBg) {
         val startAll = out.length
         var idx = 0
         for (m in TOKEN.findAll(text)) {
@@ -82,7 +92,8 @@ object MdMini {
                 tok.startsWith("`") -> {
                     out.append(tok.substring(1, tok.length - 1))
                     out.setSpan(TypefaceSpan("monospace"), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    out.setSpan(BackgroundColorSpan(Color.argb(70, 255, 255, 255)), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    out.setSpan(BackgroundColorSpan(codeInlineBgColor), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    out.setSpan(ForegroundColorSpan(codeTextColor), s, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 tok.startsWith("[") -> {
                     out.append(tok.substring(1, tok.indexOf(']')))
@@ -104,17 +115,24 @@ object MdMini {
         }
     }
 
-    /** T11: inline markdown satu baris (untuk isi sel tabel). */
-    fun inline(text: String): CharSequence {
+    /** T11: inline markdown satu baris (untuk isi sel tabel).
+     *  vc311 Worker D: teruskan codeTextColor (default token dark) supaya
+     *  kode inline di sel tabel juga punya foreground eksplisit — sama
+     *  seperti render(). */
+    fun inline(text: String, codeTextColor: Int = ChatThemeVc306.darkCodeText, codeInlineBgColor: Int = ChatThemeVc306.darkTileBg): CharSequence {
         val b = SpannableStringBuilder()
-        appendInline(b, text, 1f, false)
+        appendInline(b, text, 1f, false, codeTextColor = codeTextColor, codeInlineBgColor = codeInlineBgColor)
         return b
     }
 
-    /** T11: blok isi pesan — segmen teks mentah atau satu tabel utuh. */
+    /** T11: blok isi pesan — segmen teks mentah, satu tabel utuh, atau
+     *  satu blok kode berpagar (G11 vc310). */
     sealed interface Block {
         class Text(val raw: String) : Block
         class Table(val header: List<String>, val rows: List<List<String>>) : Block
+        /** G11: blok kode fence — lang = kata pertama sesudah ``` (bisa
+         *  kosong), raw = isi tanpa pagar fence. */
+        class Code(val lang: String, val raw: String) : Block
     }
 
     private fun splitRow(line: String): List<String> {
@@ -130,7 +148,13 @@ object MdMini {
 
     /** T11: pecah pesan jadi blok teks/tabel. Fence-aware: baris pipa di
      *  dalam blok kode berpagar TIDAK pernah jadi tabel. Tabel tanpa
-     *  baris pemisah yang sah jatuh balik ke segmen teks (render lama). */
+     *  baris pemisah yang sah jatuh balik ke segmen teks (render lama).
+     *  G11 vc310: fence ```` ``` ```` menghasilkan blok Code tersendiri
+     *  (lang + raw tanpa pagar); fence tanpa penutup tetap jadi Code
+     *  dengan isi sampai akhir pesan (sama seperti render()); fence
+     *  kosong (tanpa isi) tidak menghasilkan blok — perilakunya sama
+     *  seperti render() yang membuang pagarnya. Syarat validasi tabel
+     *  (isSepRow) TIDAK diubah. */
     fun splitBlocks(src: String): List<Block> {
         val lines = src.replace("\r\n", "\n").split("\n")
         val blocks = mutableListOf<Block>()
@@ -142,17 +166,27 @@ object MdMini {
             }
         }
         var i = 0
-        var inFence = false
         while (i < lines.size) {
             val line = lines[i]
             val t = line.trim()
             if (t.startsWith("```")) {
-                inFence = !inFence
-                textBuf.append(line).append("\n")
-                i++
+                // G11: buka fence — kumpulkan isi sampai pagar penutup.
+                val lang = t.substring(3).trim().takeWhile { !it.isWhitespace() }
+                flushText()
+                val codeBuf = StringBuilder()
+                var j = i + 1
+                var closed = false
+                while (j < lines.size) {
+                    if (lines[j].trim().startsWith("```")) { closed = true; break }
+                    codeBuf.append(lines[j]).append("\n")
+                    j++
+                }
+                val raw = codeBuf.toString().trimEnd('\n')
+                if (raw.isNotBlank()) blocks.add(Block.Code(lang, raw))
+                i = if (closed) j + 1 else lines.size
                 continue
             }
-            if (!inFence && t.startsWith("|") && i + 1 < lines.size && isSepRow(lines[i + 1].trim())) {
+            if (t.startsWith("|") && i + 1 < lines.size && isSepRow(lines[i + 1].trim())) {
                 val header = splitRow(t)
                 if (header.isEmpty()) {
                     textBuf.append(line).append("\n")
@@ -180,4 +214,17 @@ object MdMini {
     }
 
     fun hasTable(src: String): Boolean = splitBlocks(src).any { it is Block.Table }
+
+    /** G11: true bila pesan mengandung blok kode fence (meniru hasTable). */
+    fun hasCode(src: String): Boolean = splitBlocks(src).any { it is Block.Code }
+
+    /** G11: susun ulang tabel menjadi teks markdown pipa asli (untuk
+     *  tombol "Salin tabel" — ditempel ke tempat lain sebagai tabel utuh). */
+    fun tableMarkdown(table: Block.Table): String {
+        val sb = StringBuilder()
+        sb.append("| ").append(table.header.joinToString(" | ")).append(" |\n")
+        sb.append("| ").append(table.header.joinToString(" | ") { "---" }).append(" |\n")
+        for (row in table.rows) sb.append("| ").append(row.joinToString(" | ")).append(" |\n")
+        return sb.toString().trimEnd('\n')
+    }
 }

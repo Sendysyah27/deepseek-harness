@@ -20,7 +20,18 @@ object TurnMetrics {
     // 4.48.9 giliran_ke: counter persisten (tidak pernah di-reset Setup 17 —
     // clearSnapshot hanya menghapus KEY_LAST), naik tiap beginTurn.
     private const val KEY_TURN = "giliran_ke"
-    const val DEFAULT_CAP = 400000
+    // vc316 IXL: 200.000 char ≈ 58.800 token (@3,4 char/token, kalibrasi
+    // DsApiClient.recordTokens) — DI BAWAH buffer konteks chat web
+    // DeepSeek ~64.000 token (batas yang mengikat di chat.deepseek.com;
+    // API V3 128k / V4 1M lebih longgar). Cap lama 400.000 char
+    // (≈117.600 token) berada DI ATAS batas server, jadi guard lokal
+    // tidak pernah bisa mencegah input_exceeds_limit — prompt yang
+    // lolos guard pun ditolak server. Cap ini per-prompt; akumulasi
+    // antar-POST di sesi server yang sama ditangani lanjutan delta
+    // (MainActivity.sendContinuation + BgBrain.continuationPrompt).
+    // KEY_CAP tidak pernah ditulis UI/kode lain, jadi nilai ini berlaku
+    // untuk semua instalasi (bukan hanya instalasi baru).
+    const val DEFAULT_CAP = 200000
 
     // Lapisan prompt yang diukur (7 lapis, sesuai brief Butir 2).
     const val L_SYSTEM = "sistem_minus_katalog"
@@ -135,10 +146,204 @@ object TurnMetrics {
     fun recordQueueWait(waitedMs: Long) { if (begun) { queueCount++; queueWaitMsTotal += waitedMs } }
     fun recordQueueRejected() { if (begun) queueRejected++ }
 
-    /** vc278 O19: ambang proaktif pemangkas prompt = 80% cap (320.000
-     *  char pada cap default 400.000). Dipakai 1-1 (sendContinuation)
-     *  dan latar (BgBrain) supaya ambangnya selaras. */
+    /** vc278 O19: ambang proaktif pemangkas prompt = 80% cap (160.000
+     *  char pada cap default vc316 200.000; dulu 320.000 pada cap
+     *  400.000). Dipakai 1-1 (sendContinuation) dan latar (BgBrain)
+     *  supaya ambangnya selaras. */
     fun proactiveThreshold(cap: Int): Int = (cap * 4) / 5
+
+    // ---- vc321 IXL (fix room-lane + sesi panjang 1-1) ----
+    // AKAR (diukur probe vc321, default/seed): parent_message_id SELALU
+    // NULL + sesi server dipakai ulang per (akun/slot, sesi harness) —
+    // konteks server tumbuh ~1 prompt penuh per POST. Prompt awal 1-1
+    // sesi panjang ~90.500 char (~26.600 token) sehingga kumulatif
+    // menembus buffer server ~64.000 token (~217.600 char) di giliran
+    // ke-3, bahkan untuk tool sepele ("cek skill lists"). Kunci sesi
+    // tersimpan di SharedPreferences "harness" (dsSrvSessId_<fp>_<no> /
+    // dsSlotSrv_<slot>_<no>) — bertahan melewati tutup-buka app, itu
+    // kenapa keluar-masuk app TIDAK me-reset akumulasi.
+    // PERBAIKAN: (a) akumulasi per sesi server dihitung (char prompt
+    // sukses) dan sesi di-reset PROAKTIF sebelum POST yang akan
+    // menembus cap — prompt awal 1-1/room SELALU membawa ulang system
+    // prompt + riwayat, jadi wadah baru tidak kehilangan konteks yang
+    // tidak bisa dikirim ulang; (b) riwayat awal sesi panjang dipangkas
+    // lebih keras (30 pesan/30.000 char bila sesi sudah >=40 pesan).
+    /** Ambang sesi panjang: jumlah pesan user sesi ini SEBELUM giliran ini. */
+    const val LONG_SESSION_MSG_THRESHOLD_VC321 = 40
+    /** Anggaran riwayat awal sesi panjang (vs normal 60 pesan/60.000 char). */
+    const val HISTORY_LONG_N_VC321 = 30
+    const val HISTORY_LONG_CHARS_VC321 = 30000
+    /** Anggaran riwayat awal sesi normal/pendek — TIDAK berubah dari vc230. */
+    const val HISTORY_NORMAL_N_VC321 = 60
+    const val HISTORY_NORMAL_CHARS_VC321 = 60000
+
+    /** Anggaran [RIWAYAT] prompt awal dari jumlah pesan user sesi ini
+     *  sebelum giliran ini. Murni, tanpa Context — bisa diuji di JVM.
+     *  Sesi pendek/normal: (60, 60000) persis seperti vc230; sesi
+     *  panjang (>=40 pesan): (30, 30000) — hemat 30.000 char per POST. */
+    fun historyBudgetVc321(priorMsgCount: Int): Pair<Int, Int> =
+        if (priorMsgCount >= LONG_SESSION_MSG_THRESHOLD_VC321) Pair(HISTORY_LONG_N_VC321, HISTORY_LONG_CHARS_VC321)
+        else Pair(HISTORY_NORMAL_N_VC321, HISTORY_NORMAL_CHARS_VC321)
+
+    /** Keputusan reset sesi server (murni, tanpa Context). Reset bila
+     *  akumulasi yang sudah terkirim + prompt berikut akan menembus
+     *  DEFAULT_CAP (200.000 char ~= 58.800 token, di bawah buffer
+     *  server ~64.000 token). accum==0 tidak pernah reset (prompt
+     *  tunggal di bawah cap selalu lolos — sesi baru tidak dibakar
+     *  untuk satu POST besar). Batas atas laju reset: satu wadah baru
+     *  per giliran bila tiap prompt di cap; tipikal ~1 reset per 3-5
+     *  giliran sesi panjang (prompt awal baru ~60.500 char). */
+    fun shouldResetServerSessionVc321(accumChars: Int, nextPromptChars: Int): Boolean =
+        accumChars > 0 && accumChars + nextPromptChars > DEFAULT_CAP
+
+    // ---- vc330 SESI (katup pengaman giliran senyap) ----
+    // Keputusan LEWATI giliran senyap (murni, tanpa Context). True
+    // HANYA bila keempat syarat terpenuhi: giliran ini senyap
+    // (silentKind "verify"/"extract"), giliran ini TIDAK mengirim
+    // delta (useDelta false — delta tidak pernah memicu guard),
+    // wadah tersimpan ADA (tanpa wadah tidak ada yang dibakar), dan
+    // guard reset vc321 AKAN menembak (accum + prompt penuh > cap).
+    // freshEphemeral dikecualikan (wadahnya memang dibuang tiap
+    // panggilan — DsApiClient tidak punya ephemeral, teruskan false).
+    // Giliran user-visible (silentKind null) TIDAK PERNAH dilewati —
+    // guard reset-nya jalan seperti biasa. Dipakai SlotClient/DsApiClient
+    // runChat TEPAT di guard reset yang sudah ada, SEBELUM reset.
+    fun shouldSkipSilentVc330(silentKind: String?, useDelta: Boolean, hasStoredSession: Boolean, wouldReset: Boolean, freshEphemeral: Boolean): Boolean =
+        silentKind != null && !useDelta && hasStoredSession && wouldReset && !freshEphemeral
+
+    private const val KEY_SRV_ACCUM_VC321 = "srvAccumVc321_"
+
+    /** Estimasi akumulasi server sesi ini (jumlah char prompt sukses
+     *  yang sudah dikirim ke wadah server yang sama). 0 = belum ada /
+     *  sesudah reset. Disimpan di prefs "turnMetrics" (bukan "harness")
+     *  supaya tidak ikut tersalin BrainBackup/sync_memory. */
+    fun serverAccumVc321(ctx: Context, key: String): Int = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_SRV_ACCUM_VC321 + key, 0).coerceAtLeast(0)
+    } catch (e: Exception) { 0 }
+
+    fun addServerAccumVc321(ctx: Context, key: String, chars: Int) {
+        if (chars <= 0) return
+        try {
+            val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val cur = p.getInt(KEY_SRV_ACCUM_VC321 + key, 0).coerceAtLeast(0)
+            // Jepit 10 juta supaya tidak overflow bila prefs korup.
+            p.edit().putInt(KEY_SRV_ACCUM_VC321 + key, (cur + chars).coerceAtMost(10_000_000)).apply()
+        } catch (e: Exception) { }
+    }
+
+    fun resetServerAccumVc321(ctx: Context, key: String) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_SRV_ACCUM_VC321 + key).apply() } catch (e: Exception) { }
+    }
+
+    // ---- vc322 SESI (fix bocor sesi server: 1 giliran = 1 sesi baru) ----
+    // AKAR (diukur probe vc322, UKURAN-SESI-VC322.md): guard reset vc321
+    // bekerja benar, tapi prompt PENUH dikirim ulang tiap giliran —
+    // begitu prompt nyata >100.000 char (DB user, bukan seed 60.500),
+    // accum + prompt berikut > 200.000 DI TIAP giliran: 4 perintah =
+    // 4 sesi server baru (ambang terukur persis: P=100.000 -> 2 sesi,
+    // P=100.001 -> 4 sesi). Memangkas riwayat saja TIDAK menolong
+    // (75.500 char tetap 5 sesi / 10 giliran, sama seperti 90.500).
+    // PERBAIKAN: giliran 1-1 lanjutan dikirim sebagai DELTA (jangkar
+    // vc316 + perintah user verbatim + work-notes segar, ~1-2k char)
+    // karena sesi server MENYIMPAN konteks antar POST — mekanisme yang
+    // sama sudah terbukti di lanjutan tool vc316 + delta room vc321.
+    // Prompt PENUH hanya dikirim bila wadah belum ada / baru lahir /
+    // baru di-reset / pengganti / forceFresh. "Primed" = wadah ini sudah
+    // menerima SATU prompt penuh yang sukses — delta HANYA boleh ke
+    // wadah primed (tanpanya, retry sesudah reset + stream putus bisa
+    // mengirim delta ke wadah kosong yang belum punya konteks).
+    /** Keputusan kirim delta (murni, tanpa Context). Delta hanya bila
+     *  ada wadah tersimpan YANG SUDAH primed, ada prompt delta, bukan
+     *  forceFresh / ephemeral / reviewer, dan akumulasi + delta tetap
+     *  di bawah DEFAULT_CAP. Semua kondisi lain -> prompt penuh. */
+    fun shouldSendDeltaVc322(hasStoredSession: Boolean, hasDeltaPrompt: Boolean, forceFresh: Boolean, freshEphemeral: Boolean, reviewer: Boolean, primed: Boolean, accumChars: Int, deltaLen: Int): Boolean =
+        hasStoredSession && hasDeltaPrompt && !forceFresh && !freshEphemeral && !reviewer && primed &&
+        deltaLen > 0 && accumChars + deltaLen <= DEFAULT_CAP
+
+    private const val KEY_SESS_CREATED_VC322 = "sessCreatedVc322_"
+    private const val KEY_PRIMED_VC322 = "srvPrimedVc322_"
+
+    /** Penghitung sesi server per (akun/slot, sesi harness) — jumlah
+     *  wadah server yang pernah lahir untuk sesi harness ini (reset /
+     *  forceFresh / invalid ikut dihitung; yang yatim TIDAK dikurangi,
+     *  karena server tidak memberi jalan menghapusnya). Disimpan di
+     *  prefs "turnMetrics" (bukan "harness"). */
+    fun serverSessionCountVc322(ctx: Context, key: String): Int = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_SESS_CREATED_VC322 + key, 0).coerceAtLeast(0)
+    } catch (e: Exception) { 0 }
+
+    /** Catat satu kelahiran wadah server; mengembalikan hitungan baru. */
+    fun noteServerSessionCreatedVc322(ctx: Context, key: String): Int = try {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val cur = p.getInt(KEY_SESS_CREATED_VC322 + key, 0).coerceAtLeast(0)
+        val next = (cur + 1).coerceAtMost(10_000_000)
+        p.edit().putInt(KEY_SESS_CREATED_VC322 + key, next).apply()
+        next
+    } catch (e: Exception) { 0 }
+
+    /** Apakah wadah kunci ini sudah menerima satu prompt penuh sukses. */
+    fun isServerSessionPrimedVc322(ctx: Context, key: String): Boolean = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_PRIMED_VC322 + key, false)
+    } catch (e: Exception) { false }
+
+    fun setServerSessionPrimedVc322(ctx: Context, key: String, primed: Boolean) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_PRIMED_VC322 + key, primed).apply() } catch (e: Exception) { }
+    }
+
+    // ---- vc327 RESIDUAL (fix bocor sesi + kartu merah input_exceeds_limit,
+    // bukti live user 17 Nov 00:13-00:15, vc325) ----
+    // H1 MIGRASI PRIMED: sesi dari vc321 punya stored + accum TAPI TANPA
+    // kunci primed (isServerSessionPrimedVc322 default false) -> giliran
+    // pertama vc322 mengirim PENUH dan bisa me-reset (1 sesi baru per
+    // upgrade). accum > 0 HANYA mungkin sesudah satu POST penuh sukses
+    // ke wadah ini (addServerAccum hanya dipanggil sesudah POST sukses;
+    // POST pertama ke wadah SELALU penuh karena delta butuh primed) —
+    // jadi stored + accum > 0 adalah bukti wadah sudah primed, dan
+    // migrasi satu kali ini aman: delta langsung aktif tanpa prompt
+    // penuh. Bila stored ada tapi accum == 0 (wadah dibuat tapi POST
+    // pertamanya belum pernah sukses), TIDAK dimigrasi — giliran
+    // berikut tetap penuh seperti biasa.
+    /** Migrasi primed satu kali (murni prefs, tanpa Context Android
+     *  selain prefs). Mengembalikan primed EFEKTIF sesudah migrasi. */
+    fun migratePrimedOnceVc327(ctx: Context, key: String, hasStoredSession: Boolean, accumChars: Int): Boolean {
+        if (isServerSessionPrimedVc322(ctx, key)) return true
+        if (!hasStoredSession || accumChars <= 0) return false
+        setServerSessionPrimedVc322(ctx, key, true)
+        return true
+    }
+
+    // H2 TAHAN forceFresh: stream putus -> retry 2x di sesi sama ->
+    // forceFresh = 1 sesi server baru PER EPISODE PUTUS. Di sinyal 4G
+    // lemah, tiap giliran bisa jadi 1 episode -> 1 sesi baru per
+    // giliran, tanpa batas. Cooldown 10 menit per (lane, sesi harness):
+    // paling banyak 1 forceFresh per 10 menit; episode di dalam
+    // jendela GAGAL dengan pesan jelas (bukan membakar sesi diam-diam).
+    // Reviewer (BgBrain, forceFresh=true sejak awal) TIDAK memakai
+    // gate ini — jalurnya sendiri, di luar cakupan fix.
+    /** Jeda minimum antar forceFresh (stream-putus) per kunci. */
+    const val FORCE_FRESH_COOLDOWN_MS_VC327 = 10 * 60 * 1000L
+    private const val KEY_LAST_FF_VC327 = "lastForceFreshVc327_"
+
+    /** Kapan forceFresh terakhir dicatat untuk kunci ini (ms epoch, 0 = belum pernah). */
+    fun lastForceFreshAtVc327(ctx: Context, key: String): Long = try {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(KEY_LAST_FF_VC327 + key, 0L).coerceAtLeast(0L)
+    } catch (e: Exception) { 0L }
+
+    /** Catat satu forceFresh (dipanggil SEBELUM percobaan — sesi sudah
+     *  dibakar begitu createServerSession jalan, walau completion-nya
+     *  kemudian gagal lagi). */
+    fun noteForceFreshVc327(ctx: Context, key: String, nowMs: Long) {
+        try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_LAST_FF_VC327 + key, nowMs).apply() } catch (e: Exception) { }
+    }
+
+    /** Bolehkah forceFresh sekarang? True bila belum pernah / sudah
+     *  lewat cooldown / jam mundur (last > now = jam mundur -> izinkan,
+     *  jangan kunci pengguna gara-gara jam). */
+    fun allowForceFreshVc327(ctx: Context, key: String, nowMs: Long): Boolean {
+        val last = lastForceFreshAtVc327(ctx, key)
+        if (last <= 0L || nowMs < last) return true
+        return nowMs - last >= FORCE_FRESH_COOLDOWN_MS_VC327
+    }
 
     /** vc278 O19(c): char yang dipangkas PEMANGKAS PROAKTIF per giliran
      *  — ikut snapshot JSON giliran ("char_dipangkas_proaktif") dan

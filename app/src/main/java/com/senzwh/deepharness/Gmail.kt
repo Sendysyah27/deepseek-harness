@@ -2,6 +2,7 @@ package com.senzwh.deepharness
 
 import android.content.Context
 import android.util.Base64
+import harness.core.RustCore
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -12,6 +13,9 @@ import javax.net.ssl.SSLSocketFactory
  *  yang disimpan terenkripsi (SecureStore / Android Keystore).
  *  Butuh: akun Google dengan 2FA aktif + App Password dibuat di myaccount.google.com/apppasswords. */
 object GmailLite {
+
+    /** Slice 8 (vc324): saklar seam Rust — default ikut `RustCore.available`. */
+    var rustGmail = RustCore.available
 
     private fun creds(ctx: Context): Pair<String, String>? {
         val email = SecureStore.get(ctx, "gmail_email") ?: return null
@@ -66,6 +70,12 @@ object GmailLite {
     }
 
     private fun decodeWord(s: String): String {
+        HttpSeam.decodeWord(s)?.let { return it }
+        if (!HttpSeam.rustHttp) rustGmail = false
+        return decodeWordKotlin(s)
+    }
+
+    private fun decodeWordKotlin(s: String): String {
         var out = s
         val rx = Regex("=\\?[^?]+\\?([bBqQ])\\?([^?]*)\\?=")
         while (true) {
@@ -129,18 +139,28 @@ object GmailLite {
         val sb = StringBuilder()
         for (id in ids.asReversed()) {
             val lines = imap.cmd("FETCH $id (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
-            var from = ""; var subj = ""; var date = ""
-            for (l in lines) {
-                val low = l.lowercase()
-                when {
-                    low.startsWith("from:") -> from = decodeWord(l.substring(5))
-                    low.startsWith("subject:") -> subj = decodeWord(l.substring(8))
-                    low.startsWith("date:") -> date = l.substring(5).trim().take(31)
-                }
-            }
-            sb.append("- [$date] $from — ${subj.ifBlank { "(tanpa subjek)" }}\n")
+            val entry = if (rustGmail) {
+                HttpSeam.gmailHeaders(lines)?.also {
+                    if (!HttpSeam.rustHttp) rustGmail = false
+                } ?: fetchHeadersEntryKotlin(lines)
+            } else fetchHeadersEntryKotlin(lines)
+            sb.append(entry).append("\n")
         }
         return sb.toString().trim()
+    }
+
+    /** Satu entri fetchHeaders (logika murni per id, tanpa I/O). */
+    private fun fetchHeadersEntryKotlin(lines: List<String>): String {
+        var from = ""; var subj = ""; var date = ""
+        for (l in lines) {
+            val low = l.lowercase()
+            when {
+                low.startsWith("from:") -> from = decodeWordKotlin(l.substring(5))
+                low.startsWith("subject:") -> subj = decodeWordKotlin(l.substring(8))
+                low.startsWith("date:") -> date = l.substring(5).trim().take(31)
+            }
+        }
+        return "- [$date] $from — ${subj.ifBlank { "(tanpa subjek)" }}"
     }
 
     // ---------------- SMTP ----------------
