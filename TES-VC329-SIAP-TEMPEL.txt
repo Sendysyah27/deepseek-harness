@@ -1,0 +1,134 @@
+TES VC329 — APAKAH APLIKASI MASIH JALAN NORMAL? (bahasa bayi)
+=====================================================================
+Versi: vc329 (4.48.9.163). Install dulu APK vc329 (Main atau Pure),
+lalu tes di bawah ini.
+
+KENAPA TES INI PENTING (1 menit baca):
+vc329 adalah "pindah mesin" di dalam aplikasi — dan ini pindahan
+TERAKHIR: bagian otak latar (tugas terjadwal, aturan, briefing,
+rekap), obrolan grup (room), dan koordinator tugas (yang menjalankan
+tugas lewat Termux) dipindahkan dari bahasa Kotlin ke bahasa Rust.
+Perilaku yang terlihat user HARUS SAMA PERSIS dengan vc328 —
+tidak ada fitur baru, tidak ada yang berubah di layar.
+Tes ini cuma memastikan pindahan mesin itu tidak merusak apa-apa.
+
+YANG TETAP BERLAKU:
+- TES-VC328 tetap berlaku penuh (tes kirim perintah + upload file).
+  Kerjakan TES-VC328 seperti biasa.
+- TES-VC327 tetap berlaku penuh (tes kartu merah + sesi baru
+  di web DeepSeek). Kerjakan TES-VC327 seperti biasa.
+- T1–T6 vc322 tetap berlaku (tes bocor sesi server).
+Kalau TES-VC328, TES-VC327, atau T1–T6 vc322 GAGAL di vc329,
+itu REGRESI — laporkan ke Jhon, jangan lanjut pakai vc329
+untuk kerja penting.
+
+ISTILAH (biar tidak bingung):
+- "Sesi Harness" = chat di aplikasi Harness (mis. "Utama").
+- "Sesi server" = percakapan di web DeepSeek (sidebar kiri).
+- "Stream" = jawaban yang muncul huruf demi huruf (bukan
+  langsung utuh sekaligus).
+- "Room / grup" = obrolan grup di Harness (ada beberapa agen:
+  Senz, Mandor, Mentor, Agen 4).
+- "Otak latar" = bagian aplikasi yang mengerjakan tugas di
+  belakang layar (tugas terjadwal, aturan notifikasi, briefing
+  pagi, rekap malam) tanpa user membuka chat.
+- "Koordinator" = bagian yang menjalankan tugas panjang lewat
+  Termux (layar hitam di HP).
+- "Kartu merah" = kotak pesan error berwarna merah di chat.
+
+---------------------------------------------------------------
+TES 1 — TES ASAP: KIRIM 2 PERINTAH (3 menit, WAJIB)
+---------------------------------------------------------------
+LANGKAH:
+1. Buka Harness. Buka sesi "Utama" (chat 1-1 yang sudah panjang
+   — yang biasa dipakai, BUKAN sesi baru kosong).
+2. Kirim perintah pendek: "bro?"
+   Tunggu jawabannya selesai.
+3. Kirim perintah panjang: "cek skill lists, lalu jelaskan
+   singkat skill #6 dan #8"
+   Tunggu jawabannya selesai.
+
+LULUS kalau:
+  - Kedua jawaban muncul huruf demi huruf (stream jalan), DAN
+  - Jawabannya nyambung dengan percakapan (bukan seperti
+    ngobrol baru), DAN
+  - TIDAK ADA kartu merah / pesan error.
+
+GAGAL kalau:
+  - Jawaban tidak muncul / macet di tengah / kartu merah muncul,
+    ATAU
+  - Jawaban jadi ngaco / lupa konteks.
+
+---------------------------------------------------------------
+TES 2 — ROOM / GRUP: KIRIM PESAN DI GRUP (5 menit, WAJIB)
+---------------------------------------------------------------
+Ini tes PALING PENTING di vc329 — room adalah jalur yang paling
+rawan macet ("Content is too long") di versi lama.
+LANGKAH:
+1. Buka satu room / grup yang biasa dipakai (mis. grup yang ada
+   Senz, Mandor, Mentor, Agen 4).
+2. Kirim satu pesan biasa, contoh: "bro, cek kabar hari ini
+   dan kasih ringkasan singkat"
+   (boleh sebut satu agen dengan @, mis. "@mandor ...").
+3. Tunggu sampai para agen selesai menjawab bergiliran.
+
+LULUS kalau:
+  - Agen-agen menjawab bergiliran dan nyambung, DAN
+  - TIDAK ADA kartu merah "Content is too long" /
+    "input_exceeds_limit" / pesan error lain.
+
+GAGAL kalau:
+  - Muncul kartu merah "Content is too long" /
+    "input_exceeds_limit", ATAU
+  - Agen diam saja / tidak ada jawaban, ATAU
+  - Jawaban ngaco / lupa isi grup.
+
+---------------------------------------------------------------
+TES 3 — TOOL DI ROOM (5 menit, opsional)
+---------------------------------------------------------------
+LANGKAH:
+1. Di room yang sama, minta satu agen melakukan aksi,
+   contoh: "@mandor cek file terbaru di folder Download
+   dan sebutkan namanya"
+   (sesuaikan dengan aksi tool yang biasa dipakai).
+2. Tunggu sampai selesai.
+
+LULUS kalau:
+  - Hasil aksi/tool muncul di chat (mis. nama file disebut),
+    DAN
+  - TIDAK ADA kartu merah.
+
+GAGAL kalau:
+  - Aksi tidak jalan / muncul pesan error, ATAU
+  - Agen bilang tidak bisa memakai tool.
+
+---------------------------------------------------------------
+TES 4 — TUGAS LATAR (besok pagi, opsional)
+---------------------------------------------------------------
+Otak latar bekerja sendiri tanpa dibuka. Cek besok:
+- Tugas terjadwal / briefing pagi / rekap malam yang biasa
+  jalan, masih jalan seperti biasa (notifikasi masuk).
+LULUS kalau semua yang biasa jalan tetap jalan.
+GAGAL kalau ada yang biasa jalan tiba-tiba tidak jalan /
+tidak ada notifikasi — laporkan ke Jhon (tulis nama tugasnya).
+
+---------------------------------------------------------------
+YANG TIDAK PERLU DITES:
+- Upload file: sudah dites di vc328, tidak diubah di vc329
+  (tetap berlaku dari TES-VC328).
+- Sesi baru kosong: perintah pertama di sesi baru memang selalu
+  kirim prompt penuh (1 sesi baru itu WAJAR).
+- Login / panen cookie: tidak diubah di vc329 (tetap Kotlin).
+- Tampilan / tombol / warna: tidak ada yang berubah.
+
+---------------------------------------------------------------
+LAPORAN KE JHON (copy-paste, isi angkanya):
+---------------------------------------------------------------
+TES VC329:
+- TES 1 (2 perintah 1-1): LULUS / GAGAL (kalau GAGAL, tulis pesannya)
+- TES 2 (room/grup): LULUS / GAGAL (kalau GAGAL, tulis pesannya)
+- TES 3 (tool di room, kalau dites): LULUS / GAGAL
+- TES 4 (tugas latar besok, kalau dites): LULUS / GAGAL
+- TES-VC328: LULUS / GAGAL (lihat file TES-VC328-SIAP-TEMPEL.txt)
+- TES-VC327: LULUS / GAGAL (lihat file TES-VC327-SIAP-TEMPEL.txt)
+- T1–T6 vc322: LULUS / GAGAL
