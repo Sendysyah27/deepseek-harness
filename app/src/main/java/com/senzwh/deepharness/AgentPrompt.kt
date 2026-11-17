@@ -1589,8 +1589,12 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         val spans = findToolSpans(text)
         if (spans.isNotEmpty()) return spans.map { it.third }
         val norm = normalizeDsmlDelimiters(text)
-        val dsml = extractDsmlCall(norm)
-        if (dsml != null) return listOf(assignCallId(dsml))
+        // vc331: jalur DSML mengembalikan SEMUA invoke (maks 4, aturan
+        // batch vc273/vc274) — bukan hanya pertama. Bocoran POVA 5 memuat
+        // 4 invoke; jalur lama membuat 3 call hilang di lane room/tim/
+        // latar/grup. Tiap call dapat id tc-<n> sendiri.
+        val dsmls = extractDsmlCalls(norm)
+        if (dsmls.isNotEmpty()) return dsmls.mapIndexed { i, c -> assignCallId(c, i) }
         val tag = extractTagCall(text)
         if (tag != null) return listOf(assignCallId(tag.second))
         return emptyList()
@@ -1920,7 +1924,14 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
     /** v4.48.9.20 (Q2a): normalisasi eksplisit delimiter DSML yang rusak
      *  (mojibake fullwidth) menjadi ASCII sebelum parse: ｜ (U+FF5C) -> |,
      *  ＜ (U+FF1C) -> <, ＞ (U+FF1E) -> >. Input ASCII murni tidak berubah
-     *  (identitas), jadi tidak ada regresi untuk tool call normal. */
+     *  (identitas), jadi tidak ada regresi untuk tool call normal.
+     *  vc331: diperluas ke SEMUA look-alike yang bisa dipakai model
+     *  (bukti POVA 5 17 Nov 23:37, vc330 — delimiter ber-spasi lolos
+     *  strip karena spasi/pipe mirip-ASCII): spasi fullwidth U+3000,
+     *  NBSP U+00A0, spasi U+2000–U+200A, U+202F, U+205F -> spasi ASCII;
+     *  ZWSP U+200B + BOM U+FEFF -> dihapus; pipe │ U+2502 + ∣ U+2223
+     *  -> |; sudut 〈 U+3008 / 〉 U+3009 / ‹ U+2039 / › U+203A -> < >.
+     *  Cermin Rust wajib sama persis (harness-core/src/agent_prompt.rs). */
     fun normalizeDsmlDelimiters(text: String): String {
         rustAgentValue(JSONObject().put("op", "normalizeDsmlDelimiters").put("text", text))?.let { return it }
         return normalizeDsmlDelimitersKotlin(text)
@@ -1928,7 +1939,18 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
 
     /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
     private fun normalizeDsmlDelimitersKotlin(text: String): String {
-        return text.replace('｜', '|').replace('＜', '<').replace('＞', '>')
+        val sb = StringBuilder(text.length)
+        for (c in text) {
+            when (c) {
+                '｜', '│', '∣' -> sb.append('|')
+                '＜', '〈', '‹' -> sb.append('<')
+                '＞', '〉', '›' -> sb.append('>')
+                '\u00A0', '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000' -> sb.append(' ')
+                '\u200B', '\uFEFF' -> { /* dihapus */ }
+                else -> sb.append(c)
+            }
+        }
+        return sb.toString()
     }
 
     /** vc316 Worker BR (a): bersihkan markup tool MENTAH dari teks TAMPIL
@@ -1952,9 +1974,13 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         if (!text.contains("DSML") && !text.contains("<tool=")) return text
         var t = normalizeDsmlDelimiters(text)
         // Blok DSML tertutup utuh (tag + isi parameter JSON).
-        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*calls\s*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*calls\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
-        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*invoke\b[^>]*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*invoke\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
-        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*parameter\b[^>]*>.*?</\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*parameter\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        // vc331: penutup boleh polos (</parameter> / </invoke> / </calls>
+        // tanpa wrapper DSML — seperti di bocoran POVA 5, penutup
+        // parameter-nya polos </parameter> sehingga regex lama (yang
+        // mewajibkan DSML di penutup) tidak pernah cocok.
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*calls\s*>.*?</\s*(?:[|]{0,2}\s*DSML\s*[|]{0,2}\s*)?calls\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*invoke\b[^>]*>.*?</\s*(?:[|]{0,2}\s*DSML\s*[|]{0,2}\s*)?invoke\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
+        t = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*parameter\b[^>]*>.*?</\s*(?:[|]{0,2}\s*DSML\s*[|]{0,2}\s*)?parameter\s*>""", RegexOption.DOT_MATCHES_ALL).replace(t, "")
         // Blok DSML tanpa penutup (respons terpotong): dari tag pembuka
         // calls/invoke sampai akhir teks — hanya bila sesudahnya ada '{'
         // (debris JSON args); tag telanjang (contoh/penyebutan) dibiarkan
@@ -1970,6 +1996,44 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         t = stripTagCallSpans(t)
         t = Regex("\n{3,}").replace(t, "\n\n")
         return t.trim()
+    }
+
+    /** vc331: potong markup DSML dari teks STREAMING (preview langsung di
+     *  bubble saat jawaban masih mengalir). Dipakai sanitizePartial di
+     *  MainActivity — jalur itu TIDAK PERNAH memanggil strip final,
+     *  sehingga blok DSML mentah tampil apa adanya selama giliran
+     *  berjalan (bukti POVA 5 17 Nov 23:37, screenshot 0:42).
+     *  (1) hapus blok DSML utuh yang sudah lengkap ter-stream;
+     *  (2) potong di pembuka DSML pertama yang belum berpenutup —
+     *  semua sesudahnya adalah markup/argumen tool, bukan prosa.
+     *  Beda dengan strip final (hanya memotong bila ada '{'): preview
+     *  boleh agresif karena bubble final tetap memakai strip final
+     *  (extractToolCall) — prosa sesudah sebutan DSML yang terpotong
+     *  di preview tetap tampil utuh di bubble final. Kotlin murni
+     *  (tanpa op Rust baru — tidak ada perubahan JNI). */
+    fun stripForStreamingVc331(text: String): String {
+        // vc331: POTONG DULU di pembuka DSML pertama yang belum berpenutup,
+        // BARU strip final. Urutan lama (strip dulu, potong kemudian) gagal
+        // — strip menghapus tag pembuka sebagai stray-tag tapi menyisakan
+        // nilai parameter telanjang ("/sdcard/..."), lalu tidak ada lagi
+        // pembuka yang bisa dipotong (P17 D11). Blok yang SUDAH lengkap
+        // tidak dipotong (prosa sesudahnya tetap tampil, D12); pemindaian
+        // lanjut sesudah tiap penutup supaya blok lengkap kedua dst ikut
+        // diperiksa — blok tak lengkap pertama memotong semua sesudahnya.
+        val norm = normalizeDsmlDelimiters(text)
+        val openRe = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*(calls|invoke|parameter)\b""")
+        var cutAt: Int? = null
+        var from = 0
+        while (true) {
+            val m = openRe.find(norm, from) ?: break
+            val kind = m.groupValues[1]
+            val closeRe = Regex("""</\s*(?:[|]{0,2}\s*DSML\s*[|]{0,2}\s*)?$kind\s*>""")
+            val close = closeRe.find(norm, m.range.last + 1)
+            if (close == null) { cutAt = m.range.first; break }
+            from = close.range.last + 1
+        }
+        val truncated = if (cutAt != null) norm.substring(0, cutAt) else norm
+        return stripRawToolMarkupForDisplay(truncated).trim()
     }
 
     /** Hapus span <tool=nama>{...} (kurung seimbang) dari teks tampil. */
@@ -2034,18 +2098,50 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         return out.joinToString("\n")
     }
 
-    fun extractDsmlCall(text: String): JSONObject? {
-        if (!text.contains("DSML")) return null
+    /** vc331: parse SEMUA invoke DSML dalam satu respons (bukan hanya
+     *  pertama). Bocoran POVA 5 memuat 4 invoke (list_files x2 +
+     *  storage_info x2) — jalur lama (hanya pertama) membuat 3 call hilang
+     *  di lane room/tim/latar/grup yang memakai extractToolCalls (batch
+     *  vc273/vc274, maks 4 per respons). Tiap invoke diparse dari segmennya
+     *  sendiri (pembuka invoke s.d. pembuka invoke berikut / akhir teks)
+     *  supaya parameter satu invoke tidak bocor ke invoke lain. */
+    fun extractDsmlCalls(text: String): List<JSONObject> {
+        if (!text.contains("DSML")) return emptyList()
         // v4.48.9.20 (Q2a): normalisasi di sini juga supaya pemanggil
         // langsung (mis. rescue dari fragmen berpikir) ikut tertangani.
         // Idempotent: menormalisasi dua kali hasilnya sama.
         val norm = normalizeDsmlDelimiters(text)
         val invRe = Regex("""<\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*invoke\s+name="([^"]+)"\s*>""")
-        val m = invRe.find(norm) ?: return null
-        val toolName = m.groupValues[1].trim()
-        if (toolName.isBlank()) return null
-        val rest = norm.substring(m.range.last + 1)
-        val parRe = Regex("""<\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*parameter\s+name="([^"]+)"([^>]*)>(.*?)<\s*/\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*parameter\s*>""", RegexOption.DOT_MATCHES_ALL)
+        val matches = invRe.findAll(norm).toList()
+        if (matches.isEmpty()) return emptyList()
+        val out = ArrayList<JSONObject>()
+        for ((idx, m) in matches.withIndex()) {
+            if (out.size >= MAX_BATCH_CALLS_VC273) break
+            val toolName = m.groupValues[1].trim()
+            if (toolName.isBlank()) continue
+            val segEnd = if (idx + 1 < matches.size) matches[idx + 1].range.first else norm.length
+            val seg = norm.substring(m.range.last + 1, segEnd)
+            out.add(JSONObject().put("tool", toolName).put("args", parseDsmlParams(seg)))
+        }
+        return out
+    }
+
+    /** vc331: invoke PERTAMA saja (dipakai extractToolCall jalur tunggal +
+     *  rescue MainActivity:12299). Implementasi = pertama dari
+     *  extractDsmlCalls supaya parse tunggal/plural tidak pernah beda. */
+    fun extractDsmlCall(text: String): JSONObject? {
+        if (!text.contains("DSML")) return null
+        return extractDsmlCalls(text).firstOrNull()
+    }
+
+    /** vc331: parse parameter-parameter DSML dari satu segmen invoke.
+     *  Penutup parameter boleh polos (</parameter> tanpa wrapper DSML —
+     *  seperti di bocoran POVA 5); regex lama yang mewajibkan DSML di
+     *  penutup membuat SEMUA argumen hilang (args {}) walau nama tool
+     *  terparse — celah yang sama dengan strip (celah 2), tapi di jalur
+     *  parse. Cermin strip: wrapper DSML opsional di penutup. */
+    private fun parseDsmlParams(rest: String): JSONObject {
+        val parRe = Regex("""<\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*parameter\s+name="([^"]+)"([^>]*)>(.*?)<\s*/\s*(?:[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*)?parameter\s*>""", RegexOption.DOT_MATCHES_ALL)
         var args = JSONObject()
         for (pm in parRe.findAll(rest)) {
             val pname = pm.groupValues[1].trim()
@@ -2065,7 +2161,7 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
             } else pval
             try { args.put(pname, v) } catch (e: Exception) {}
         }
-        return JSONObject().put("tool", toolName).put("args", args)
+        return args
     }
 
     // vc273 O6: batas batch multi-tool — maks 4 call per respons (lane 1-1
