@@ -192,7 +192,7 @@ jobs:
       - name: Suite P15 BgRoom vc329 (608 cek, 312 rust / 296 kotlin per mode)
         run: bash tests/run-suite-ci.sh P15
 
-      - name: Suite P16 SessFix vc330 (64 cek: delta verifikasi + delta ekstraksi + katup senyap)
+      - name: "Suite P16 SessFix vc330 (64 cek: delta verifikasi + delta ekstraksi + katup senyap)"
         run: bash tests/run-suite-ci.sh P16
 
       - name: Suite N9 audit (46 cek)
