@@ -242,47 +242,67 @@ run_r2() {
 }
 
 run_c() {
-  echo "== C. Diff vs origin/main: DsFailure.kt berubah + RustCore.kt baru + PowSolver.kt berubah (vc320) =="
+  echo "== C. Diff vs origin/main (baseline vc330) + file migrasi Rust ada di tree branch =="
   # actions/checkout hanya mengambil branch aktif; main harus di-fetch
   # eksplisit (workflow juga melakukan ini sebelum suite).
   git fetch origin main --depth=1 || { echo "GAGAL C: tidak bisa fetch origin/main"; return 1; }
+  # RONDE 2 vc331 (baseline main==vc330, commit e470b43f, 17 Nov 23:03):
+  # main SUDAH berisi migrasi Rust penuh (vc317-vc330), jadi asersi
+  # "baru vs main" / "berubah vs main" yang file-nya sama persis di main
+  # vc330 sudah mati — diganti cek keberadaan + marker di tree branch.
+  # Cek diff dipertahankan HANYA untuk asersi yang masih hidup
+  # (tervalidasi vs tree API main e470b43f vs branch bd18ed06).
+  # Helper: file harus ada di checkout + berisi marker khas.
+  need_file() { # $1=path $2=marker $3=label
+    [ -f "$1" ] || { echo "GAGAL C: $3 tidak ada di tree branch"; return 1; }
+    grep -qF "$2" "$1" || { echo "GAGAL C: $3 tidak berisi marker '$2'"; return 1; }
+  }
   git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/DsFailure.kt | grep -q DsFailure.kt || { echo "GAGAL C: DsFailure.kt tidak berubah vs main"; return 1; }
-  git diff --name-status origin/main HEAD -- app/src/main/java/harness/core/RustCore.kt | grep -q "^A" || { echo "GAGAL C: RustCore.kt bukan file baru vs main"; return 1; }
-  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/PowSolver.kt | grep -q PowSolver.kt || { echo "GAGAL C: PowSolver.kt tidak berubah vs main"; return 1; }
+  need_file "app/src/main/java/harness/core/RustCore.kt" "const val VERSION = 10" "RustCore.kt (RUST_CORE_VERSION 10)" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/PowSolver.kt" "object PowSolver" "PowSolver.kt" || return 1
   git diff --name-only origin/main HEAD -- harness-core/src/pow_solver.rs | grep -q pow_solver.rs || { echo "GAGAL C: pow_solver.rs bukan file baru vs main"; return 1; }
-  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt | grep -q RedactSecrets.kt || { echo "GAGAL C: RedactSecrets.kt tidak berubah vs main"; return 1; }
+  need_file "app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt" "object RedactSecrets" "RedactSecrets.kt" || return 1
   git diff --name-status origin/main HEAD -- harness-core/src/redact_secrets.rs | grep -q "^A" || { echo "GAGAL C: redact_secrets.rs bukan file baru vs main"; return 1; }
-  for _f in NotifIds SystemBarSpecVc309 DsSafetyStrip McpHelper SessionBackgroundVc304 Behaviors ChatThemeVc306; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main"; return 1; }; done
-  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/priv/PrivPairNotif.kt | grep -q PrivPairNotif.kt || { echo "GAGAL C: priv/PrivPairNotif.kt tidak berubah vs main"; return 1; }
-  git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/ConcatApiClient.kt | grep -q ConcatApiClient.kt || { echo "GAGAL C: ConcatApiClient.kt tidak berubah vs main (slice 5)"; return 1; }
+  for _f in NotifIds SystemBarSpecVc309 DsSafetyStrip McpHelper; do need_file "app/src/main/java/com/senzwh/deepharness/$_f.kt" "object $_f" "$_f.kt" || return 1; done
+  for _f in SessionBackgroundVc304 Behaviors ChatThemeVc306; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main"; return 1; }; done
+  need_file "app/src/main/java/com/senzwh/deepharness/priv/PrivPairNotif.kt" "object PrivPairNotif" "priv/PrivPairNotif.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/ConcatApiClient.kt" "object ConcatApi" "ConcatApiClient.kt" || return 1
   git diff --name-status origin/main HEAD -- harness-core/src/concat_api_client.rs | grep -q "^A" || { echo "GAGAL C: concat_api_client.rs bukan file baru vs main (slice 5)"; return 1; }
-  for _f in ToolRegistry AgentPrompt SkillJudge; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 6)"; return 1; }; done
+  for _f in ToolRegistry AgentPrompt; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 6)"; return 1; }; done
+  need_file "app/src/main/java/com/senzwh/deepharness/SkillJudge.kt" "object SkillJudge" "SkillJudge.kt" || return 1
   for _r in tool_registry tool_registry_data agent_prompt skill_trigger; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main (slice 6)"; return 1; }; done
   for _f in GroupChat MainActivity TurnMetrics DsApiClient SlotClient; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (fix vc321)"; return 1; }; done
   echo "LULUS C (fix vc321): GroupChat.kt + MainActivity.kt + TurnMetrics.kt + DsApiClient.kt + SlotClient.kt berubah"
-  for _f in EventDb ArtifactStore ParkedApprovalStoreVc305 GraphDb; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 7 vc323)"; return 1; }; done
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/SqliteSeam.kt | grep -q "^A" || { echo "GAGAL C: SqliteSeam.kt bukan file baru vs main (slice 7 vc323)"; return 1; }
+  need_file "app/src/main/java/com/senzwh/deepharness/EventDb.kt" "HEvent" "EventDb.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/ArtifactStore.kt" "ArtifactMeta" "ArtifactStore.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/ParkedApprovalStoreVc305.kt" "class ParkedApprovalStoreVc305" "ParkedApprovalStoreVc305.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/GraphDb.kt" "class GraphDb" "GraphDb.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/SqliteSeam.kt" "object SqliteSeam" "SqliteSeam.kt" || return 1
   for _r in sqlite sqlite_schema; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main (slice 7 vc323)"; return 1; }; done
-  echo "LULUS C (slice 7 vc323): 4 wrapper berubah + SqliteSeam.kt baru + sqlite.rs + sqlite_schema.rs baru"
-  for _f in OcClient ApiClients McpHttp Gmail McpOAuth; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 8 vc324)"; return 1; }; done
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/HttpSeam.kt | grep -q "^A" || { echo "GAGAL C: HttpSeam.kt bukan file baru vs main (slice 8 vc324)"; return 1; }
+  echo "LULUS C (slice 7 vc323): 4 wrapper ada + SqliteSeam.kt ada + sqlite.rs + sqlite_schema.rs baru"
+  need_file "app/src/main/java/com/senzwh/deepharness/OcClient.kt" "object OcClient" "OcClient.kt" || return 1
+  for _f in ApiClients McpOAuth; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 8 vc324)"; return 1; }; done
+  need_file "app/src/main/java/com/senzwh/deepharness/McpHttp.kt" "object McpHttp" "McpHttp.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/Gmail.kt" "object GmailLite" "Gmail.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/HttpSeam.kt" "object HttpSeam" "HttpSeam.kt" || return 1
   for _r in http sse; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main (slice 8 vc324)"; return 1; }; done
-  echo "LULUS C (slice 8 vc324): 5 wrapper berubah + HttpSeam.kt baru + http.rs + sse.rs baru"
+  echo "LULUS C (slice 8 vc324): OcClient.kt + McpHttp.kt + Gmail.kt + HttpSeam.kt ada, ApiClients.kt + McpOAuth.kt berubah, http.rs + sse.rs baru"
   for _f in WorkerEndpoint WorkerEndpointLogic; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 9 vc325)"; return 1; }; done
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/WorkerEndpointSeam.kt | grep -q "^A" || { echo "GAGAL C: WorkerEndpointSeam.kt bukan file baru vs main (slice 9 vc325)"; return 1; }
+  need_file "app/src/main/java/com/senzwh/deepharness/WorkerEndpointSeam.kt" "object WorkerEndpointSeam" "WorkerEndpointSeam.kt" || return 1
   git diff --name-status origin/main HEAD -- harness-core/src/worker_endpoint.rs | grep -q "^A" || { echo "GAGAL C: worker_endpoint.rs bukan file baru vs main (slice 9 vc325)"; return 1; }
-  echo "LULUS C (slice 9 vc325): 2 wrapper berubah + WorkerEndpointSeam.kt baru + worker_endpoint.rs baru"
+  echo "LULUS C (slice 9 vc325): 2 wrapper berubah + WorkerEndpointSeam.kt ada + worker_endpoint.rs baru"
   git diff --name-only origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/Tools.kt | grep -q "Tools.kt" || { echo "GAGAL C: Tools.kt tidak berubah vs main (slice 10 vc326)"; return 1; }
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/ToolsLeavesSeam.kt | grep -q "^A" || { echo "GAGAL C: ToolsLeavesSeam.kt bukan file baru vs main (slice 10 vc326)"; return 1; }
+  need_file "app/src/main/java/com/senzwh/deepharness/ToolsLeavesSeam.kt" "object ToolsLeavesSeam" "ToolsLeavesSeam.kt" || return 1
   git diff --name-status origin/main HEAD -- harness-core/src/tools_leaves.rs | grep -q "^A" || { echo "GAGAL C: tools_leaves.rs bukan file baru vs main (slice 10 vc326)"; return 1; }
-  echo "LULUS C (slice 10 vc326): Tools.kt berubah + ToolsLeavesSeam.kt baru + tools_leaves.rs baru"
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/DsApiSeam.kt | grep -q "^A" || { echo "GAGAL C: DsApiSeam.kt bukan file baru vs main (slice 11 vc328)"; return 1; }
+  echo "LULUS C (slice 10 vc326): Tools.kt berubah + ToolsLeavesSeam.kt ada + tools_leaves.rs baru"
+  need_file "app/src/main/java/com/senzwh/deepharness/DsApiSeam.kt" "object DsApiSeam" "DsApiSeam.kt" || return 1
   git diff --name-status origin/main HEAD -- harness-core/src/ds_api.rs | grep -q "^A" || { echo "GAGAL C: ds_api.rs bukan file baru vs main (slice 11 vc328)"; return 1; }
-  echo "LULUS C (slice 11 vc328): DsApiClient.kt berubah + DsApiSeam.kt baru + ds_api.rs baru"
-  for _f in BgBrain DsAgent OcCoord; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 12 vc329)"; return 1; }; done
-  git diff --name-status origin/main HEAD -- app/src/main/java/com/senzwh/deepharness/BgRoomSeam.kt | grep -q "^A" || { echo "GAGAL C: BgRoomSeam.kt bukan file baru vs main (slice 12 vc329)"; return 1; }
+  echo "LULUS C (slice 11 vc328): DsApiClient.kt berubah + DsApiSeam.kt ada + ds_api.rs baru"
+  for _f in BgBrain OcCoord; do git diff --name-only origin/main HEAD -- "app/src/main/java/com/senzwh/deepharness/$_f.kt" | grep -q "$_f.kt" || { echo "GAGAL C: $_f.kt tidak berubah vs main (slice 12 vc329)"; return 1; }; done
+  need_file "app/src/main/java/com/senzwh/deepharness/DsAgent.kt" "class DsAgent" "DsAgent.kt" || return 1
+  need_file "app/src/main/java/com/senzwh/deepharness/BgRoomSeam.kt" "object BgBrainSeam" "BgRoomSeam.kt" || return 1
   for _r in bg_brain bg_room_common group_chat ds_agent ds_agent_js oc_coord; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main (slice 12 vc329)"; return 1; }; done
-  echo "LULUS C (slice 12 vc329): BgBrain.kt + DsAgent.kt + OcCoord.kt berubah + BgRoomSeam.kt baru + 6 modul Rust baru"
+  echo "LULUS C (slice 12 vc329): BgBrain.kt + OcCoord.kt berubah + DsAgent.kt + BgRoomSeam.kt ada + 6 modul Rust baru"
   for _r in notif_ids system_bar_spec ds_safety_strip mcp_helper session_background behaviors chat_theme; do git diff --name-status origin/main HEAD -- "harness-core/src/$_r.rs" | grep -q "^A" || { echo "GAGAL C: $_r.rs bukan file baru vs main"; return 1; }; done
   # Flavor.kt: bandingkan commit slice ini (HEAD) vs INDUKNYA (HEAD~1),
   # BUKAN vs main — Flavor.kt branch SUDAH beda dari main sejak lama
@@ -290,9 +310,9 @@ run_c() {
   # adalah MENGUBAHNYA di commit ini. (Perbaikan integrator ronde 1 CI.)
   git diff --name-only HEAD~1 HEAD -- app/src/main/java/com/senzwh/deepharness/Flavor.kt | grep -q Flavor.kt && { echo "GAGAL C: Flavor.kt berubah di commit slice ini (slice 4 DIKECUALIKAN/deferred)"; return 1; }
   echo "LULUS C (slice 5): Flavor.kt tidak berubah di commit slice ini"
-  echo "LULUS C (slice 5): 7 file Kotlin + PrivPairNotif berubah, 7 modul Rust baru, Flavor.kt tidak berubah"
-  echo "LULUS C (slice 5): ConcatApiClient.kt berubah + concat_api_client.rs baru"
-  echo "LULUS C (slice 6): ToolRegistry.kt + AgentPrompt.kt + SkillJudge.kt berubah + 4 modul Rust baru (tool_registry, tool_registry_data, agent_prompt, skill_trigger)"
+  echo "LULUS C (slice 5): 7 file Kotlin + PrivPairNotif ada/berubah, 7 modul Rust baru, Flavor.kt tidak berubah"
+  echo "LULUS C (slice 5): ConcatApiClient.kt ada + concat_api_client.rs baru"
+  echo "LULUS C (slice 6): ToolRegistry.kt + AgentPrompt.kt berubah + SkillJudge.kt ada + 4 modul Rust baru (tool_registry, tool_registry_data, agent_prompt, skill_trigger)"
   echo "LULUS C"
   return 0
 }
