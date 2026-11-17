@@ -72,6 +72,11 @@ name: Android vc317
 # senyap (silentKindVc330: verify/extract — lewati tanpa POST bila guard
 # reset menembak); P16 64 cek; suite 2964/2965 (R2-4.1 ditoleransi);
 # RUST_CORE_VERSION tetap 10; Kotlin saja, Rust tidak berubah.
+# Fix vc331 (BUKAN slice 13): bocor DSML — markup tool mentah tampil di
+# bubble chat POVA 5 (vc330) dan nempel sesudah turn selesai; strip final
+# (normalize look-alike + penutup polos) + strip streaming potong-dulu +
+# parse multi-invoke (maks 4, args tidak lagi kosong); P17 18 cek; suite
+# 2982/2983 (R2-4.1 ditoleransi); RUST_CORE_VERSION tetap 10; JNI tidak berubah.
 #
 # CATATAN: android-actions/setup-android@v3 DICOBA di run pertama dan
 # GAGAL di langkahnya sendiri — diganti SDK bawaan runner ubuntu-latest
@@ -194,6 +199,9 @@ jobs:
 
       - name: "Suite P16 SessFix vc330 (64 cek: delta verifikasi + delta ekstraksi + katup senyap)"
         run: bash tests/run-suite-ci.sh P16
+
+      - name: "Suite P17 DsmlFix vc331 (18 cek: strip look-alike + penutup polos + streaming potong-dulu + parse multi-invoke)"
+        run: bash tests/run-suite-ci.sh P17
 
       - name: Suite N9 audit (46 cek)
         run: bash tests/run-suite-ci.sh N9
