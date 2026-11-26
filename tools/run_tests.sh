@@ -79,7 +79,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/FirstRunStateTest.kt" \
   "$PROJ/app/src/test/ModelCapsTest.kt" \
   "$PROJ/app/src/test/GovernorModelsTest.kt" \
-  "$PROJ/app/src/test/EngineRouterTest.kt"
+  "$PROJ/app/src/test/EngineRouterTest.kt" \
+  "$PROJ/app/src/test/ModelPickerControllerTest.kt"
 
 echo "== jalankan ToolRegistryTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolRegistryTestKt
@@ -104,6 +105,9 @@ java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.GovernorModelsTestKt
 
 echo "== jalankan EngineRouterTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.EngineRouterTestKt
+
+echo "== jalankan ModelPickerControllerTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelPickerControllerTestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"

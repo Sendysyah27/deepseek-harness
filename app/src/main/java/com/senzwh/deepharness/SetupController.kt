@@ -621,6 +621,28 @@ import java.io.File
         val cap = st.optInt("govCap", 500)
         c.addView(tv("Pemakaian hari ini: " + st.optInt("govCount", 0) + " / " + (if (cap == 0) "∞" else cap.toString()) + " unit", 12.5f, th.text))
         c.addView(tv("1 unit = 1 panggilan; +1 unit tiap 50.000 char prompt yang dikirim (vc277). Tiap jenis — interaktif, latar, tim, reviewer — punya jatah 500 unit/hari sendiri.", 11.5f, th.dim))
+        // §3.2 (Fase 1): satu baris per provider Models API yang
+        // configured — counter per (provider, bucket), mengikuti pola
+        // tampilan Governor.count() di atas. Interaktif dicatat tapi
+        // tidak pernah digerbang (chat user tidak pernah diblokir).
+        try {
+            LlmProviderStore.hydrate(this)
+            val govActiveId = LlmProviderStore.activeId(this)
+            val govProviders = LlmProviders.all().filter { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+            if (govProviders.isEmpty()) {
+                c.addView(tv("Models API: belum ada provider — atur di Setup > 73. Provider LLM.", 12.5f, th.dim))
+            } else {
+                for (p in govProviders) {
+                    val pCap = Governor.capModels(this, p)
+                    val capStr = if (pCap == 0) "∞" else pCap.toString()
+                    val bg = Governor.countModels(this, p.id, Governor.MODELS_BUCKET_BG)
+                    val team = Governor.countModels(this, p.id, Governor.MODELS_BUCKET_TEAM)
+                    val rev = Governor.countModels(this, p.id, Governor.MODELS_BUCKET_REVIEWER)
+                    val inter = Governor.countModels(this, p.id, Governor.MODELS_BUCKET_INTERACTIVE)
+                    c.addView(tv(p.id + (if (p.id == govActiveId) " (AKTIF)" else "") + " — latar $bg/$capStr, tim $team/$capStr, reviewer $rev/$capStr, interaktif $inter (tidak dibatasi)", 12.5f, th.text))
+                }
+            }
+        } catch (e: Exception) { }
         c.addView(Button(this).apply {
             text = "Atur Kuota Harian unit (0 = tanpa batas)"
             setOnClickListener { inputDialog("Kuota Harian Gubernur", "angka 0..5000", cap.toString()) { v -> uiGovSet("cap", v); refreshSetupNative() } }

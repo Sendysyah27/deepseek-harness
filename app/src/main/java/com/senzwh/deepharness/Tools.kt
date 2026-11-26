@@ -185,6 +185,13 @@ object Tools {
     val RISKY_TOOLS: Set<String> = (ToolRegistry.namesByKind(ToolRegistry.Kind.WRITE) + ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)) - ToolRegistry.ALL.filter { it.name.startsWith("browser_") }.map { it.name }.toSet()
     val MEMORY_WRITE_TOOLS: Set<String> = ToolRegistry.namesByKind(ToolRegistry.Kind.MEMORY)
 
+    // §1 A3 (Fase 1): rate-limit llm_provider_ask — maks 1 panggilan per
+    // 5 detik per provider (in-memory, per proses). Tool ini TETAP DI LUAR
+    // KUOTA Governor (keputusan Sendy) — pembatas ini hanya mencegah
+    // jalan pintas boros kuota, bukan kuota baru.
+    private const val LLM_ASK_MIN_INTERVAL_MS = 5_000L
+    private val llmAskLastCallMs = mutableMapOf<String, Long>()
+
     fun isRisky(name: String) = if (ToolGate.GATES_DISABLED) false else name in RISKY_TOOLS
 
     // vc242 K-02: coord_rule peka-argumen — aksi set butuh gerbang,
@@ -2968,13 +2975,24 @@ object Tools {
                         val existingKey = LlmProviderStore.apiKey(ctx, id) ?: LlmProviders.find(id)?.apiKey
                         val effectiveKey = apiKeyArg ?: existingKey
                         val p = LlmProviders.addCustom(id, label, baseUrl, effectiveKey, model, true)
-                        LlmProviderStore.save(ctx, p)
-                        if (active) {
-                            LlmProviderStore.setActive(ctx, p.id)
-                            LlmProviders.setActive(p.id)
+                        // D6: gagal simpan → laporkan sebab, JANGAN klaim
+                        // "aktif" palsu (setActive/setCurrent hanya bila
+                        // simpan sukses).
+                        val saveError = LlmProviderStore.saveDetailed(ctx, p)
+                        if (saveError != null) {
+                            "⚠️ Gagal menyimpan provider: $saveError"
+                        } else {
+                            if (active) {
+                                LlmProviderStore.setActive(ctx, p.id)
+                                LlmProviders.setActive(p.id)
+                                // D6/C7: "aktif" di registry saja tidak
+                                // cukup — otak juga harus pindah ke
+                                // openai (sama seperti dialog provider).
+                                AgentEngines.setCurrent(ctx, "openai")
+                            }
+                            "Provider '${p.id}' disimpan — ${if (p.hasKey) "ada API key" else "BELUM ada API key"} — " +
+                                if (active) "sekarang AKTIF sebagai otak (Models API)." else "belum aktif (gunakan llm_provider_set active:true atau ganti via engine)."
                         }
-                        "Provider '${p.id}' disimpan — ${if (p.hasKey) "ada API key" else "BELUM ada API key"} — " +
-                            if (active) "sekarang AKTIF." else "belum aktif (gunakan llm_provider_set active:true atau ganti via engine)."
                     }
                 }
                 "llm_provider_ask" -> {
@@ -2989,15 +3007,75 @@ object Tools {
                         val key = if (targetId == LlmProviders.ID_DEEPSEEK) null else LlmProviderStore.apiKey(ctx, targetId)
                         if (prov.kind != LlmKind.OPENAI_COMPAT) {
                             "Provider '${prov.id}' bukan OpenAI-compatible (ini jalur DeepSeek, pakai chat normal)."
+                        } else if (!prov.enabled) {
+                            // A3: provider nonaktif tidak bisa ditanya walau
+                            // key-nya ada (client tidak mengecek enabled).
+                            "Provider '${prov.id}' nonaktif."
                         } else if (!prov.configured && (key == null || key.isBlank())) {
                             "Provider '${prov.id}' belum dikonfigurasi lengkap (baseUrl/model/apiKey). Pakai llm_provider_set."
                         } else {
-                            val usedKey = key ?: prov.apiKey
-                            try {
-                                val res = OpenAiCompatClient.ask(prov, usedKey, prompt)
-                                res.content
-                            } catch (e: Exception) {
-                                "Gagal memanggil provider '${prov.id}': ${e.message}"
+                            // A3: rate-limit 1 panggilan per 5 detik per
+                            // provider. TETAP DI LUAR KUOTA Governor
+                            // (keputusan Sendy) — tanpa bump apa pun.
+                            // Aturan jawaban-kosong sudah di ask() Fase 0
+                            // (throw) — mengalir lewat catch di bawah.
+                            val nowMs = System.currentTimeMillis()
+                            val lastMs = llmAskLastCallMs[targetId] ?: 0L
+                            if (nowMs - lastMs < LLM_ASK_MIN_INTERVAL_MS) {
+                                "Tunggu sebentar — llm_provider_ask untuk provider '${prov.id}' dibatasi 1 panggilan per 5 detik."
+                            } else {
+                                llmAskLastCallMs[targetId] = nowMs
+                                val usedKey = key ?: prov.apiKey
+                                try {
+                                    val res = OpenAiCompatClient.ask(prov, usedKey, prompt)
+                                    res.content
+                                } catch (e: Exception) {
+                                    "Gagal memanggil provider '${prov.id}': ${e.message}"
+                                }
+                            }
+                        }
+                    }
+                }
+                // §1 C3 (Fase 1): hapus provider kustom. Hapus = removeCustom
+                // + LlmProviderStore.delete (key SecureStore + cache
+                // models_<id> + counter Governor per-provider). Bila yang
+                // dihapus adalah provider AKTIF → aktif pindah ke provider
+                // configured pertama; bila tidak ada, laporkan "belum ada
+                // provider aktif" + pesan setup — JANGAN diam-diam ke
+                // deepseek.
+                "llm_provider_remove" -> {
+                    val id = args.optString("id").trim()
+                    if (id.isBlank()) "Harap isi 'id'."
+                    else {
+                        LlmProviderStore.hydrate(ctx)
+                        val target = LlmProviders.find(id)
+                        if (target == null) "Provider '$id' tidak dikenal. Daftar: llm_provider_list"
+                        else if (target.builtIn) "Provider '${target.id}' adalah provider bawaan — tidak bisa dihapus."
+                        else {
+                            val wasActive = LlmProviderStore.activeId(ctx) == id
+                            LlmProviders.removeCustom(id)
+                            LlmProviderStore.delete(ctx, id)
+                            val removedNote = "Provider '$id' dihapus (API key, cache daftar model, dan counter kuota Governor ikut dihapus)."
+                            if (!wasActive) removedNote
+                            else {
+                                val next = LlmProviders.all().firstOrNull { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+                                if (next != null) {
+                                    LlmProviderStore.setActive(ctx, next.id)
+                                    try { LlmProviders.setActive(next.id) } catch (e: Exception) { }
+                                    "$removedNote Provider '${next.id}' sekarang aktif."
+                                } else {
+                                    // Tidak ada provider tersisa: simpan
+                                    // sentinel "deepseek" sebagai "tidak ada
+                                    // provider aktif" (konvensi setActive —
+                                    // id tak dikenal → deepseek), supaya
+                                    // activeId tidak menunjuk id yang sudah
+                                    // dihapus. Ini BUKAN fallback otak:
+                                    // pref agentEngine tetap "openai",
+                                    // jadi helper melempar NO_PROVIDER
+                                    // sampai provider baru diatur.
+                                    LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
+                                    "$removedNote Belum ada provider aktif — atur provider baru di Setup > 73. Provider LLM."
+                                }
                             }
                         }
                     }

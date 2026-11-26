@@ -209,6 +209,7 @@ object BrainBackup {
             }
             zf.close()
             var skippedSettings = 0
+            var restoredEngine: String? = null
             if (settingsJson != null) {
                 val sj = JSONObject(settingsJson)
                 val ed = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit()
@@ -232,11 +233,34 @@ object BrainBackup {
                         is Int -> ed.putInt(k, v)
                         is Long -> ed.putLong(k, v)
                         is Double -> ed.putFloat(k, v.toFloat())
-                        is String -> ed.putString(k, RedactSecrets.redact(v))
+                        is String -> {
+                            // §1 C2 (Fase 1): catat nilai agentEngine hasil
+                            // restore — dinormalisasi sesudah apply() di
+                            // bawah (id kustom lama bukan engine).
+                            if (k == "agentEngine") restoredEngine = v
+                            ed.putString(k, RedactSecrets.redact(v))
+                        }
                         is Number -> ed.putLong(k, v.toLong())
                     }
                 }
                 ed.apply()
+                // §1 C2 (Fase 1): nilai backup agentEngine yang berupa id
+                // provider kustom lama BUKAN engine — petakan ke "openai"
+                // + activeId=id bila provider masih ada, else "deepseek"
+                // (selama transisi). Nilai "deepseek"/"local"/"openai"
+                // dan legacy "bridge"/"qwen"/"kimi" dibiarkan (current()
+                // sudah memetakan legacy → deepseek).
+                if (restoredEngine != null && restoredEngine !in setOf("deepseek", "local", "openai", "bridge", "qwen", "kimi")) {
+                    try {
+                        LlmProviderStore.hydrate(ctx)
+                        if (LlmProviders.find(restoredEngine) != null) {
+                            AgentEngines.setCurrent(ctx, "openai")
+                            LlmProviderStore.setActive(ctx, restoredEngine)
+                        } else {
+                            AgentEngines.setCurrent(ctx, "deepseek")
+                        }
+                    } catch (e: Exception) { }
+                }
                 // vc265 N2-M1 (defense in depth): backup yang di-restore
                 // SEBELUM fix ini mungkin sudah menulis antrean parkir
                 // legacy ke prefs — hapus eksplisit sesudah restore,

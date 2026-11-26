@@ -137,7 +137,14 @@ object LlmProviderStore {
      * SecureStore. Mengembalikan false bila gagal (dicatat EventDb + Log)
      * — pemanggil JANGAN menampilkan toast "aktif" palsu bila false.
      */
-    fun save(ctx: Context, provider: LlmProvider): Boolean {
+    fun save(ctx: Context, provider: LlmProvider): Boolean = saveDetailed(ctx, provider) == null
+
+    /**
+     * Seperti save(), tapi mengembalikan pesan sebab bila gagal (null bila
+     * sukses) — D6 butuh sebab itu di pesan tool ("⚠️ Gagal menyimpan
+     * provider: <sebab>"), bukan sekadar false yang menelan sebabnya.
+     */
+    fun saveDetailed(ctx: Context, provider: LlmProvider): String? {
         return try {
             val obj = JSONObject().apply {
                 put("id", provider.id)
@@ -158,11 +165,12 @@ object LlmProviderStore {
                 .putString(CFG_PREFIX + provider.id, obj.toString())
                 .apply()
             if (!provider.apiKey.isNullOrBlank()) setApiKey(ctx, provider.id, provider.apiKey!!)
-            true
+            null
         } catch (e: Exception) {
-            Log.e(TAG, "save provider '${provider.id}' gagal: ${e.message}")
-            try { EventDb.get(ctx).add("llm_provider", provider.id, "save gagal: ${e.message}") } catch (ignored: Exception) { }
-            false
+            val reason = e.message ?: e.toString()
+            Log.e(TAG, "save provider '${provider.id}' gagal: $reason")
+            try { EventDb.get(ctx).add("llm_provider", provider.id, "save gagal: $reason") } catch (ignored: Exception) { }
+            reason
         }
     }
 

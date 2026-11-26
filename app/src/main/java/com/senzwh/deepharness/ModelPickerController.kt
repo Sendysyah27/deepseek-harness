@@ -118,7 +118,9 @@ class ModelPickerController(
             if (closed) return
             debounceFuture = executor.schedule({ fetchNow() }, DEBOUNCE_MS, TimeUnit.MILLISECONDS)
         }
-        emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, message = "Memuat daftar model…"))
+        // F1: pertahankan pilihan lama selama LOADING — bila tidak, applyResult()
+        // membaca prevSelected = null dan cabang retensi/catatan "model hilang" mati.
+        emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, selectedModel = lastState.selectedModel, message = "Memuat daftar model…"))
     }
 
     /** Field base URL kehilangan fokus → fetch segera bila belum pernah sukses untuk URL ini. */
@@ -229,7 +231,8 @@ class ModelPickerController(
             gen = generation.incrementAndGet()
         }
         if (!isValidBaseUrl(url)) return
-        emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, message = "Memuat daftar model…"))
+        // F1: pertahankan pilihan lama selama LOADING (lihat onBaseUrlChanged).
+        emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, selectedModel = lastState.selectedModel, message = "Memuat daftar model…"))
         executor.execute {
             val result: ModelsResult = try {
                 listModelsFn(url, key)

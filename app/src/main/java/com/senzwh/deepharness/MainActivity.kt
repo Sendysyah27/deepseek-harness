@@ -53,8 +53,12 @@ class MainActivity : Activity() {
 
     internal lateinit var webView: WebView
     internal fun webViewReady(): Boolean = ::webView.isInitialized
-    private lateinit var agent: DsAgent
-    internal lateinit var apiClient: DsApiClient
+    // B13 (Fase 1): klien DeepSeek MALAS — nullable; dibuat hanya bila
+    // engine deepseek (startup) atau saat pertama kali jalur deepseek
+    // membutuhkannya (ensureDsClients). Engine openai TIDAK PERNAH
+    // membuat DsAgent/DsApiClient — semua pemakaian dijaga null.
+    private var agent: DsAgent? = null
+    internal var apiClient: DsApiClient? = null
     internal lateinit var statusTv: TextView
     internal lateinit var chatList: LinearLayout
     internal lateinit var chatScroll: ScrollView
@@ -1260,7 +1264,7 @@ class MainActivity : Activity() {
      *  putus di tengah jalan (mesin latar vc304/vc305). */
     private fun turnRunningVc308(): Boolean {
         if (turnActive || internalTurn) return true
-        return try { ::agent.isInitialized && agent.busy } catch (e: Exception) { false }
+        return try { agent?.busy == true } catch (e: Exception) { false }
     }
 
     /** Terapkan tema baru ke seluruh UI via recreate(). Bila giliran sedang
@@ -2563,7 +2567,7 @@ class MainActivity : Activity() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
-                if (url.contains("chat.deepseek.com")) { try { if (::apiClient.isInitialized && operatorMode()) apiClient.injectDeepSeekCaptureShim() } catch (e: Exception) {} }
+                if (url.contains("chat.deepseek.com")) { try { if (apiClient != null && operatorMode()) apiClient?.injectDeepSeekCaptureShim() } catch (e: Exception) {} }
                 main.postDelayed({ refreshSessionStatus() }, 1500)
             }
         }
@@ -2577,19 +2581,37 @@ class MainActivity : Activity() {
                 if (k.startsWith("qw") || k.startsWith("km")) { ed.remove(k); changed = true }
             }
             if (p.getString("agentEngine", "") == "qwen" || p.getString("agentEngine", "") == "kimi" || p.getString("agentEngine", "") == "bridge") {
-                ed.putString("agentEngine", "deepseek"); changed = true
+                AgentEngines.setCurrent(this, "deepseek"); changed = true
             }
             if (p.contains("bridgeModel")) { ed.remove("bridgeModel"); changed = true }
             if (changed) ed.apply()
         } catch (e: Exception) {}
-        agent = DsAgent(webView)
-        apiClient = DsApiClient(webView)
-        webView.loadUrl("https://chat.deepseek.com/")
+        // B13 (Fase 1): klien DeepSeek malas — HANYA bila engine deepseek.
+        // Engine openai tidak membuat DsAgent/DsApiClient sama sekali;
+        // klien dibuat nanti oleh ensureDsClients() bila jalur deepseek
+        // membutuhkannya (mis. ganti profil agen ke deepseek).
+        if (AgentEngines.current(this) != "openai") {
+            agent = DsAgent(webView)
+            apiClient = DsApiClient(webView)
+            webView.loadUrl("https://chat.deepseek.com/")
+        }
     }
 
     private fun refreshSessionStatus() {
-        if (!::agent.isInitialized) return
-        agent.probe { st ->
+        // B13: engine openai tidak punya sesi DeepSeek — status awal
+        // dibaca dari provider Models API yang aktif.
+        if (AgentEngines.current(this) == "openai") {
+            val prov = try { LlmProviderStore.hydrate(this); LlmProviders.activeProvider() } catch (e: Exception) { null }
+            statusTv.text = if (prov != null && prov.kind == LlmKind.OPENAI_COMPAT && prov.configured) {
+                "Models API: AKTIF — asisten siap."
+            } else {
+                val label = if (prov != null && prov.kind == LlmKind.OPENAI_COMPAT) prov.label else "OpenAI"
+                "Models API: $label — atur via Setup > 73 bila belum."
+            }
+            return
+        }
+        val dsAgent = agent ?: return
+        dsAgent.probe { st ->
             runOnUiThread {
                 statusTv.text = when (st) {
                     "READY" -> "Sesi DeepSeek: LOGIN AKTIF — asisten siap."
@@ -2598,6 +2620,31 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    /**
+     * B13 lazy: buat DsAgent/DsApiClient saat pertama kali jalur deepseek
+     * membutuhkannya. Jalur ini DIPERLUKAN walau startup openai: engine
+     * bisa beralih ke deepseek saat aplikasi jalan (Agents.apply() menulis
+     * agentEngine saat ganti profil agen). Mengembalikan false bila engine
+     * openai (klien TIDAK dibuat) atau WebView belum siap — pemanggil WAJIB
+     * gagal jujur, bukan NPE. Konstruktor hanya menyimpan referensi WebView
+     * (aman di thread mana pun); loadUrl dilempar ke main thread bila perlu.
+     */
+    private fun ensureDsClients(): Boolean {
+        if (agent != null && apiClient != null) return true
+        if (AgentEngines.current(this) == "openai") return false
+        if (!::webView.isInitialized) return false
+        return try {
+            if (agent == null) agent = DsAgent(webView)
+            if (apiClient == null) apiClient = DsApiClient(webView)
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                webView.loadUrl("https://chat.deepseek.com/")
+            } else {
+                runOnUiThread { try { webView.loadUrl("https://chat.deepseek.com/") } catch (e: Exception) {} }
+            }
+            true
+        } catch (e: Exception) { false }
     }
 
     // ---------------- Chat + agent loop ----------------
@@ -4512,7 +4559,13 @@ class MainActivity : Activity() {
                         runOnUiThread { addBubble("⚠️ Semua lampiran gagal dibaca, tidak ada yang dikirim: " + failedRead.joinToString("; "), false) }
                     } else {
                     val prompt = "Konteks dari user: " + contextText + "\n\nBaca semua berkas terlampir berikut dan jawab sesuai konteks di atas. " + (if (failedRead.isNotEmpty()) "Catatan: berkas berikut GAGAL dibaca dan TIDAK ikut diunggah: " + failedRead.joinToString(", ") + ". Sebutkan kegagalan ini di jawabanmu." else "")
-                    apiClient.uploadFilesAndAsk(files, prompt, false, { answer, failedUp ->
+                    // B13: klien DeepSeek bisa belum ada (startup openai) —
+                    // gagal jujur + fallback per berkas seperti jalur error.
+                    val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
+                    if (dsClientVc212 == null) {
+                        runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: engine DeepSeek belum siap (otak = Models API) — fallback per berkas dengan konteks yang sama.", false) }
+                        for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
+                    } else dsClientVc212.uploadFilesAndAsk(files, prompt, false, { answer, failedUp ->
                         runOnUiThread {
                             val failNote = if (failedRead.isNotEmpty() || failedUp.isNotEmpty()) "\n\n⚠️ Berkas yang gagal diunggah (tidak dibaca model). Ini BUKAN karena agen tidak bisa menerima file — alasan gagal per berkas: " + (failedRead + failedUp).joinToString("; ") + ". Sampaikan alasan ini apa adanya ke user, jangan jawab 'tidak bisa menerima file'." else ""
                             sendContinuation("Hasil lampiran multi-file (jalur lampiran: upload penuh via API Internal):\n" + answer + failNote + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.")
@@ -4574,7 +4627,12 @@ class MainActivity : Activity() {
                 val bos = java.io.ByteArrayOutputStream()
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
-                apiClient.uploadFileAndAsk(jpegBytes, "frame.jpg", "image/jpeg", "Jelaskan adegan pada frame video ini secara singkat.", false, { answer ->
+                // B13: klien DeepSeek bisa belum ada (startup openai).
+                val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
+                if (dsClientVc212 == null) {
+                    acc.add("GAGAL: engine DeepSeek belum siap (otak = Models API)")
+                    analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
+                } else dsClientVc212.uploadFileAndAsk(jpegBytes, "frame.jpg", "image/jpeg", "Jelaskan adegan pada frame video ini secara singkat.", false, { answer ->
                     acc.add(answer)
                     analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
                 }, { err ->
@@ -5081,6 +5139,16 @@ class MainActivity : Activity() {
                                     if (combined.length > 3000) combined = combined.takeLast(3000)
                                     prefsS.edit().putString("histSummary_" + currentSessionId, combined).putString("histSummaryHash_" + currentSessionId, hashVc212).apply()
                                     try { runOnUiThread { try { addMsg("🧠 Ringkasan riwayat lama dibuat dari potongan yang dipangkas guard (belum terverifikasi — angka/nama di sini bisa salah) — berlaku mulai giliran berikut.", "meta", turn = true) } catch (e: Exception) {} } } catch (e: Exception) {}
+                                } else {
+                                    // B11/D2 (Fase 1): meta jujur sekali per sesi bila
+                                    // ringkasan gagal dibuat (provider gagal / kuota
+                                    // habis) — konteks lama yang terpotong guard
+                                    // tidak tersimpan.
+                                    val failMetaKeyVc212 = "histSummaryFailMeta_" + currentSessionId
+                                    if (!prefsS.getBoolean(failMetaKeyVc212, false)) {
+                                        prefsS.edit().putBoolean(failMetaKeyVc212, true).apply()
+                                        try { runOnUiThread { try { addMsg("🧠 Ringkasan riwayat lama tidak dibuat (provider gagal / kuota habis) — konteks lama yang terpotong guard tidak tersimpan.", "meta", turn = true) } catch (e: Exception) {} } } catch (e: Exception) {}
+                                    }
                                 }
                             }
                         } catch (e: Exception) {}
@@ -8067,7 +8135,7 @@ class MainActivity : Activity() {
     }
 
     /** Bila error bernuansa jaringan, coba jawab lokal (mode offline darurat). */
-    private fun tryOfflineFallback(err: String): Boolean {
+    private fun tryOfflineFallback(err: String, engineName: String): Boolean {
         val low = err.lowercase()
         val networkish = listOf("connect", "timeout", "unknown", "resolve", "ssl", "jaringan", "network", "unreachable")
             .any { low.contains(it) }
@@ -8075,7 +8143,7 @@ class MainActivity : Activity() {
         val t = lastUserText
         if (t.isBlank() || t.startsWith("Hasil tool") || t.startsWith("TUGAS LATAR") || t.startsWith("VERIFIKASI")) return false
         val local = LocalAgent.tryHandle(this, t) ?: return false
-        addBubble("📴 Koneksi ke DeepSeek bermasalah — dijawab mode OFFLINE lokal:\n$local", false, turn = true)
+        addBubble("📴 Koneksi ke $engineName bermasalah — dijawab mode OFFLINE lokal:\n$local", false, turn = true)
         // vc304 B2: jawaban fallback offline milik giliran ini — simpan ke
         // histori sesi PEMILIK giliran (turnSessionId), bukan sesi aktif
         // saat ini (dulu: currentSessionId — bocor ke sesi lain bila
@@ -8116,7 +8184,12 @@ class MainActivity : Activity() {
                             fallbackDocVc212(cacheF, name, ext, qDoc)
                         } else {
                             val promptDoc = "Baca dokumen terlampir '" + name + "' SELURUHNYA. " + (if (qDoc.isNotBlank()) "Pertanyaan user: $qDoc" else "Ringkas isi dokumen ini secara lengkap dan tunjukkan hal penting di dalamnya.") + "\n\nJawab dalam Bahasa Indonesia."
-                            apiClient.uploadFilesAndAsk(listOf(Triple(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, false, { answer, _ ->
+                            // B13: klien DeepSeek bisa belum ada (startup openai).
+                            val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
+                            if (dsClientVc212 == null) {
+                                runOnUiThread { addBubble("📄 Status parsing server: GAGAL (engine DeepSeek belum siap — otak = Models API) — fallback ke perilaku lama untuk '" + name + "'.", false) }
+                                fallbackDocVc212(cacheF, name, ext, qDoc)
+                            } else dsClientVc212.uploadFilesAndAsk(listOf(Triple(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, false, { answer, _ ->
                                 runOnUiThread { addBubble("📄 Status parsing server: SUCCESS — dokumen '" + name + "' dibaca penuh lewat API.", false); sendContinuation("Hasil baca dokumen '" + name + "' (teks penuh via API internal; jalur lampiran: upload penuh via API Internal):\n" + answer + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.") }
                             }, { err ->
                                 runOnUiThread { addBubble("📄 Status parsing server: GAGAL (" + err + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
@@ -8170,7 +8243,14 @@ class MainActivity : Activity() {
                         runOnUiThread {
                             showTab("Web")
                             addBubble("🎵 Audio '" + name + "' — mengirim lewat Web untuk transkripsi…", false)
-                            agent.attachFile(b64, name, mime, question.ifBlank { "Transkrip dan ringkas isi audio ini." }, { resp ->
+                            // B13: DsAgent bisa belum ada (startup openai) —
+                            // ini jalan di main thread (runOnUiThread), jadi
+                            // akses langsung di sini akan crash bila null.
+                            val dsAgentVc212 = agent ?: if (ensureDsClients()) agent else null
+                            if (dsAgentVc212 == null) {
+                                endStreamBubble(); showTab("Chat")
+                                addBubble("⚠️ Analisa audio lewat Web gagal: engine DeepSeek belum siap (otak = Models API)", false)
+                            } else dsAgentVc212.attachFile(b64, name, mime, question.ifBlank { "Transkrip dan ringkas isi audio ini." }, { resp ->
                                 endStreamBubble(); showTab("Chat")
                                 addBubble("🎵 Audio '" + name + "' terkirim lewat Web — jawaban model di bawah.", false)
                                 handleAgentResponse(resp)
@@ -8729,10 +8809,17 @@ class MainActivity : Activity() {
                 },
                 { err ->
                     endStreamBubble()
-                    if (!tryOfflineFallback(err)) {
+                    if (!tryOfflineFallback(err, "Models API (" + prov.label + ")")) {
                         addBubble("⚠️ $err", false, turn = true)
                     }
                 })
+            return
+        }
+        // B13: jalur deepseek butuh klien DeepSeek — buat malas bila
+        // engine beralih ke deepseek sesudah startup openai.
+        if (!ensureDsClients()) {
+            endStreamBubble()
+            addBubble("⚠️ Engine DeepSeek belum siap — buka tab Web / chat 1-1 dulu.", false, turn = true)
             return
         }
         val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
@@ -8780,7 +8867,7 @@ class MainActivity : Activity() {
                 return
             }
             val chatFn: (String, Boolean, Boolean, (String) -> Unit, (String, String) -> Unit, (String) -> Unit) -> Unit =
-                { p, t, s, op, od, oe -> apiClient.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
+                { p, t, s, op, od, oe -> apiClient?.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
             chatFn(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
                 // Giliran senyap (verifikasi/ekstraksi): JANGAN tampilkan teks mentah —
                 // proses mikir model bisa bocor jadi bubble sampah. Cukup label status.
@@ -8793,7 +8880,7 @@ class MainActivity : Activity() {
                 handleAgentResponse(resp)
             }, { err ->
                 endStreamBubble()
-                if (!tryOfflineFallback(err)) {
+                if (!tryOfflineFallback(err, "DeepSeek")) {
                     addBubble("⚠️ $err\nJatuh kembali ke jalur WebView…", false, turn = true)
                     runOnUiThread { sendViaWebView(prompt) }
                 }
@@ -9056,10 +9143,19 @@ class MainActivity : Activity() {
 
 
     private fun sendViaWebView(prompt: String) {
+        // B13: jalur WebView butuh DsAgent — buat malas bila belum ada.
+        if (!ensureDsClients()) {
+            endStreamBubble()
+            addBubble("⚠️ Engine DeepSeek belum siap — buka tab Web / chat 1-1 dulu.", false, turn = true)
+            pendingEndReason = "error"
+            verifyTurn = false // vc232 S7: giliran verifikasi yang gagal terminal tidak boleh bocor
+            endUserTurn()
+            return
+        }
         turnSource = "WebView"
         turnThinking = ""
         val silent = internalTurn || verifyTurn
-        agent.sendAndAwait(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
+        agent?.sendAndAwait(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
             if (silent) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
             else updateStreamBubble(partial)
         }, { resp ->
@@ -9068,7 +9164,7 @@ class MainActivity : Activity() {
             handleAgentResponse(resp)
         }, { err ->
             endStreamBubble()
-            if (!tryOfflineFallback(err)) addBubble("⚠️ $err", false, turn = true)
+            if (!tryOfflineFallback(err, "DeepSeek")) addBubble("⚠️ $err", false, turn = true)
             pendingEndReason = "error"
             verifyTurn = false // vc232 S7: giliran verifikasi yang gagal terminal tidak boleh bocor
             endUserTurn()
@@ -9547,6 +9643,15 @@ class MainActivity : Activity() {
                 addMsg("🧩 Panggilan tool model terdeteksi di fragmen berpikir (format $rescueKind) — diselamatkan & dijalankan (gerbang vc247 nonaktif: rescue TIDAK dibatasi tool baca SAFE — tercatat di ledger).", "meta", turn = true)
             }
             turnThinking = ""
+        }
+        // D4 (Fase 1) sabuk pengaman kedua: jawaban kosong = gagal jujur,
+        // bukan giliran senyap. (Lapis pertama sudah di client Fase 0.)
+        // Ditempatkan sesudah rescue thinking — tool call yang diselamatkan
+        // dari fragmen berpikir tetap jalan walau respRaw kosong.
+        if (respRaw.isBlank() && obj == null) {
+            addBubble("⚠️ Model mengembalikan jawaban kosong — tidak ada jawaban atau tool call. Coba kirim ulang.", false, turn = true)
+            endUserTurn()
+            return
         }
         // vc282: pseudo tool_choice — tugas yang menuntut tool tertentu
         // (forcedToolVc282 dari pesan user) dicek di sini: bila model tidak
@@ -10915,7 +11020,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Tunggu preview kamera siap dulu.", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!::apiClient.isInitialized) {
+        if (apiClient == null) {
             addBubble("⚠️ Mode live butuh tab Web yang sudah login — buka tab Web dan login DeepSeek dulu, lalu mulai lagi.", false)
             return
         }
@@ -11003,7 +11108,7 @@ class MainActivity : Activity() {
         val prompt = baseQ + "\n\n(Frame live kamera ke-$n, pukul $time. " + gapVc230 + "Deskripsi frame sebelumnya: " + (if (camLastDesc.isBlank()) "-" else camLastDesc.take(500)) + ". Tugas: deskripsikan apa yang terlihat sekarang secara singkat dan faktual; bila ada perubahan dari frame sebelumnya, sebutkan perubahannya dulu; bila pertanyaan di atas bersifat spesifik atau ya-tidak, jawab itu dulu. Jangan mengidentifikasi individu — deskripsikan objek dan aktivitas saja.)"
         val thinking = isDeepPhotoRequestVc212(camQuestion)
         try {
-            apiClient.uploadFileAndAsk(bytes, "live-frame.jpg", "image/jpeg", prompt, thinking, { answer ->
+            apiClient?.uploadFileAndAsk(bytes, "live-frame.jpg", "image/jpeg", prompt, thinking, { answer ->
                 runOnUiThread {
                     camAnalyzing = false
                     camFail = 0
@@ -11107,7 +11212,13 @@ class MainActivity : Activity() {
                         getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false)
                 } catch (e: Exception) { false }
                 if (useApi) {
-                    apiClient.uploadFileAndAsk(jpegBytes, "harness-photo.jpg", "image/jpeg", question, wantThinkPhoto, { answer ->
+                    // B13: klien DeepSeek bisa belum ada (startup openai +
+                    // alih engine saat jalan) — jatuh ke jalur Web yang
+                    // gagal jujur bila klien tetap tidak ada.
+                    val dsClientPhoto = apiClient ?: if (ensureDsClients()) apiClient else null
+                    if (dsClientPhoto == null) {
+                        runOnUiThread { webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn) }
+                    } else dsClientPhoto.uploadFileAndAsk(jpegBytes, "harness-photo.jpg", "image/jpeg", question, wantThinkPhoto, { answer ->
                         runOnUiThread {
                             endStreamBubble()
                             showTab("Chat")
@@ -11156,8 +11267,25 @@ class MainActivity : Activity() {
     // vc254: baris + t0 + args foto diteruskan dari analyzePhotoAndContinue
     // agar titik akhir jalur Web juga memperbarui baris yang sama.
     private fun webAnalyzePhoto(b64: String, question: String, photoRowVc254: ActivityRowHandle?, t0PhotoVc254: Long, photoArgsVc254: JSONObject, turn: Boolean = false) {
+        // B13: jalur Web butuh DsAgent — gagal jujur bila belum ada
+        // (cermin blok gagal di bawah, supaya foto tidak diam-diam hilang).
+        val webAgent = agent ?: if (ensureDsClients()) agent else null
+        if (webAgent == null) {
+            val errDs = "engine DeepSeek belum siap (otak = Models API)"
+            endStreamBubble()
+            showTab("Chat")
+            addBubble("⚠️ Analisa foto gagal: $errDs", false, turn = turn)
+            renderPendingAskVc229()
+            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
+            photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, false)
+            photoRowVc254?.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", photoArgsVc254) + "\nHasil: GAGAL — $errDs"
+            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — $errDs", args = photoArgsVc254.toString().take(4000)))
+            try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — $errDs, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
+            sendContinuation("Hasil tool analyze_photo: GAGAL — $errDs. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+            return
+        }
         showTab("Web")
-        agent.analyzeImage(b64, question, { resp ->
+        webAgent.analyzeImage(b64, question, { resp ->
             endStreamBubble()
             showTab("Chat")
             val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
@@ -12739,50 +12867,515 @@ class MainActivity : Activity() {
     }
 
 internal fun showLlmProviderDialog() {
-        val ctx = this
-        val th = currentTheme()
-        LlmProviderStore.hydrate(ctx)
-        val lay = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val curAct = LlmProviderStore.activeId(ctx)
-        lay.addView(tv("Otak aktif: $curAct", 12.5f, th.dim))
-        val provIdEt = EditText(ctx).apply { hint = "id (mis. openai, openrouter, ollama)"; setText(if (curAct == LlmProviders.ID_DEEPSEEK) "openai" else curAct); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        val labelEt = EditText(ctx).apply { hint = "label (mis. OpenAI)"; setText(LlmProviders.find(curAct)?.label ?: "OpenAI"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        val baseEt = EditText(ctx).apply { hint = "base_url (https://api.openai.com/v1)"; setText(LlmProviders.find(curAct)?.baseUrl ?: "https://api.openai.com/v1"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        val modelEt = EditText(ctx).apply { hint = "model (gpt-4o-mini, llama3, ...)"; setText(LlmProviders.find(curAct)?.model ?: "gpt-4o-mini"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        val keyEt = EditText(ctx).apply { hint = "api_key (disimpan terenkripsi, tidak pernah tampil)"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
-        lay.addView(provIdEt); lay.addView(labelEt); lay.addView(baseEt); lay.addView(modelEt); lay.addView(keyEt)
-        thDialog("🧠 Provider LLM", lay, listOf(
-            Triple("Simpan & Aktifkan", true) { dd: android.app.AlertDialog ->
-                val id = provIdEt.text.toString().trim()
-                val label = labelEt.text.toString().trim()
-                val base = baseEt.text.toString().trim()
-                val model = modelEt.text.toString().trim()
-                val key = keyEt.text.toString().trim().ifBlank { LlmProviderStore.apiKey(ctx, id) }
-                if (id.isBlank() || label.isBlank() || base.isBlank() || model.isBlank()) {
-                    Toast.makeText(ctx, "id/label/base_url/model wajib diisi.", Toast.LENGTH_SHORT).show()
-                } else {
-                    try {
-                        val p = LlmProviders.addCustom(id, label, base, key, model, true)
-                        LlmProviderStore.save(ctx, p)
-                        LlmProviderStore.setActive(ctx, p.id)
-                        LlmProviders.setActive(p.id)
-                        getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("agentEngine", "openai").apply()
-                        Toast.makeText(ctx, "Provider '${p.id}' aktif. Otak = Models API.", Toast.LENGTH_LONG).show()
-                        dd.dismiss()
-                    } catch (e: Exception) {
-                        Toast.makeText(ctx, "Gagal: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            },
-            Triple("Pakai DeepSeek Web", false) { dd: android.app.AlertDialog ->
-                LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
-                LlmProviders.setActive(LlmProviders.ID_DEEPSEEK)
-                getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("agentEngine", "deepseek").apply()
-                Toast.makeText(ctx, "Otak kembali ke DeepSeek Web.", Toast.LENGTH_SHORT).show(); dd.dismiss()
-            },
-            Triple("Batal", false) { dd: android.app.AlertDialog -> dd.dismiss() }
-        ))
+    val ctx = this
+    val th = currentTheme()
+    // D12 (Fase 1) — dialog 73 (frame FigCraft 21/22/23): daftar provider
+    // tersimpan di ATAS + form tambah/edit dengan picker model auto-fetch,
+    // tes koneksi, simpan-aktifkan, dan hapus. Perbaikan fungsional minimal
+    // pada struktur lama — BUKAN rewrite form bersama first-run (Fase 5).
+    // - Label default TIDAK LAGI "DeepSeek (API Internal / Web)" untuk id
+    //   "openai" (label awal = label preset, atau "OpenAI").
+    // - Tombol "Pakai DeepSeek Web" DIHAPUS (K1).
+    // - Key TIDAK PERNAH tampil: field selalu kosong saat dibuka; kosong =
+    //   pakai key tersimpan lama. Key juga tidak pernah masuk log/pesan.
+    var listDlg: AlertDialog? = null
+
+    // Key efektif untuk tes: key terisi -> dipakai; kosong + base URL lokal
+    // (Ollama) -> placeholder "ollama" (server lokal mengabaikan header
+    // auth); kosong + bukan lokal -> null (tes tidak jalan, minta isi key).
+    fun testKeyFor(baseUrl: String, key: String?): String? {
+        if (!key.isNullOrBlank()) return key
+        return if (LlmProviders.isLocalBaseUrl(baseUrl)) "ollama" else null
     }
+
+    // Tes koneksi satu provider tersimpan (baris daftar): hasil tampil di
+    // baris status baris itu — BUKAN toast yang hilang (§5.6).
+    fun testProviderRow(p: LlmProvider, statusTv: TextView) {
+        val key = testKeyFor(p.baseUrl, LlmProviderStore.apiKey(ctx, p.id))
+        if (key == null) {
+            statusTv.text = "✕ API key belum diisi — isi key di form edit."
+            return
+        }
+        statusTv.text = "Mengetes… (timeout 30 dtk)"
+        Thread {
+            try {
+                OpenAiCompatClient.ask(p, key, "ping", timeoutMs = 30_000)
+                runOnUiThread { statusTv.text = "✓ Terhubung — model ${p.model} menjawab" }
+            } catch (e: Exception) {
+                val msg = RedactSecrets.redact(e.message ?: "gagal")
+                runOnUiThread { statusTv.text = "✕ $msg" }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    // Hapus provider (C3): removeCustom + store.delete — key SecureStore +
+    // cache models + counter Governor ikut terhapus di delete(). Bila yang
+    // dihapus adalah provider AKTIF -> aktif kembali ke provider pertama
+    // yang configured; bila tidak ada -> "belum ada provider aktif" +
+    // pesan setup. Engine TETAP openai (JANGAN diam-diam ke deepseek).
+    fun confirmDeleteProvider(p: LlmProvider, onDone: () -> Unit) {
+        val wasActive = LlmProviderStore.activeId(ctx) == p.id || LlmProviders.activeId() == p.id
+        AlertDialog.Builder(ctx)
+            .setTitle("Hapus provider?")
+            .setMessage("Hapus provider '${p.label}' (${p.id})?\n\nAPI key, cache daftar model, dan counter kuota provider ini ikut dihapus." + if (wasActive) "\n\nProvider ini sedang AKTIF — sesudah dihapus, provider pertama yang configured akan diaktifkan. Bila tidak ada, belum ada provider aktif sampai kamu mengatur yang baru." else "")
+            .setPositiveButton("Hapus") { _, _ ->
+                LlmProviders.removeCustom(p.id)
+                LlmProviderStore.delete(ctx, p.id)
+                if (wasActive) {
+                    val next = LlmProviders.all().firstOrNull { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+                    if (next != null) {
+                        LlmProviderStore.setActive(ctx, next.id)
+                        LlmProviders.setActive(next.id)
+                        AgentEngines.setCurrent(ctx, "openai")
+                        Toast.makeText(ctx, "Provider '${p.id}' dihapus. Provider aktif kini '${next.label}'.", Toast.LENGTH_LONG).show()
+                    } else {
+                        // Registry/store jatuh ke deepseek internal (fallback
+                        // registry Fase 0) — TAPI engine tetap openai, jadi
+                        // chat memberi pesan "Otak belum diatur" yang jujur.
+                        LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
+                        AgentEngines.setCurrent(ctx, "openai")
+                        Toast.makeText(ctx, "Provider '${p.id}' dihapus. Belum ada provider aktif — atur provider di Setup > 73.", Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(ctx, "Provider '${p.id}' dihapus.", Toast.LENGTH_SHORT).show()
+                }
+                onDone()
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    // ---- Form tambah/edit (dialog sendiri, di atas daftar) ----
+    fun openFormDialog(existing: LlmProvider?) {
+        val preset = existing?.let { LlmProviders.preset(it.id) }
+        val idTaken = existing == null && LlmProviders.find("openai") != null
+        val initId = existing?.id ?: if (idTaken) "" else "openai"
+        val initLabel = existing?.label ?: preset?.label ?: "OpenAI"
+        val initBase = existing?.baseUrl ?: preset?.baseUrl ?: "https://api.openai.com/v1"
+        val initModel = existing?.model ?: preset?.model ?: "gpt-4o-mini"
+        var formDlg: AlertDialog? = null
+
+        // ---- state form ----
+        val editingId: String? = existing?.id
+        var testSucceeded = false
+        var pickerController: ModelPickerController? = null
+        var pickerState: ModelPickerState? = null
+        var currentModel: String? = initModel
+        var spinnerModels: List<ModelInfo> = emptyList()
+        var suppressSpinnerEvent = false
+        var controllerProviderId = initId
+        var refreshSaveEnabledFn: (() -> Unit)? = null
+
+        // ---- field ----
+        val provIdEt = EditText(ctx).apply { hint = "id (mis. openai, openrouter, ollama)"; setText(initId); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val labelEt = EditText(ctx).apply { hint = "label (mis. OpenAI)"; setText(initLabel); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val baseEt = EditText(ctx).apply { hint = "base_url (https://api.openai.com/v1)"; setText(initBase); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val keyEt = EditText(ctx).apply { hint = "api_key (disimpan terenkripsi, tidak pernah tampil)"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val keyHelperTv = tv(if (existing != null && LlmProviderStore.apiKey(ctx, existing.id) != null) "Key tersimpan — kosongkan bila tidak diganti." else "Ollama lokal tidak butuh key.", 12f, th.dim)
+        val modelSpinner = Spinner(ctx)
+        val pickerStatusTv = tv("Isi base URL dulu — daftar model akan muncul otomatis.", 12f, th.dim)
+        val retryBtn = thSmallBtn("⟳ Coba lagi") {}
+        val manualBtn = thSmallBtn("Isi model manual") {}
+        val reloadBtn = thSmallBtn("⟳ Muat ulang") {}
+        val manualEt = EditText(ctx).apply { hint = "model (mis. gpt-4o-mini)"; setText(initModel); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)); visibility = View.GONE }
+        val capEt = EditText(ctx).apply { hint = "dailyCapUnits (kosong = pakai global)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText(existing?.dailyCapUnits?.toString() ?: ""); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val maxPromptEt = EditText(ctx).apply { hint = "maxPromptChars (kosong = default)"; inputType = android.text.InputType.TYPE_CLASS_NUMBER; setText(existing?.maxPromptChars?.toString() ?: ""); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val guardToggle = tv("Pengaturan lanjutan ▾", 12.5f, th.text, true).apply { setPadding(0, dp(8), 0, dp(4)) }
+        val guardBox = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        guardBox.addView(capEt); guardBox.addView(maxPromptEt)
+        guardToggle.setOnClickListener {
+            val open = guardBox.visibility != View.VISIBLE
+            guardBox.visibility = if (open) View.VISIBLE else View.GONE
+            guardToggle.text = if (open) "Pengaturan lanjutan ▴" else "Pengaturan lanjutan ▾"
+        }
+        val formStatusTv = tv("", 12.5f, th.errText).apply { visibility = View.GONE }
+        val testStatusTv = tv("Belum dites", 12f, th.dim)
+        val baseRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        baseEt.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        val refreshBaseBtn = thSmallBtn("⟳") {}
+        baseRow.addView(baseEt); baseRow.addView(refreshBaseBtn)
+
+        fun visionBadge(v: VisionSupport): String = when (v) {
+            VisionSupport.SUPPORTED -> "👁 Vision"
+            VisionSupport.UNSUPPORTED -> "—"
+            else -> "👁?"
+        }
+
+        fun setSpinnerItems(labels: List<String>, enabled: Boolean, selectedId: String? = null) {
+            modelSpinner.isEnabled = enabled
+            val adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_item, labels)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            suppressSpinnerEvent = true
+            modelSpinner.adapter = adapter
+            if (selectedId != null) {
+                val idx = spinnerModels.indexOfFirst { it.id == selectedId }
+                if (idx >= 0) modelSpinner.setSelection(idx)
+            }
+        }
+
+        // Render SATU state picker (§5.10.3). Callback controller datang dari
+        // thread worker — pemanggil WAJIB post ke main thread (di bindPicker).
+        fun renderPickerState(state: ModelPickerState) {
+            pickerState = state
+            if (state.selectedModel != null) currentModel = state.selectedModel
+            when (state.kind) {
+                ModelPickerKind.IDLE -> {
+                    spinnerModels = emptyList()
+                    setSpinnerItems(listOf(state.message ?: "Isi base URL dulu — daftar model akan muncul otomatis."), enabled = false)
+                    pickerStatusTv.text = state.message ?: ""
+                    pickerStatusTv.setTextColor(th.dim)
+                    retryBtn.visibility = View.GONE; manualBtn.visibility = View.GONE; reloadBtn.visibility = View.GONE
+                    manualEt.visibility = View.GONE
+                }
+                ModelPickerKind.LOADING -> {
+                    spinnerModels = emptyList()
+                    setSpinnerItems(listOf("Memuat daftar model…"), enabled = false)
+                    pickerStatusTv.text = state.message ?: "Memuat daftar model…"
+                    pickerStatusTv.setTextColor(th.dim)
+                    retryBtn.visibility = View.GONE; manualBtn.visibility = View.GONE; reloadBtn.visibility = View.GONE
+                    manualEt.visibility = View.GONE
+                }
+                ModelPickerKind.LOADED -> {
+                    spinnerModels = state.models
+                    setSpinnerItems(state.models.map { m -> m.id + "  " + visionBadge(m.vision) }, enabled = true, selectedId = state.selectedModel)
+                    pickerStatusTv.text = state.message ?: ""
+                    pickerStatusTv.setTextColor(th.dim)
+                    retryBtn.visibility = View.GONE; manualBtn.visibility = View.GONE
+                    reloadBtn.visibility = View.VISIBLE; reloadBtn.text = "⟳ Muat ulang"
+                    manualEt.visibility = View.GONE
+                }
+                ModelPickerKind.ERROR -> {
+                    spinnerModels = emptyList()
+                    setSpinnerItems(listOf("Gagal memuat daftar model"), enabled = false)
+                    pickerStatusTv.text = state.message ?: "Gagal memuat daftar model."
+                    pickerStatusTv.setTextColor(th.errText)
+                    retryBtn.visibility = View.VISIBLE; manualBtn.visibility = View.VISIBLE; reloadBtn.visibility = View.GONE
+                    manualEt.visibility = View.GONE
+                }
+                ModelPickerKind.EMPTY -> {
+                    spinnerModels = emptyList()
+                    setSpinnerItems(listOf("Tidak ada model"), enabled = false)
+                    pickerStatusTv.text = state.message ?: "Provider menjawab tapi tidak mengembalikan model apa pun."
+                    pickerStatusTv.setTextColor(th.errText)
+                    retryBtn.visibility = View.VISIBLE; manualBtn.visibility = View.VISIBLE; reloadBtn.visibility = View.GONE
+                    manualEt.visibility = View.GONE
+                }
+                ModelPickerKind.MANUAL -> {
+                    setSpinnerItems(listOf("Mode manual — daftar tidak dimuat."), enabled = false)
+                    pickerStatusTv.text = state.message ?: "Mode manual — daftar tidak dimuat."
+                    pickerStatusTv.setTextColor(th.dim)
+                    retryBtn.visibility = View.GONE; manualBtn.visibility = View.GONE
+                    reloadBtn.visibility = View.VISIBLE; reloadBtn.text = "⟳ Coba muat daftar"
+                    manualEt.visibility = View.VISIBLE
+                }
+                ModelPickerKind.AUTH_NEEDED -> {
+                    spinnerModels = emptyList()
+                    setSpinnerItems(listOf("Butuh API key"), enabled = false)
+                    pickerStatusTv.text = state.message ?: "Provider ini butuh API key untuk melihat daftar model — isi API key di bawah."
+                    pickerStatusTv.setTextColor(th.errText)
+                    retryBtn.visibility = View.GONE; manualBtn.visibility = View.VISIBLE; reloadBtn.visibility = View.GONE
+                    manualEt.visibility = View.GONE
+                    keyEt.requestFocus()
+                }
+            }
+            refreshSaveEnabledFn?.invoke()
+        }
+
+        // (Re)ikat controller ke id provider saat ini. Key tersimpan dipakai
+        // untuk fetch (tidak pernah ditampilkan); field key tetap kosong.
+        fun bindPicker(providerId: String) {
+            controllerProviderId = providerId
+            try { pickerController?.close() } catch (e: Exception) {}
+            val storedKey = LlmProviderStore.apiKey(ctx, providerId)
+            val c = ModelPickerController(ctx, providerId, onStateChanged = { st -> runOnUiThread { renderPickerState(st) } })
+            pickerController = c
+            if (initModel.isNotBlank()) c.selectModel(initModel)
+            c.onOpened(baseEt.text.toString().trim(), storedKey)
+        }
+
+        fun currentModelForSave(): String {
+            return if (pickerState?.kind == ModelPickerKind.MANUAL) manualEt.text.toString().trim()
+            else currentModel?.trim() ?: ""
+        }
+
+        fun formStatus(msg: String, isError: Boolean) {
+            formStatusTv.text = msg
+            formStatusTv.setTextColor(if (isError) th.errText else th.text)
+            formStatusTv.visibility = if (msg.isBlank()) View.GONE else View.VISIBLE
+        }
+
+        // Field berubah sesudah tes sukses -> hasil tes basi, tandai belum dites.
+        fun markTestStale() {
+            testSucceeded = false
+            testStatusTv.text = "Belum dites"
+        }
+
+        fun runConnectionTest() {
+            val id = provIdEt.text.toString().trim()
+            val label = labelEt.text.toString().trim()
+            val base = baseEt.text.toString().trim()
+            val model = currentModelForSave()
+            if (id.isBlank() || label.isBlank() || base.isBlank() || model.isBlank()) {
+                formStatus("id/label/base_url/model wajib diisi dulu sebelum tes.", isError = true)
+                return
+            }
+            if (!ModelPickerController.isValidBaseUrl(base)) {
+                formStatus("Base URL tidak valid — harus http(s):// + host.", isError = true)
+                return
+            }
+            val keyRaw = keyEt.text.toString().trim()
+            val keyEff = keyRaw.ifBlank { LlmProviderStore.apiKey(ctx, id) }
+            val testProv = LlmProvider(id, label, LlmKind.OPENAI_COMPAT, base, keyEff, model, enabled = true)
+            val testKey = testKeyFor(base, keyEff)
+            if (testKey == null) {
+                testStatusTv.text = "✕ API key belum diisi — isi key dulu (Ollama lokal tidak butuh key)."
+                testSucceeded = false
+                return
+            }
+            testStatusTv.text = "Mengetes… (timeout 30 dtk)"
+            testSucceeded = false
+            Thread {
+                try {
+                    OpenAiCompatClient.ask(testProv, testKey, "ping", timeoutMs = 30_000)
+                    runOnUiThread {
+                        testStatusTv.text = "✓ Terhubung — model $model menjawab"
+                        testSucceeded = true
+                    }
+                } catch (e: Exception) {
+                    val msg = RedactSecrets.redact(e.message ?: "gagal")
+                    runOnUiThread { testStatusTv.text = "✕ $msg" }
+                }
+            }.apply { isDaemon = true }.start()
+        }
+
+        fun doSave(id: String, label: String, base: String, model: String) {
+            val keyRaw = keyEt.text.toString().trim()
+            val keyEff = keyRaw.ifBlank { LlmProviderStore.apiKey(ctx, id) }
+            // Field lanjutan yang tidak diedit di dialog ini diteruskan dari
+            // record asal (edit) / preset (baru) — jangan direset diam-diam.
+            val orig = if (editingId == id) existing else LlmProviders.preset(id)
+            val cap = capEt.text.toString().trim().toIntOrNull()
+            val maxPrompt = maxPromptEt.text.toString().trim().toIntOrNull()
+            val p = try {
+                LlmProviders.addCustom(
+                    id, label, base, keyEff, model, true,
+                    cap, maxPrompt, orig?.maxOutputTokens,
+                    orig?.thinkingParam ?: "", orig?.toolsSupport ?: "unknown",
+                    orig?.vision ?: "unknown", orig?.toolRoleFallback ?: false
+                )
+            } catch (e: Exception) {
+                formStatus("Gagal: ${e.message}", isError = true); return
+            }
+            // D10: cek Boolean save() — gagal -> pesan merah + tetap di layar.
+            if (!LlmProviderStore.save(ctx, p)) {
+                formStatus("⚠️ Gagal menyimpan provider: tidak bisa menulis penyimpanan. Provider belum aktif.", isError = true)
+                return
+            }
+            if (!p.configured) {
+                formStatus("⚠️ Provider tersimpan, tapi belum lengkap (cek API key / model) — belum diaktifkan.", isError = true)
+                return
+            }
+            LlmProviderStore.setActive(ctx, p.id)
+            LlmProviders.setActive(p.id)
+            AgentEngines.setCurrent(ctx, "openai")
+            Toast.makeText(ctx, "Provider '${p.id}' aktif. Otak = Models API.", Toast.LENGTH_LONG).show()
+            formDlg?.dismiss()
+            listDlg?.dismiss()
+        }
+
+        fun doSaveAfterTestCheck(id: String, label: String, base: String, model: String) {
+            // Tes koneksi belum pernah sukses -> konfirmasi dulu (frame 20).
+            if (!testSucceeded) {
+                AlertDialog.Builder(ctx)
+                    .setTitle("Simpan tanpa tes?")
+                    .setMessage("Koneksi belum dites / tes terakhir gagal. Simpan tetap?")
+                    .setPositiveButton("Simpan tetap") { _, _ -> doSave(id, label, base, model) }
+                    .setNegativeButton("Tes dulu", null)
+                    .show()
+                return
+            }
+            doSave(id, label, base, model)
+        }
+
+        fun onSave() {
+            val id = provIdEt.text.toString().trim()
+            val label = labelEt.text.toString().trim()
+            val base = baseEt.text.toString().trim()
+            val model = currentModelForSave()
+            if (id.isBlank() || label.isBlank() || base.isBlank() || model.isBlank()) {
+                formStatus("id/label/base_url/model wajib diisi.", isError = true); return
+            }
+            if (!LlmProviders.validateId(id)) {
+                formStatus("id provider tidak valid (huruf kecil/angka/underscore, tanpa spasi).", isError = true); return
+            }
+            if (!ModelPickerController.isValidBaseUrl(base)) {
+                formStatus("Base URL tidak valid — harus http(s):// + host.", isError = true); return
+            }
+            // Tabrakan id: id sudah ada dengan label berbeda -> Timpa/Batal.
+            val clash = LlmProviders.find(id)
+            if (editingId != id && clash != null && clash.kind == LlmKind.OPENAI_COMPAT) {
+                AlertDialog.Builder(ctx)
+                    .setTitle("Timpa provider?")
+                    .setMessage("Provider '$id' sudah ada sebagai '${clash.label}'.\n\nSimpan akan menimpa label, base URL, model, dan guard provider itu (key lama tetap dipakai bila field key kosong).")
+                    .setPositiveButton("Timpa") { _, _ -> doSaveAfterTestCheck(id, label, base, model) }
+                    .setNegativeButton("Batal", null)
+                    .show()
+                return
+            }
+            doSaveAfterTestCheck(id, label, base, model)
+        }
+
+        // ---- tombol form ----
+        val testBtn = thBtn("🔍 Tes Koneksi", false) { runConnectionTest() }
+        val saveBtn = thBtn("💾 Simpan & Aktifkan", true) { onSave() }
+        refreshSaveEnabledFn = {
+            val ok = provIdEt.text.toString().trim().isNotBlank() &&
+                labelEt.text.toString().trim().isNotBlank() &&
+                baseEt.text.toString().trim().isNotBlank() &&
+                currentModelForSave().isNotBlank()
+            saveBtn.isEnabled = ok
+            saveBtn.alpha = if (ok) 1f else 0.5f
+        }
+        val btnRow1 = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(12), 0, 0) }
+        for (b in listOf(testBtn, saveBtn)) b.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+        btnRow1.addView(testBtn); btnRow1.addView(saveBtn)
+        val btnRow2 = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+        if (existing != null) {
+            val deleteBtn = thBtn("🗑 Hapus provider", false) {
+                confirmDeleteProvider(existing) { formDlg?.dismiss(); listDlg?.dismiss(); showLlmProviderDialog() }
+            }
+            deleteBtn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+            btnRow2.addView(deleteBtn)
+        }
+        val cancelBtn = thBtn("Batal", false) { formDlg?.dismiss() }
+        cancelBtn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
+        btnRow2.addView(cancelBtn)
+
+        // ---- rakit form ----
+        val pickerBtnRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, 0) }
+        pickerBtnRow.addView(retryBtn); pickerBtnRow.addView(manualBtn); pickerBtnRow.addView(reloadBtn)
+        val formView = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        formView.addView(provIdEt); formView.addView(labelEt); formView.addView(baseRow)
+        formView.addView(tv("Model", 12.5f, th.dim))
+        formView.addView(modelSpinner)
+        formView.addView(pickerStatusTv)
+        formView.addView(pickerBtnRow)
+        formView.addView(manualEt)
+        formView.addView(keyEt); formView.addView(keyHelperTv)
+        formView.addView(guardToggle); formView.addView(guardBox)
+        formView.addView(testStatusTv)
+        formView.addView(formStatusTv)
+        formView.addView(btnRow1); formView.addView(btnRow2)
+
+        // ---- watcher + listener ----
+        val textWatcher = { after: (String) -> Unit ->
+            object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) { after(s?.toString() ?: "") }
+            }
+        }
+        baseEt.addTextChangedListener(textWatcher { v ->
+            markTestStale()
+            pickerController?.onBaseUrlChanged(v)
+            refreshSaveEnabledFn?.invoke()
+        })
+        baseEt.onFocusChangeListener = View.OnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) pickerController?.onBaseUrlFocusLost(baseEt.text.toString())
+        }
+        keyEt.addTextChangedListener(textWatcher { v ->
+            markTestStale()
+            pickerController?.onApiKeyChanged(v)
+        })
+        provIdEt.addTextChangedListener(textWatcher {
+            markTestStale()
+            refreshSaveEnabledFn?.invoke()
+        })
+        provIdEt.onFocusChangeListener = View.OnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val newId = provIdEt.text.toString().trim()
+                if (newId.isNotBlank() && newId != controllerProviderId) bindPicker(newId)
+                refreshSaveEnabledFn?.invoke()
+            }
+        }
+        labelEt.addTextChangedListener(textWatcher { refreshSaveEnabledFn?.invoke() })
+        manualEt.addTextChangedListener(textWatcher {
+            if (pickerState?.kind == ModelPickerKind.MANUAL) {
+                markTestStale()
+                refreshSaveEnabledFn?.invoke()
+            }
+        })
+        modelSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (suppressSpinnerEvent) { suppressSpinnerEvent = false; return }
+                val picked = spinnerModels.getOrNull(position) ?: return
+                if (picked.id == currentModel) return
+                currentModel = picked.id
+                pickerController?.selectModel(picked.id)
+                markTestStale()
+                refreshSaveEnabledFn?.invoke()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        retryBtn.setOnClickListener { pickerController?.retry() }
+        manualBtn.setOnClickListener { pickerController?.useManualModel(manualEt.text.toString().trim()) }
+        reloadBtn.setOnClickListener { pickerController?.refresh() }
+        refreshBaseBtn.setOnClickListener { pickerController?.refresh() }
+
+        bindPicker(initId)
+        refreshSaveEnabledFn?.invoke()
+        formDlg = thDialog(if (existing == null) "＋ Tambah Provider" else "Edit Provider: ${existing.label}", formView, emptyList())
+        formDlg?.setOnDismissListener { try { pickerController?.close() } catch (e: Exception) {} }
+    }
+
+    // ---- Daftar provider (frame 21) ----
+    val listBody = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+    fun rebuildList() {
+        listBody.removeAllViews()
+        val skippedNow = LlmProviderStore.hydrate(ctx)
+        val actId = LlmProviderStore.activeId(ctx)
+        val engineOpenAi = AgentEngines.current(ctx) == "openai"
+        val providers = LlmProviders.all().filter { it.kind == LlmKind.OPENAI_COMPAT }
+        val activeProv = providers.firstOrNull { it.id == actId }
+        listBody.addView(tv(
+            if (activeProv != null && engineOpenAi) "Otak aktif: ${activeProv.label} (${activeProv.id}) — Models API"
+            else if (providers.isEmpty()) "Belum ada provider — tambah satu di bawah."
+            else "Belum ada provider aktif — ketuk satu untuk mengaktifkan.",
+            12.5f, th.dim))
+        for (sid in skippedNow) listBody.addView(tv("⚠️ $sid: konfigurasi rusak, tidak dimuat", 12.5f, th.errText))
+        for (p in providers) {
+            val isActive = p.id == actId && engineOpenAi
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; background = rounded(th.tileBg, 14); setPadding(dp(12), dp(10), dp(12), dp(10)); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(4), 0, dp(4)) } }
+            val colP = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
+            colP.addView(tv(p.label + if (isActive) " • AKTIF" else "", 14f, th.text, true))
+            colP.addView(tv(p.id + " • " + p.model + if (p.configured) "" else " • belum lengkap", 12f, th.dim))
+            val rowStatus = tv("", 12f, th.dim)
+            colP.addView(rowStatus)
+            row.addView(colP)
+            row.addView(thSmallBtn("🔍 Tes") { testProviderRow(p, rowStatus) })
+            row.addView(thSmallBtn("🗑") { confirmDeleteProvider(p) { rebuildList() } })
+            colP.setOnClickListener {
+                if (p.configured) {
+                    LlmProviderStore.setActive(ctx, p.id)
+                    LlmProviders.setActive(p.id)
+                    AgentEngines.setCurrent(ctx, "openai")
+                    Toast.makeText(ctx, "Provider '${p.id}' aktif. Otak = Models API.", Toast.LENGTH_LONG).show()
+                    listDlg?.dismiss()
+                } else {
+                    openFormDialog(p)
+                }
+            }
+            listBody.addView(row)
+        }
+        listBody.addView(tv("Ketuk provider untuk mengaktifkan (bila sudah lengkap) atau mengedit.", 12f, th.dim))
+        val btnRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        thRowBtn(btnRow, "＋ Tambah Provider", true) { openFormDialog(null) }
+        thRowBtn(btnRow, "Batal", false) { listDlg?.dismiss() }
+        listBody.addView(btnRow)
+    }
+    rebuildList()
+    listDlg = thDialog("🧠 Provider LLM", listBody, emptyList())
+}
 
 internal fun showApiTokenDialog() {
         val ctx = this
@@ -13535,7 +14128,7 @@ internal fun showApiTokenDialog() {
         try {
             val drained = MemoryDb.drainPrompts(this)
             for (p in drained) if (autoQueue.size < 5) autoQueue.addLast(p)
-            if (autoQueue.isNotEmpty() && !agent.busy && !internalTurn) consumeAutoQueue()
+            if (autoQueue.isNotEmpty() && agent?.busy != true && !internalTurn) consumeAutoQueue()
         } catch (e: Exception) {}
         // vc308 Worker C (BUG 4): ganti tema yang sempat ditunda — terapkan
         // bila giliran sudah selesai (pengaman bila endUserTurn terlewat
@@ -14508,7 +15101,7 @@ internal fun showApiTokenDialog() {
                         val tasks = Automation.sessionTasks(curSess)
                         val t2 = tasks.optJSONObject(i) ?: return@thSmallBtn
                         val criteria = t2.optString("criteria").ifBlank { "Tugas tuntas bila: " + t2.optString("text") }
-                        if (!::apiClient.isInitialized) {
+                        if (apiClient == null) {
                             Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi dilewati — engine belum siap.")
                             Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — engine belum siap: " + t2.optString("text"), curSess.optString("id")); renderBoard()
                         } else {
@@ -14527,7 +15120,7 @@ internal fun showApiTokenDialog() {
                             val verAgent = if (sub == "multi") "Mandor, koordinator automation" else "agen " + (Agents.all(this).firstOrNull { it.id == curSess.optString("agent") }?.name ?: "automation")
                             val prompt = "Kamu " + verAgent + " yang memeriksa hasil tugas. Tugas: " + t2.optString("text") + ". Kriteria selesai: " + criteria + ". Bukti terbaru dari room:\n" + recent.toString() + "Jawab PERSIS dua baris: baris pertama STATUS: TERVERIFIKASI atau STATUS: SEBAGIAN atau STATUS: GAGAL; baris kedua BUKTI: <satu kalimat bukti>. Jangan teks lain."
                             try {
-                                apiClient.chat(prompt, false, false, { _: String -> },
+                                apiClient?.chat(prompt, false, false, { _: String -> },
                                     { answer, _ -> runOnUiThread {
                                         verifying.remove(i)
                                         val st = when {
@@ -15415,12 +16008,12 @@ internal fun showApiTokenDialog() {
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing percobaan $attempt", "gagal: " + err.take(120), sessId)
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
             if (attempt > 3) { fallbackSolo(ag, prompt, err, sessId); return }
-            if (!::apiClient.isInitialized) { healDiagnose(ag.name, err, sessId); return }
+            if (apiClient == null) { healDiagnose(ag.name, err, sessId); return }
             typingAdd(ag.name)
             val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
             val retryPrompt = prompt + "\n\n(Percobaan ulang self-healing ke-$attempt — sebelumnya gagal: $err. Coba pendekatan yang BERBEDA secara mendasar, bukan variasi kecil.)"
             try {
-                apiClient.chat(retryPrompt, think, false, { _: String -> },
+                apiClient?.chat(retryPrompt, think, false, { _: String -> },
                     { answer, _ -> runOnUiThread { typingRemove(ag.name); healCounts.remove(key); handleRoomReply(sub, ag.name, answer, sessId) } },
                     { err2 -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err2, attempt + 1, sessId) } })
             } catch (e: Exception) { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", attempt + 1, sessId) }
@@ -15473,7 +16066,7 @@ internal fun showApiTokenDialog() {
         }
 
         fun dispatchSolo(ag: Agents.Profile, prompt: String, sessId: String = "", userText: String = "") {
-            if (!::apiClient.isInitialized) { appendSystem("Solo: engine belum siap — buka tab Web / chat 1-1 dulu."); return }
+            if (apiClient == null) { appendSystem("Solo: engine belum siap — buka tab Web / chat 1-1 dulu."); return }
             typingAdd(ag.name)
             try {
                 val variantSoloVc230 = thinkingVariantVc230()
@@ -15481,7 +16074,7 @@ internal fun showApiTokenDialog() {
                 val think = thinkBase || (variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText))
                 if (!thinkBase && variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing: thinking otomatis karena tugas sulit (Solo, Setup = Otomatis). Perbedaan jalur vc230: 1-1 ikut Setup; Solo ikut Setup yang sama; grup/tim selalu tanpa thinking; latar ikut varian Setup.")
                 if (variantSoloVc230 == "v3" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing Solo: tugas sulit terdeteksi, tapi Setup = V3 — auto-thinking TIDAK diaktifkan tanpa persetujuan eksplisit.")
-                apiClient.chat(prompt, think, false, { _: String -> },
+                apiClient?.chat(prompt, think, false, { _: String -> },
                     { answer, _ -> runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) } },
                     { err -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err, 1, sessId) } })
             } catch (e: Exception) {
@@ -15856,7 +16449,7 @@ internal fun showApiTokenDialog() {
                 val prompt = "Urutkan fakta berikut dari paling relevan ke paling tidak relevan dengan pesan user. Kembalikan JSON SATU BARIS saja: {\"order\":[0,1,2]}. Hanya JSON, tanpa teks lain.\n\nPESAN USER:\n" + text + "\n\nFAKTA:\n" + numbered.toString()
                 val latch = java.util.concurrent.CountDownLatch(1)
                 val out = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                apiClient.chat(prompt, false, false, { _: String -> }, { t, _ -> out.set(t); latch.countDown() }, { _ -> latch.countDown() }, bgMode = true)
+                apiClient?.chat(prompt, false, false, { _: String -> }, { t, _ -> out.set(t); latch.countDown() }, { _ -> latch.countDown() }, bgMode = true)
                 latch.await(45, java.util.concurrent.TimeUnit.SECONDS)
                 val ans = out.get() ?: return null
                 val start = ans.indexOf("{"); val end = ans.lastIndexOf("}")
@@ -15916,7 +16509,7 @@ internal fun showApiTokenDialog() {
             if (sessArchivedNow()) return
             val roomNowR = try { Automation.roomById(this, room.optString("id")) ?: room } catch (e: Exception) { room }
             val rerankOn = roomNowR.optBoolean("rerank", false)
-            if (rerankOn && ::apiClient.isInitialized) {
+            if (rerankOn && apiClient != null) {
                 Thread {
                     var ranked: List<Fact>? = null
                     try {
@@ -15946,7 +16539,7 @@ internal fun showApiTokenDialog() {
                 detCands = det.candBatch
                 appendSystem("🧠 Konsolidasi selesai: " + det.nodes + " node baru, " + det.edges + " edge baru, " + det.skipped + " dilewati (sudah diproses).")
             } catch (e: Exception) { appendSystem("Konsolidasi gagal: ${e.message}") }
-            if (::apiClient.isInitialized) {
+            if (apiClient != null) {
                 val newTail = ArrayList<String>()
                 for (i in skippedMsgs until msgs.length()) {
                     val m = msgs.optJSONObject(i) ?: continue
@@ -15960,7 +16553,7 @@ internal fun showApiTokenDialog() {
                     for (s in tail20) transcript.append(s).append("\n")
                     val prompt = GraphDb.get(this).relationsPrompt(transcript.toString())
                     try {
-                        apiClient.chat(prompt, false, false, { _: String -> },
+                        apiClient?.chat(prompt, false, false, { _: String -> },
                             { answer, _ ->
                                 runOnUiThread {
                                     try {
@@ -15992,7 +16585,7 @@ internal fun showApiTokenDialog() {
                                                     }
                                                     val oldList = g.activeEdgesTouching(involved).joinToString("\n") { "old:" + it.id + ": " + labOf(it.from) + " | " + it.rel + " | " + labOf(it.to) }
                                                     val vPrompt = g.verifierPrompt(newEdges, oldList, transcript.toString())
-                                                    apiClient.chat(vPrompt, false, false, { _: String -> },
+                                                    apiClient?.chat(vPrompt, false, false, { _: String -> },
                                                         { vAnswer, _ ->
                                                             runOnUiThread {
                                                                 try {
@@ -16013,7 +16606,7 @@ internal fun showApiTokenDialog() {
                                             if (allCands.isNotEmpty()) {
                                                 try {
                                                     val aPrompt = g.adjudicationPrompt(allCands)
-                                                    apiClient.chat(aPrompt, false, false, { _: String -> },
+                                                    apiClient?.chat(aPrompt, false, false, { _: String -> },
                                                         { aAnswer, _ ->
                                                             runOnUiThread {
                                                                 try {
@@ -16546,8 +17139,8 @@ internal fun showApiTokenDialog() {
         // vc246 GELOMBANG 5 (RM-m2): tombol Konsolidasi dinonaktifkan
         // bila engine belum siap (dulu hanya pesan "engine belum siap"
         // setelah diketuk).
-        konsolBtn.isEnabled = ::apiClient.isInitialized
-        konsolBtn.setOnClickListener { if (!::apiClient.isInitialized) { Toast.makeText(this, "Engine belum siap — konsolidasi belum bisa jalan.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
+        konsolBtn.isEnabled = apiClient != null
+        konsolBtn.setOnClickListener { if (apiClient == null) { Toast.makeText(this, "Engine belum siap — konsolidasi belum bisa jalan.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
         petaBtn.setOnClickListener { showRoomMapDialog() }
 
         var dlgHolder: android.app.AlertDialog? = null
