@@ -42,6 +42,10 @@ abstract class Context {
     // `.applicationContext` seperti di kode repo tetap jalan dari Kotlin.
     open val applicationContext: Context get() = this
 
+    // F4a: askWithFiles menulis PDF sementara ke cacheDir.
+    open val cacheDir: java.io.File
+        get() = java.io.File(System.getProperty("java.io.tmpdir") ?: ".")
+
     open fun getDatabasePath(name: String): java.io.File = java.io.File(name)
 }
 

@@ -4559,6 +4559,22 @@ class MainActivity : Activity() {
                         runOnUiThread { addBubble("⚠️ Semua lampiran gagal dibaca, tidak ada yang dikirim: " + failedRead.joinToString("; "), false) }
                     } else {
                     val prompt = "Konteks dari user: " + contextText + "\n\nBaca semua berkas terlampir berikut dan jawab sesuai konteks di atas. " + (if (failedRead.isNotEmpty()) "Catatan: berkas berikut GAGAL dibaca dan TIDAK ikut diunggah: " + failedRead.joinToString(", ") + ". Sebutkan kegagalan ini di jawabanmu." else "")
+                    // F4b: engine openai = vision Models API (sinkron,
+                    // di Thread ini); engine deepseek = blok lama persis.
+                    val engineAttachVcF4b = AgentEngines.current(this@MainActivity)
+                    if (engineAttachVcF4b == "openai") {
+                        try {
+                            val visionFiles = files.map { VisionFile(it.first, it.second, it.third) }
+                            val answer = LlmEngineChat.askWithFiles(this@MainActivity, visionFiles, prompt, LlmCallKind.INTERACTIVE)
+                            runOnUiThread {
+                                val failNote = if (failedRead.isNotEmpty()) "\n\n⚠️ Berkas yang gagal diunggah (tidak dibaca model). Ini BUKAN karena agen tidak bisa menerima file — alasan gagal per berkas: " + failedRead.joinToString("; ") + ". Sampaikan alasan ini apa adanya ke user, jangan jawab 'tidak bisa menerima file'." else ""
+                                sendContinuation("Hasil lampiran multi-file (jalur lampiran: vision Models API):\n" + answer + failNote + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.")
+                            }
+                        } catch (e: Exception) {
+                            runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: ${e.message} — fallback per berkas dengan konteks yang sama.", false) }
+                            for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e2: Exception) {} }
+                        }
+                    } else {
                     // B13: klien DeepSeek bisa belum ada (startup openai) —
                     // gagal jujur + fallback per berkas seperti jalur error.
                     val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
@@ -4574,6 +4590,7 @@ class MainActivity : Activity() {
                         runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: $err — fallback per berkas dengan konteks yang sama.", false) }
                         for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
                     })
+                    }
                     }
                 } else {
                     for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
@@ -4627,6 +4644,18 @@ class MainActivity : Activity() {
                 val bos = java.io.ByteArrayOutputStream()
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
+                // F4b: engine openai = vision Models API (sinkron,
+                // di Thread ini); engine deepseek = blok lama persis.
+                val engineFrameVcF4b = AgentEngines.current(this@MainActivity)
+                if (engineFrameVcF4b == "openai") {
+                    try {
+                        val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(jpegBytes, "frame.jpg", "image/jpeg")), "Jelaskan adegan pada frame video ini secara singkat.", LlmCallKind.INTERACTIVE)
+                        acc.add(answer)
+                    } catch (e: Exception) {
+                        acc.add("GAGAL: ${e.message}")
+                    }
+                    analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
+                } else {
                 // B13: klien DeepSeek bisa belum ada (startup openai).
                 val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
                 if (dsClientVc212 == null) {
@@ -4639,6 +4668,7 @@ class MainActivity : Activity() {
                     acc.add("GAGAL: $err")
                     analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
                 })
+                }
             } catch (e: Exception) {
                 acc.add("GAGAL: ${e.message}")
                 analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
@@ -8184,6 +8214,18 @@ class MainActivity : Activity() {
                             fallbackDocVc212(cacheF, name, ext, qDoc)
                         } else {
                             val promptDoc = "Baca dokumen terlampir '" + name + "' SELURUHNYA. " + (if (qDoc.isNotBlank()) "Pertanyaan user: $qDoc" else "Ringkas isi dokumen ini secara lengkap dan tunjukkan hal penting di dalamnya.") + "\n\nJawab dalam Bahasa Indonesia."
+                            // F4b: engine openai = vision Models API (sinkron,
+                            // di Thread ini); engine deepseek = blok lama persis.
+                            val engineDocVcF4b = AgentEngines.current(this@MainActivity)
+                            if (engineDocVcF4b == "openai") {
+                                try {
+                                    val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, LlmCallKind.INTERACTIVE)
+                                    runOnUiThread { addBubble("📄 Status parsing: SUCCESS — dokumen '" + name + "' dibaca lewat Models API (vision).", false); sendContinuation("Hasil baca dokumen '" + name + "' (vision Models API):\n" + answer + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.") }
+                                } catch (e: Exception) {
+                                    runOnUiThread { addBubble("📄 Status parsing: GAGAL (" + (e.message ?: "gagal") + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
+                                    fallbackDocVc212(cacheF, name, ext, qDoc)
+                                }
+                            } else {
                             // B13: klien DeepSeek bisa belum ada (startup openai).
                             val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
                             if (dsClientVc212 == null) {
@@ -8195,6 +8237,7 @@ class MainActivity : Activity() {
                                 runOnUiThread { addBubble("📄 Status parsing server: GAGAL (" + err + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
                                 fallbackDocVc212(cacheF, name, ext, qDoc)
                             })
+                            }
                         }
                     }
                     mime == "application/pdf" || ext == "pdf" -> {
@@ -11150,6 +11193,42 @@ class MainActivity : Activity() {
         val gapVc230 = if (camFail > 0) "frame sebelumnya GAGAL diamati (deskripsi sebelumnya tidak bisa dipercaya untuk frame yang gagal itu). " else ""
         val prompt = baseQ + "\n\n(Frame live kamera ke-$n, pukul $time. " + gapVc230 + "Deskripsi frame sebelumnya: " + (if (camLastDesc.isBlank()) "-" else camLastDesc.take(500)) + ". Tugas: deskripsikan apa yang terlihat sekarang secara singkat dan faktual; bila ada perubahan dari frame sebelumnya, sebutkan perubahannya dulu; bila pertanyaan di atas bersifat spesifik atau ya-tidak, jawab itu dulu. Jangan mengidentifikasi individu — deskripsikan objek dan aktivitas saja.)"
         val thinking = isDeepPhotoRequestVc212(camQuestion)
+        // F4b: engine openai = vision Models API. askWithFiles BLOKIR,
+        // jadi dipanggil di Thread sendiri — analyzeLiveFrame jalan di
+        // UI thread (camLiveTick); blok sukses/gagal lama dipertahankan
+        // persis, hanya dipindah ke runOnUiThread. Engine deepseek =
+        // blok lama persis di bawah (safe-call apiClient?).
+        if (AgentEngines.current(this@MainActivity) == "openai") {
+            Thread {
+                try {
+                    val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(bytes, "live-frame.jpg", "image/jpeg")), prompt, LlmCallKind.INTERACTIVE, thinking)
+                    runOnUiThread {
+                        camAnalyzing = false
+                        camFail = 0
+                        camLastOkVc230 = n
+                        camLastDesc = answer.take(1000)
+                        addBubble("🎥 Live #$n [$time]: $answer", false)
+                        try {
+                            GraphDb.get(this@MainActivity).getOrCreateEpisode(currentSessionId.toString(), "observasi", "Kamera live frame #$n" + (if (file != null) " (file: ${file.name})" else "") + ": " + answer.take(800), "camera-live")
+                        } catch (e: Exception) {
+                        }
+                        val (pct, charging) = cameraBattery()
+                        if (pct in 0..19 && !charging) stopLive("baterai di bawah 20% dan tidak dicas")
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        camAnalyzing = false
+                        val err = e.message ?: "gagal"
+                        if (err.contains("masih ada jawaban")) return@runOnUiThread
+                        camFail += 1
+                        try { GraphDb.get(this@MainActivity).getOrCreateEpisode(currentSessionId.toString(), "observasi", "Kamera live frame #$n: GAGAL — $err, tidak teramati", "camera-live") } catch (e2: Exception) {}
+                        addBubble("⚠️ Frame live #$n gagal: $err", false)
+                        if (camFail >= 3) stopLive("3 frame gagal berturut-turut")
+                    }
+                }
+            }.start()
+            return
+        }
         try {
             apiClient?.uploadFileAndAsk(bytes, "live-frame.jpg", "image/jpeg", prompt, thinking, { answer ->
                 runOnUiThread {
@@ -11250,11 +11329,61 @@ class MainActivity : Activity() {
                 // — berkas diunggah lalu dibaca di SESI SERVER YANG SAMA. Jalur Web
                 // lama membuka sesi chat baru sendiri ("Penjelasan Gambar Aplikasi");
                 // kini jalur Web hanya cadangan bila API gagal.
+                // F4b: engine dibaca SEKALI; openai = vision Models API
+                // (sinkron, di Thread ini); deepseek = blok lama persis.
+                val enginePhotoVcF4b = try { AgentEngines.current(this@MainActivity) } catch (e: Exception) { "" }
                 val useApi = try {
-                    AgentEngines.current(this@MainActivity) == "deepseek" &&
+                    enginePhotoVcF4b == "deepseek" &&
                         getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false)
                 } catch (e: Exception) { false }
-                if (useApi) {
+                if (enginePhotoVcF4b == "openai") {
+                    try {
+                        val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(jpegBytes, "harness-photo.jpg", "image/jpeg")), question, LlmCallKind.INTERACTIVE, wantThinkPhoto)
+                        runOnUiThread {
+                            endStreamBubble()
+                            showTab("Chat")
+                            renderPendingAskVc229()
+                            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
+                            photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, true)
+                            photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: " + ActivityTitle.resultTail(answer, 600)
+                            // VC303-P2-15 (CX-12): simpan jawaban ke ResultStore seperti
+                            // tool lain — baris WorkNotes analyze_photo kini punya R-id
+                            // (bukan [-]) + total char; args sudah memuat path foto
+                            // (formatLine memakai path bila ada).
+                            val ridPhotoVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", answer) } catch (e: Exception) { "" }
+                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, answer.take(120), evidence = answer.take(600), args = args.toString().take(4000), resultId = ridPhotoVc303, totalChars = answer.length))
+                            sendContinuation("Hasil tool analyze_photo (via Models API vision):\n" + answer + "\n\nSampaikan hasil analisa ini ke user dan lanjutkan tugasmu.")
+                        }
+                    } catch (e: VisionUnsupportedException) {
+                        runOnUiThread {
+                            // §4.4: pesan eksak dari helper (e.message) +
+                            // buka dialog provider 73 langsung — tidak ada
+                            // pola tombol-aksi di bubble di app ini
+                            // (addBubble tanpa aksi; ask Vc229 hanya untuk
+                            // ask agen), jadi dialog dibuka sesudah bubble.
+                            addBubble(e.message ?: "📷 Model tidak mendukung analisis gambar. Pilih model lain yang mendukung vision di Setup > 73. Provider LLM.", false, turn = turn)
+                            showLlmProviderDialog()
+                            renderPendingAskVc229()
+                            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
+                            photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, false)
+                            photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — " + (e.message ?: "")
+                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — " + (e.message ?: ""), args = args.toString().take(4000)))
+                            try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — ${e.message}, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
+                            sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            addBubble("⚠️ Analisa foto gagal: ${e.message}", false, turn = turn)
+                            renderPendingAskVc229()
+                            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
+                            photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, false)
+                            photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — " + (e.message ?: "")
+                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — " + (e.message ?: ""), args = args.toString().take(4000)))
+                            try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — ${e.message}, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
+                            sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                        }
+                    }
+                } else if (useApi) {
                     // B13: klien DeepSeek bisa belum ada (startup openai +
                     // alih engine saat jalan) — jatuh ke jalur Web yang
                     // gagal jujur bila klien tetap tidak ada.

@@ -56,6 +56,9 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/AndroidStubs3.kt" \
   "$PROJ/app/src/test/AndroidStubs4.kt" \
   "$PROJ/app/src/test/AndroidStubs5.kt" \
+  "$PROJ/app/src/test/AndroidStubs6.kt" \
+  "$PROJ/app/src/test/AndroidStubs7.kt" \
+  "$PROJ/app/src/test/AndroidStubs8.kt" \
   "$PROJ/app/src/test/FakeAndroid.kt" \
   "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/SqliteSeam.kt" \
@@ -70,6 +73,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviderStore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/AgentEngine.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelCaps.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/VisionFiles.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmEngineChat.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelPickerController.kt" \
   "$PROJ/app/src/test/ToolRegistryTest.kt" \
@@ -78,6 +82,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/ModelCatalogTest.kt" \
   "$PROJ/app/src/test/FirstRunStateTest.kt" \
   "$PROJ/app/src/test/ModelCapsTest.kt" \
+  "$PROJ/app/src/test/VisionFilesTest.kt" \
   "$PROJ/app/src/test/GovernorModelsTest.kt" \
   "$PROJ/app/src/test/EngineRouterTest.kt" \
   "$PROJ/app/src/test/ReviewerMigrationTest.kt" \
@@ -101,6 +106,9 @@ java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.FirstRunStateTestKt
 
 echo "== jalankan ModelCapsTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelCapsTestKt
+
+echo "== jalankan VisionFilesTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.VisionFilesTestKt
 
 echo "== jalankan GovernorModelsTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.GovernorModelsTestKt

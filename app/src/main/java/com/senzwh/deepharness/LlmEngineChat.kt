@@ -1,9 +1,19 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
+import android.util.Base64
+import android.util.Log
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.ZipInputStream
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -293,6 +303,277 @@ object LlmEngineChat {
             throw RuntimeException(emptyResultError(provider.id))
         }
         return result.content
+    }
+
+    // ---- Vision: kirim gambar/dokumen (Fase 4a, §4.2) ----
+
+    /**
+     * Kirim gambar/dokumen ke provider Models API aktif (§4.2).
+     *
+     * Alur mengikat:
+     *  a. resolveProvider (throw NO_PROVIDER / belum-siap, tanpa fallback);
+     *  b. gate vision bila ada file gambar (IMAGE atau PDF-jadi-gambar):
+     *     UNSUPPORTED → VisionUnsupportedException, UNKNOWN/SUPPORTED lanjut;
+     *  c. pilah file — IMAGE disiapkan, TEXT_DOC/DOCX diekstrak jadi teks
+     *     (cap provider.maxPromptChars ?: TurnMetrics.DEFAULT_CAP),
+     *     PDF dirender halaman 1 jadi gambar, UNSUPPORTED → gagal jujur;
+     *  d. maks 4 gambar (termasuk PDF-jadi-gambar);
+     *  e. tiap gambar disiapkan (pola analyzePhotoAndContinue: skala maks
+     *     1280, JPEG q80; ulang q60 + skala 0.5 bila masih >1 MB);
+     *  f. SATU ChatMessage user per gambar (ChatMessage hanya punya satu
+     *     imageUrl) — gambar pertama membawa prompt lengkap, sisanya
+     *     membawa teks singkat "Gambar ke-N: <nama file>";
+     *  g. panggil chatMessagesForEngine (Governor + D4 sudah di sana);
+     *  h. sesudah sukses, Governor bump +1 per gambar;
+     *  i. HTTP 400 penolakan vision → tandai model UNSUPPORTED di cache
+     *     (fetchedAt dijaga), lalu throw pesan §4.4, TANPA retry.
+     */
+    @Throws(Exception::class)
+    fun askWithFiles(
+        ctx: Context, files: List<VisionFile>, prompt: String,
+        kind: LlmCallKind, thinking: Boolean = false
+    ): String {
+        // a. Provider aktif — throw seperti helper lain, tanpa fallback.
+        val provider = resolveProvider(ctx)
+
+        // Klasifikasi dulu (murni, tanpa efek samping) — dipakai gate + pilah.
+        val kinds = files.map { VisionFiles.classify(it.mime, it.fileName) }
+
+        // b. Gate vision: ada file gambar (IMAGE atau PDF-jadi-gambar)?
+        val hasImage = kinds.any { it == VisionFileKind.IMAGE || it == VisionFileKind.PDF }
+        if (hasImage) {
+            val catalog = ModelCaps.catalogMap(LlmProviderStore.loadModels(ctx, provider.id))
+            if (ModelCaps.supportsVision(provider, provider.model, catalog) == VisionSupport.UNSUPPORTED) {
+                throw VisionUnsupportedException(
+                    VisionFiles.modelUnsupportedMessage(provider.model, provider.label)
+                )
+            }
+        }
+
+        // c. Pilah file.
+        val docCap = provider.maxPromptChars ?: TurnMetrics.DEFAULT_CAP
+        val docBlocks = StringBuilder()
+        val pdfNotes = StringBuilder()
+        val images = ArrayList<VisionFile>()
+        for ((idx, file) in files.withIndex()) {
+            when (kinds[idx]) {
+                VisionFileKind.IMAGE -> images.add(file)
+                VisionFileKind.TEXT_DOC -> {
+                    val text = VisionFiles.truncateDocText(
+                        String(file.bytes, Charsets.UTF_8), docCap
+                    )
+                    docBlocks.append("\n\n[Dokumen ${file.fileName}]\n").append(text)
+                }
+                VisionFileKind.DOCX -> {
+                    val text = VisionFiles.truncateDocText(extractDocxText(file), docCap)
+                    docBlocks.append("\n\n[Dokumen ${file.fileName}]\n").append(text)
+                }
+                VisionFileKind.PDF -> {
+                    val rendered = renderPdfFirstPage(ctx, file)
+                    images.add(
+                        VisionFile(rendered.jpegBytes, file.fileName, "image/jpeg")
+                    )
+                    pdfNotes.append("\n\n(Ini halaman 1 dari ${rendered.pageCount} halaman ")
+                        .append("PDF '${file.fileName}' — hanya halaman 1 yang dianalisis.)")
+                }
+                VisionFileKind.UNSUPPORTED -> throw IllegalArgumentException(
+                    VisionFiles.unsupportedMessage(file)
+                )
+            }
+        }
+
+        // d. Batas gambar (termasuk PDF-jadi-gambar).
+        if (images.size > VisionFiles.MAX_IMAGES) {
+            throw IllegalArgumentException(
+                "Maks ${VisionFiles.MAX_IMAGES} gambar per panggilan — kirim sisanya terpisah."
+            )
+        }
+
+        // e. Siapkan tiap gambar → data URI JPEG base64.
+        val imageUris = images.map { prepareVisionImage(it) }
+
+        // f. Bangun messages: SATU ChatMessage user per gambar.
+        val promptLengkap = StringBuilder(prompt)
+            .append(docBlocks).append(pdfNotes).toString()
+        val messages = ArrayList<ChatMessage>()
+        if (imageUris.isEmpty()) {
+            messages.add(ChatMessage("user", promptLengkap))
+        } else {
+            messages.add(ChatMessage("user", promptLengkap, imageUrl = imageUris[0]))
+            for (i in 1 until imageUris.size) {
+                messages.add(
+                    ChatMessage(
+                        "user", "Gambar ke-${i + 1}: ${images[i].fileName}",
+                        imageUrl = imageUris[i]
+                    )
+                )
+            }
+        }
+
+        // g. Panggil helper utama (Governor + D4 sudah ditangani di sana).
+        val answer = try {
+            chatMessagesForEngine(ctx, messages, kind, tools = null, thinking = thinking)
+        } catch (e: RuntimeException) {
+            // i. 400 penolakan vision → tandai model UNSUPPORTED, tanpa retry.
+            if (VisionFiles.isVisionRejection400(e.message)) {
+                try {
+                    val cached = LlmProviderStore.loadModels(ctx, provider.id)
+                    LlmProviderStore.saveModels(
+                        ctx, provider.id,
+                        VisionFiles.markUnsupported(cached, provider.model),
+                        LlmProviderStore.loadModelsFetchedAt(ctx, provider.id)
+                    )
+                } catch (markErr: Exception) {
+                    Log.w("LlmEngineChat", "askWithFiles: gagal menandai model unsupported: ${markErr.message}")
+                }
+                throw RuntimeException(
+                    VisionFiles.serverRejectedMessage(
+                        provider.label, provider.model,
+                        RedactSecrets.redact(e.message ?: "")
+                    )
+                )
+            }
+            throw e
+        }
+
+        // h. Governor gambar: +1 per gambar, hanya bila sukses.
+        if (images.isNotEmpty()) {
+            Governor.bumpModels(ctx, provider.id, bucketFor(kind), images.size)
+        }
+        return answer
+    }
+
+    /** Ekstrak teks word/document.xml dari bytes DOCX (pola fallbackDocVc212). */
+    private fun extractDocxText(file: VisionFile): String {
+        ZipInputStream(ByteArrayInputStream(file.bytes)).use { zin ->
+            var entry = zin.nextEntry
+            while (entry != null) {
+                if (entry.name == "word/document.xml") {
+                    return VisionFiles.stripDocxXml(
+                        zin.readBytes().toString(Charsets.UTF_8)
+                    )
+                }
+                entry = zin.nextEntry
+            }
+        }
+        throw IllegalArgumentException(
+            "File '${file.fileName}' gagal diekstrak (word/document.xml tidak ditemukan)."
+        )
+    }
+
+    /** Hasil render halaman 1 PDF: bytes JPEG + jumlah halaman. */
+    private class RenderedPdfPage(val jpegBytes: ByteArray, val pageCount: Int)
+
+    /**
+     * Render halaman 1 PDF → JPEG (pola MainActivity :4590/:8202:
+     * PdfRenderer + RENDER_MODE_FOR_DISPLAY, JPEG q85, file sementara
+     * di ctx.cacheDir). Gagal render → RuntimeException jujur.
+     */
+    private fun renderPdfFirstPage(ctx: Context, file: VisionFile): RenderedPdfPage {
+        val tmp = File(ctx.cacheDir, "vision-pdf-" + System.currentTimeMillis() + ".pdf")
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        try {
+            tmp.writeBytes(file.bytes)
+            pfd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = PdfRenderer(pfd)
+            val pageCount = renderer.pageCount
+            if (pageCount <= 0) throw IllegalStateException("PDF tanpa halaman")
+            val page = renderer.openPage(0)
+            val bmp = Bitmap.createBitmap(
+                page.width, page.height, Bitmap.Config.ARGB_8888
+            )
+            try {
+                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                val bos = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, bos)
+                return RenderedPdfPage(bos.toByteArray(), pageCount)
+            } finally {
+                bmp.recycle()
+                page.close()
+            }
+        } catch (e: Exception) {
+            throw RuntimeException(
+                "PDF '${file.fileName}' gagal dirender (halaman 1): ${e.message}", e
+            )
+        } finally {
+            try { renderer?.close() } catch (ignored: Exception) { }
+            try { pfd?.close() } catch (ignored: Exception) { }
+            try { tmp.delete() } catch (ignored: Exception) { }
+        }
+    }
+
+    /** True bila bytes diawali magic JPEG (FF D8 FF). */
+    private fun isJpegBytes(bytes: ByteArray): Boolean =
+        bytes.size >= 3 && bytes[0] == 0xFF.toByte() &&
+            bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
+
+    /** Kompres satu bitmap → bytes JPEG kualitas q. */
+    private fun jpegBytes(bmp: Bitmap, quality: Int): ByteArray {
+        val bos = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+        return bos.toByteArray()
+    }
+
+    /**
+     * Siapkan satu gambar → data URI "data:image/jpeg;base64,..."
+     * (pola analyzePhotoAndContinue: skala maks 1280, JPEG q80).
+     * JPEG yang dimensinya ≤1280 dan ukurannya ≤1 MB dipakai apa adanya
+     * (hindari kompres ganda). Bila hasil kompres masih >1 MB → ulang
+     * q60 + skala 0.5; bila tetap >1 MB → IllegalArgumentException §4.4.
+     */
+    private fun prepareVisionImage(file: VisionFile): String {
+        val bytes = file.bytes
+        // Jalur cepat: sudah JPEG, dimensi ≤1280, ukuran ≤1 MB.
+        if (isJpegBytes(bytes) && bytes.size <= VisionFiles.MAX_IMAGE_BYTES_AFTER_COMPRESS) {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (opts.outWidth > 0 && opts.outHeight > 0 &&
+                maxOf(opts.outWidth, opts.outHeight) <= 1280
+            ) {
+                return "data:image/jpeg;base64," +
+                    Base64.encodeToString(bytes, Base64.NO_WRAP)
+            }
+        }
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: throw IllegalArgumentException(
+                "📷 ${file.fileName} tidak bisa dianalisis: file gambar tidak terbaca. " +
+                    "Coba gambar JPG/PNG yang lebih kecil."
+            )
+        try {
+            val scale = 1280.0 / maxOf(bmp.width, bmp.height)
+            val scaled = if (scale < 1.0) {
+                Bitmap.createScaledBitmap(
+                    bmp, (bmp.width * scale).toInt(),
+                    (bmp.height * scale).toInt(), true
+                )
+            } else {
+                bmp
+            }
+            try {
+                var jpeg = jpegBytes(scaled, 80)
+                if (jpeg.size > VisionFiles.MAX_IMAGE_BYTES_AFTER_COMPRESS) {
+                    val half = Bitmap.createScaledBitmap(
+                        scaled, maxOf(1, scaled.width / 2),
+                        maxOf(1, scaled.height / 2), true
+                    )
+                    try {
+                        jpeg = jpegBytes(half, 60)
+                    } finally {
+                        if (half != scaled) half.recycle()
+                    }
+                }
+                if (jpeg.size > VisionFiles.MAX_IMAGE_BYTES_AFTER_COMPRESS) {
+                    throw IllegalArgumentException(VisionFiles.tooLargeMessage(file))
+                }
+                return "data:image/jpeg;base64," +
+                    Base64.encodeToString(jpeg, Base64.NO_WRAP)
+            } finally {
+                if (scaled != bmp) scaled.recycle()
+            }
+        } finally {
+            bmp.recycle()
+        }
     }
 
     /** Async callback (untuk UI). Wrapper di atas chatMessagesForEngine. */
