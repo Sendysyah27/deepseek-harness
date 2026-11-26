@@ -122,8 +122,8 @@ class MainActivity : Activity() {
     private var skillDetailVersionVc310: Int = -1 // -1 = versi terbaru
     private var skillDetailCodeVc310: Boolean = false // false = preview, true = kode mentah
     // T4a: Terminal Pro — scroll output + indeks riwayat perintah
-    private var termScroll: ScrollView? = null
-    private var termHistIdx: Int = -1
+    internal var termScroll: ScrollView? = null
+    internal var termHistIdx: Int = -1
     // T4b1: Browser agen — kontainer jelajah + tab-tab WebView agen
     internal var browserBox: LinearLayout? = null
     internal var bFrame: FrameLayout? = null
@@ -309,10 +309,11 @@ class MainActivity : Activity() {
     private val retriedTools = HashSet<String>()
     private lateinit var verifyCheck: CheckBox
     private lateinit var sessionTitleTv: TextView
-    private lateinit var termOut: TextView
+    internal lateinit var termOut: TextView
+    internal fun termOutReady(): Boolean = ::termOut.isInitialized
     // F3 (v4.37.0): label status serve di Terminal (diperbarui dari thread).
-    private var serveStatusTv: TextView? = null
-    private var tsStatusTv: TextView? = null
+    internal var serveStatusTv: TextView? = null
+    internal var tsStatusTv: TextView? = null
     private lateinit var monitorTv: TextView
     private lateinit var setupStatusTv: TextView
     private var setupTitleTv: TextView? = null
@@ -337,7 +338,7 @@ class MainActivity : Activity() {
     // T6b: UI React sudah dihapus total (v4.27.0) — Harness 100% native.
     private val setupBtnViews = ArrayList<Button>()
     private var personaFieldRef: EditText? = null
-    private var termRunBtnRef: Button? = null
+    internal var termRunBtnRef: Button? = null
     private var monitorSearchInputRef: EditText? = null
     private var monitorSearchBtnRef: Button? = null
     private var monitorRefreshBtnRef: Button? = null
@@ -730,7 +731,7 @@ class MainActivity : Activity() {
         } catch (e: Exception) { false }
     }
 
-    private fun termRunPersistent(cmd: String): String {
+    internal fun termRunPersistent(cmd: String): String {
         if (!termEnsureShell()) return "Shell tidak bisa dimulai."
         val marker = "HXR" + System.nanoTime()
         synchronized(termBuf) { termMark = termBuf.length }
@@ -1379,13 +1380,13 @@ class MainActivity : Activity() {
     // dipindah ke th.tileTint / Color.WHITE — teks #4B67B4 di atas
     // surface dark hanya 3.06:1 (gagal AA), tileTint 7.73:1.
     internal val ACCENT = ChatThemeVc306.accentSolid
-    private val TEXT: Int get() = currentTheme().text
+    internal val TEXT: Int get() = currentTheme().text
     private val DIM: Int get() = currentTheme().dim
     // vc180: tema Setup (Gelap/Terang/Sistem) — dibaca segar tiap render Setup.
     // vc306 (C1): tambah slot `faint` (tersier #9A9EA9 dark / #646974
     // light) untuk timestamp/footnote/placeholder/status.
-    private data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val faint: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int, val codeText: Int, val codeBg: Int)
-    private fun currentTheme(): ThemeColors {
+    internal data class ThemeColors(val bg: Int, val card: Int, val stroke: Int, val text: Int, val dim: Int, val faint: Int, val tileBg: Int, val tileTint: Int, val track: Int, val errBg: Int, val errText: Int, val codeText: Int, val codeBg: Int)
+    internal fun currentTheme(): ThemeColors {
         val mode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
         val dark = when (mode) {
             "terang" -> false
@@ -1409,7 +1410,7 @@ class MainActivity : Activity() {
         GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             if (isDarkTheme()) ChatThemeVc306.darkBgTop else ChatThemeVc306.lightBgTop,
             if (isDarkTheme()) ChatThemeVc306.darkBgBottom else ChatThemeVc306.lightBgBottom))
-    private fun isDarkTheme(): Boolean {
+    internal fun isDarkTheme(): Boolean {
         val mode = try { getSharedPreferences("harness", MODE_PRIVATE).getString("themeMode", "gelap") } catch (e: Exception) { "gelap" }
         return when (mode) {
             "terang" -> false
@@ -1417,7 +1418,7 @@ class MainActivity : Activity() {
             else -> true
         }
     }
-    private fun roundedS(color: Int, radiusDp: Int, stroke: Int): android.graphics.drawable.GradientDrawable = rounded(color, radiusDp).apply { setStroke(dp(1), stroke) }
+    internal fun roundedS(color: Int, radiusDp: Int, stroke: Int): android.graphics.drawable.GradientDrawable = rounded(color, radiusDp).apply { setStroke(dp(1), stroke) }
     private fun tileImage(iconRes: Int, bg: Int, tint: Int, sizeDp: Int): android.widget.ImageView = android.widget.ImageView(this).apply {
         background = rounded(bg, 12)
         setImageDrawable(iconDrawable(iconRes, tint))
@@ -1451,7 +1452,7 @@ class MainActivity : Activity() {
         }
         return row
     }
-    private fun cardBoxT(): LinearLayout = LinearLayout(this).apply {
+    internal fun cardBoxT(): LinearLayout = LinearLayout(this).apply {
         val th = currentTheme()
         orientation = LinearLayout.VERTICAL
         background = roundedS(th.card, 18, th.stroke)
@@ -1501,7 +1502,7 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    private fun thBtn(label: String, accent: Boolean = false, onClick: () -> Unit): Button = Button(this).apply {
+    internal fun thBtn(label: String, accent: Boolean = false, onClick: () -> Unit): Button = Button(this).apply {
         val th = currentTheme()
         text = label
         background = rounded(if (accent) ACCENT else th.tileBg, ChatThemeVc306.rMd)
@@ -1541,7 +1542,7 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    private fun thRowBtn(row: LinearLayout, label: String, accent: Boolean = false, onClick: () -> Unit) {
+    internal fun thRowBtn(row: LinearLayout, label: String, accent: Boolean = false, onClick: () -> Unit) {
         row.addView(thBtn(label, accent, onClick).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
         })
@@ -1553,7 +1554,7 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun thDialog(title: String, body: View, buttons: List<Triple<String, Boolean, (android.app.AlertDialog) -> Unit>>, danger: Set<String> = emptySet()): android.app.AlertDialog {
+    internal fun thDialog(title: String, body: View, buttons: List<Triple<String, Boolean, (android.app.AlertDialog) -> Unit>>, danger: Set<String> = emptySet()): android.app.AlertDialog {
         val th = currentTheme()
         var dlgHolder: android.app.AlertDialog? = null
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(10)); background = rounded(th.card, ChatThemeVc306.rXl) }
@@ -2599,7 +2600,7 @@ class MainActivity : Activity() {
 
     // ---------------- Chat + agent loop ----------------
 
-    private fun rounded(color: Int, radiusDp: Int): GradientDrawable {
+    internal fun rounded(color: Int, radiusDp: Int): GradientDrawable {
         val g = GradientDrawable()
         g.shape = GradientDrawable.RECTANGLE
         g.cornerRadius = dp(radiusDp).toFloat()
@@ -6308,170 +6309,6 @@ class MainActivity : Activity() {
 
     // ===== T4b1 (migrasi native): Browser agen =====
 
-    private fun termAppend(s: String) {
-        if (!::termOut.isInitialized) return
-        val cur = termOut.text?.toString() ?: ""
-        var next = if (cur.isBlank() || cur == "Output terminal tampil di sini.") s else cur + "\n" + s
-        if (next.length > 60000) next = next.substring(next.length - 60000)
-        termOut.text = next
-        termScroll?.post { try { termScroll?.fullScroll(View.FOCUS_DOWN) } catch (e: Exception) {} }
-    }
-
-    private fun termHistList(): MutableList<String> {
-        val raw = getSharedPreferences("harness", MODE_PRIVATE).getString("termHistNative", "") ?: ""
-        return if (raw.isBlank()) mutableListOf() else raw.split("\n").toMutableList()
-    }
-
-    private fun termHistPush(cmd: String) {
-        val h = termHistList()
-        if (h.lastOrNull() != cmd) h.add(cmd)
-        while (h.size > 100) h.removeAt(0)
-        getSharedPreferences("harness", MODE_PRIVATE).edit().putString("termHistNative", h.joinToString("\n")).apply()
-        termHistIdx = -1
-    }
-
-    private fun termHistNav(dir: Int) {
-        val h = termHistList()
-        if (h.isEmpty() || !::termInput.isInitialized) return
-        termHistIdx = if (termHistIdx < 0) { if (dir < 0) h.size - 1 else return } else (termHistIdx + dir).coerceIn(0, h.size - 1)
-        termInput.setText(h[termHistIdx])
-        try { termInput.setSelection(termInput.text.length) } catch (e: Exception) {}
-    }
-
-    /** Jalankan perintah dari UI Terminal: mode sh = shell PERSISTEN
-     *  (termRunPersistent), mode lain lewat Tools.runTerminal seperti biasa. */
-    private fun termRunFromUi() {
-        val cmd = if (::termInput.isInitialized) termInput.text.toString().trim() else ""
-        if (cmd.isEmpty()) return
-        termHistPush(cmd)
-        val mode = if (::termMode.isInitialized) termMode.selectedItem?.toString() ?: "sh" else "sh"
-        termAppend("$mode> $cmd")
-        Thread {
-            val r = try { if (mode == "sh") termRunPersistent(cmd) else Tools.runTerminal(this, cmd, mode) } catch (e: Exception) { "Error: " + (e.message ?: "") }
-            runOnUiThread { termAppend(r) }
-        }.start()
-    }
-
-    private fun showCommandCenter() {
-        val th = currentTheme()
-        val st = try { JSONObject(uiSettingsStatus()) } catch (e: Exception) { JSONObject() }
-        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(10)) }
-        lateinit var dlg: android.app.AlertDialog
-        val lt = st.optString("liveTurn", "")
-        val live = cardBoxT()
-        live.addView(tv("AGEN LIVE", 12f, th.dim, true))
-        live.addView(tv(if (lt.isNotBlank()) "⏳ " + lt else "Tidak ada giliran berjalan.", 12.5f, th.text))
-        val j = st.optJSONObject("journal")
-        if (j != null) {
-            val lines = j.optJSONArray("lines")
-            if (lines != null) {
-                val from = maxOf(0, lines.length() - 8)
-                for (i in from until lines.length()) live.addView(tv(lines.optString(i), 11.5f, th.dim))
-            }
-            if (j.optInt("ageSec", 0) > 90 && lt.isNotBlank()) live.addView(tv("⚠️ Tidak ada jejak baru >90 dtk — mungkin macet.", 12f, th.errText))
-        }
-        content.addView(live)
-        val ocP = st.optString("ocPending", "")
-        val ocB = st.optBoolean("ocBusy", false)
-        val oc = cardBoxT()
-        oc.addView(tv("KOORDINATOR OPENCODE", 12f, th.dim, true))
-        oc.addView(tv(when { ocP.isNotBlank() -> "⏸ Menunggu keputusan: " + ocP; ocB -> "🤖 Koordinator sedang bekerja"; else -> "Koordinator siaga." }, 12.5f, th.text))
-        if (ocP.isNotBlank() || ocB) {
-            val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            if (ocP.isNotBlank()) {
-                thRowBtn(rowB, "✅ Setujui") { dlg.dismiss(); uiOcResolve(true) }
-                thRowBtn(rowB, "❌ Tolak") { dlg.dismiss(); uiOcResolve(false) }
-            }
-            thRowBtn(rowB, "⏹ Stop") { dlg.dismiss(); uiOcStop() }
-            oc.addView(rowB)
-            val rowC = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            thRowBtn(rowC, "✔ Terima Checkpoint") { dlg.dismiss(); uiOcCkpt(true) }
-            thRowBtn(rowC, "↩ Urungkan") { dlg.dismiss(); uiOcCkpt(false) }
-            oc.addView(rowC)
-        }
-        content.addView(oc)
-        val team = st.optJSONObject("team")
-        if (team != null) {
-            val tc = cardBoxT()
-            tc.addView(tv("TIM MULTI-AGEN", 12f, th.dim, true))
-            tc.addView(tv("🎯 " + team.optString("goal", "") + " — " + team.optString("status", ""), 12.5f, th.text, true))
-            val lanes = team.optJSONArray("lanes")
-            if (lanes != null) for (i in 0 until lanes.length()) {
-                val l = lanes.optJSONObject(i) ?: continue
-                tc.addView(tv((if (l.optBoolean("done")) "✅ " else "⏳ ") + l.optString("slot") + ": " + l.optString("task"), 11.5f, th.text))
-                val res = l.optString("result")
-                if (res.isNotBlank()) tc.addView(tv(res, 11f, th.dim))
-            }
-            content.addView(tc)
-        }
-        val gov = cardBoxT()
-        gov.addView(tv("STATUS LATAR", 12f, th.dim, true))
-        gov.addView(tv("Gubernur: " + st.optInt("govCount", 0) + " / " + st.optInt("govCap", 500) + " panggilan hari ini", 12.5f, th.text))
-        val ck = st.optLong("ckptTask", 0)
-        gov.addView(tv(if (ck > 0) "⏸ Ada checkpoint tugas yang terputus — buka Chat untuk melanjutkan." else "Tidak ada checkpoint tertunda.", 12.5f, th.text))
-        content.addView(gov)
-        content.addView(thBtn("🔄 Segarkan") { dlg.dismiss(); showCommandCenter() })
-        dlg = thDialog("🎛 Command Center", content, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
-    }
-
-
-    // ===== T4b2 (migrasi native): Ubuntu Proot =====
-
-    private fun prootDialog() {
-        try { ProotEngine.repairLayout(this) } catch (e: Exception) {}
-        val ready = ProotEngine.isReady(this)
-        val lastRes = getSharedPreferences("harness", MODE_PRIVATE).getString("prootLastResult", "") ?: ""
-        val msg = ProotEngine.status(this) + "\n\nUbuntu 24.04 (aarch64) di dalam aplikasi — tanpa root, tanpa Termux. Rootfs diunduh sekali (±61 MB dari katalog proot-distro, SHA-256 diverifikasi sebelum ekstrak). Setelah terpasang: Terminal mode 'proot' & run_terminal mode \"proot\" menjalankan Ubuntu penuh (apt, python3, node, git). Terminal mode 'proot' kini 4 sesi pekerja (worker1..worker4, default worker1) + tangan serve terpisah yang tidak bisa dipakai run_terminal." + (if (lastRes.isNotBlank()) "\n\nHasil pasang terakhir: " + lastRes else "")
-        val tv = TextView(this).apply { text = msg; setTextColor(TEXT); textSize = 13f; setPadding(dp(20), dp(16), dp(20), dp(16)) }
-        var dlg: android.app.AlertDialog? = null
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(tv)
-            fun btn(label: String, fn: () -> Unit) {
-                addView(android.widget.Button(this@MainActivity).apply { text = label; setOnClickListener { dlg?.dismiss(); fn() } })
-            }
-            btn("⬇️ Unduh & Pasang") { prootInstallUi() }
-            btn("🧪 Tes") {
-                Thread {
-                    val r = ProotEngine.run(this@MainActivity, "echo PROOT_OK; uname -m; head -2 /etc/os-release; id; python3 --version", 60)
-                    runOnUiThread { android.app.AlertDialog.Builder(this@MainActivity).setTitle("Hasil Tes Proot").setMessage(r.take(3000)).setPositiveButton("OK", null).show() }
-                }.start()
-            }
-            btn("🧰 Pasang Tools Proot") {
-                Thread {
-                    val r = ProotTools.ensureToolsSync(this@MainActivity, true)
-                    val v = ProotTools.versions(this@MainActivity)
-                    runOnUiThread { android.app.AlertDialog.Builder(this@MainActivity).setTitle("Tools Proot").setMessage((r + "\n\n" + v).take(3000)).setPositiveButton("OK", null).show() }
-                }.start()
-            }
-            if (ready) {
-                btn("🗑 Hapus Rootfs") {
-                    android.app.AlertDialog.Builder(this@MainActivity).setTitle("Hapus rootfs Ubuntu?")
-                        .setMessage("Seluruh isi Ubuntu (±61 MB + paket yang kamu pasang) dihapus. Bisa diunduh lagi kapan pun.")
-                        .setPositiveButton("Hapus") { _, _ -> Thread { val m = ProotEngine.deleteRootfs(this@MainActivity); runOnUiThread { Toast.makeText(this@MainActivity, m, Toast.LENGTH_LONG).show() } }.start() }
-                        .setNegativeButton("Batal", null).show()
-                }
-            }
-        }
-        dlg = android.app.AlertDialog.Builder(this).setTitle("🐧 Ubuntu Proot (Terminal)").setView(col)
-            .setNegativeButton("Tutup", null).create()
-        dlg?.show()
-    }
-
-    private fun prootInstallUi() {
-        val tv = TextView(this).apply { text = "Menyiapkan…"; setTextColor(TEXT); textSize = 13f; setPadding(dp(20), dp(16), dp(20), dp(16)) }
-        val dlg = android.app.AlertDialog.Builder(this).setTitle("Memasang Ubuntu…").setView(tv).setCancelable(false).create()
-        dlg.show()
-        Thread {
-            val msg = ProotEngine.downloadAndInstall(this) { note -> runOnUiThread { tv.text = note } }
-            runOnUiThread {
-                try { dlg.dismiss() } catch (e: Exception) {}
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                prootDialog()
-            }
-        }.start()
-    }
-
 
     // ===== Perintah Cepat native (T5) =====
 
@@ -8054,7 +7891,7 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, dp(10)) }
     }
 
-    private fun tv(text: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
+    internal fun tv(text: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
         this.text = text; textSize = size; setTextColor(color)
         if (bold) typeface = android.graphics.Typeface.DEFAULT_BOLD
     }
@@ -8991,7 +8828,7 @@ class MainActivity : Activity() {
     // menaruh pusat ikon tepat di pusat tombol 48dp). Dipanggil dari
     // override setCompoundDrawables di iconBtnVc306. Tanpa-op bila
     // drawable tidak punya ukuran (bounds/intrinsic <= 0).
-    private fun Button.recenterIconBtnVc308(icon: android.graphics.drawable.Drawable?) {
+    internal fun Button.recenterIconBtnVc308(icon: android.graphics.drawable.Drawable?) {
         val w = icon?.bounds?.width()?.takeIf { it > 0 } ?: icon?.intrinsicWidth?.takeIf { it > 0 } ?: return
         val pad = (dp(48) - w) / 2
         if (paddingLeft != pad) setPadding(pad, 0, 0, 0)
@@ -13885,83 +13722,11 @@ class MainActivity : Activity() {
 
     // ---------------- Terminal tab ----------------
 
-    private lateinit var termMode: Spinner
-    private lateinit var termInput: EditText
+    internal lateinit var termMode: Spinner
+    internal lateinit var termInput: EditText
+    internal fun termInputReady(): Boolean = ::termInput.isInitialized
+    internal fun termModeReady(): Boolean = ::termMode.isInitialized
 
-    private fun buildTerminalTab(): View {
-        val th = currentTheme()
-        val dark = isDarkTheme()
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg); setPadding(dp(10), dp(8), dp(10), dp(8)) }
-        box.addView(tv("Terminal", 16f, th.text, true))
-        box.addView(tv("Mode sh = shell PERSISTEN di dalam app (cwd & env bertahan antar perintah, sesi app). Mode termux = kirim perintah ke Termux (background, perlu allow-external-apps). Mode shizuku = shell privilege ADB via rish (setup dulu di tab Setup). Mode priv = Mode ADB.", 12f, th.dim))
-        termMode = Spinner(this).apply {
-            adapter = object : ArrayAdapter<String>(this@MainActivity, android.R.layout.simple_spinner_item, listOf("sh", "termux", "shizuku", "priv", "proot")) {
-                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                    val v = super.getView(position, convertView, parent) as TextView
-                    v.setTextColor(th.text)
-                    return v
-                }
-                override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
-                    val v = super.getDropDownView(position, convertView, parent) as TextView
-                    v.setTextColor(th.text); v.setBackgroundColor(th.card)
-                    return v
-                }
-            }.apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        }
-        box.addView(termMode)
-        termInput = EditText(this).apply { hint = "Masukkan perintah…"; setTextColor(th.text); setHintTextColor(th.dim); background = roundedS(th.card, 22, th.stroke); setPadding(dp(14), dp(10), dp(14), dp(10)); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        box.addView(termInput)
-        val runBtn = Button(this).apply {
-            text = "➤ Jalankan"
-            setTextColor(Color.WHITE)
-            background = rounded(Color.rgb(59, 130, 246), 22)
-            setOnClickListener { termRunFromUi() }
-        }
-        termRunBtnRef = runBtn
-        box.addView(runBtn)
-        // T4a: baris utilitas + chip cepat Terminal Pro
-        val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        utilRow.addView(Button(this).apply { text = "▲"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; setOnClickListener { termHistNav(-1) } })
-        utilRow.addView(Button(this).apply { text = "▼"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; setOnClickListener { termHistNav(1) } })
-        utilRow.addView(Button(this).apply { text = "🧹 Bersihkan"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; setOnClickListener { if (::termOut.isInitialized) termOut.text = "" } })
-        utilRow.addView(Button(this).apply { text = "↺ Reset Sesi"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }; setOnClickListener { uiTermReset(); termAppend("(sesi shell direset)") } })
-        val utilScroll = HorizontalScrollView(this)
-        utilScroll.addView(utilRow)
-        box.addView(utilScroll)
-        // F3 (v4.37.0): status + bangkit serve satu ketukan.
-        val serveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        serveStatusTv = TextView(this).apply { text = "Serve :4199 — " + ServeHealth.lastStatus(this@MainActivity); textSize = 12f; setTextColor(th.dim); setPadding(dp(8), dp(4), dp(8), dp(4)); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
-        serveRow.addView(serveStatusTv)
-        serveRow.addView(Button(this).apply { text = "⚡ Bangkitkan Serve"; background = rounded(th.tileBg, 16); setTextColor(th.text); minWidth = 0; minHeight = 0; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(6), 0, 0, 0) }; setOnClickListener {
-            serveStatusTv?.text = "Serve :4199 — membangkitkan…"
-            Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { serveStatusTv?.text = "Serve :4199 — $r"; termAppend(r) } } catch (e: Exception) { runOnUiThread { serveStatusTv?.text = "Serve :4199 — gagal: ${e.message}" } } }.start()
-        } })
-        box.addView(serveRow)
-        // F3-Tailscale (v4.48.4): baris status tailscale (baca saja; watchdog service yang menjaga).
-        val tsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
-        tsStatusTv = TextView(this).apply { text = "Tailscale — " + TailscaleHealth.lastStatus(this@MainActivity) + " (" + TailscaleHealth.lastCheckText(this@MainActivity) + ")"; textSize = 12f; setTextColor(th.dim); setPadding(dp(8), dp(4), dp(8), dp(4)); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
-        tsRow.addView(tsStatusTv)
-        box.addView(tsRow)
-        val chipScroll = HorizontalScrollView(this)
-        val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for (chip in listOf("id", "pwd; ls -la", "ls /sdcard", "df -h", "free -m", "ps -A | head -40", "getprop ro.build.version.release")) {
-            chipRow.addView(Button(this).apply {
-                text = chip
-                background = rounded(th.tileBg, 16); setTextColor(th.text)
-                typeface = android.graphics.Typeface.MONOSPACE
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
-                setOnClickListener { if (::termInput.isInitialized) termInput.setText(chip); termRunFromUi() }
-            })
-        }
-        chipScroll.addView(chipRow)
-        box.addView(chipScroll)
-        val scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f) }
-        termScroll = scroll
-        termOut = TextView(this).apply { text = "Output terminal tampil di sini."; textSize = 12f; setTextColor(if (dark) Color.rgb(176, 226, 186) else Color.rgb(21, 128, 61)); typeface = android.graphics.Typeface.MONOSPACE; background = rounded(if (dark) Color.rgb(10, 10, 10) else th.card, 18); setPadding(dp(12), dp(10), dp(12), dp(10)) }
-        scroll.addView(termOut)
-        box.addView(scroll)
-        return box
-    }
 
     // ---------------- Monitor tab ----------------
 
