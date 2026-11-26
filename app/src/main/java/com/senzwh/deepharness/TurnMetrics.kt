@@ -358,6 +358,27 @@ object TurnMetrics {
         return v
     }
 
+    // ---- §3.3 (Fase 0b): cap prompt per-provider (K4) ----
+    // provider.maxPromptChars terisi menang; null → DEFAULT_CAP (200.000).
+    // Ambang proaktif tetap 80% cap (proactiveThreshold).
+    fun promptCapFor(provider: LlmProvider): Int = provider.maxPromptChars ?: DEFAULT_CAP
+
+    // ---- §3.3 (Fase 0b): provider + engine giliran terakhir ----
+    // Ditulis LlmEngineChat sekali per panggilan; ikut snapshot JSON
+    // finish() supaya Monitor tidak mencampur statistik DeepSeek vs
+    // Models API. TIDAK MENGHAPUS logika sesi server DeepSeek di file
+    // ini (itu Fase 6).
+    private var lastProvider: String = ""
+    private var lastEngine: String = ""
+
+    fun recordProvider(providerId: String, engine: String) {
+        lastProvider = providerId
+        lastEngine = engine
+    }
+
+    fun lastProvider(): String = lastProvider
+    fun lastEngine(): String = lastEngine
+
     fun finish(ctx: Context, reason: String) {
         if (!begun) return
         begun = false
@@ -390,6 +411,8 @@ object TurnMetrics {
         sb.append("\"antrean_jumlah\":").append(queueCount).append(",")
         sb.append("\"antrean_total_ms\":").append(queueWaitMsTotal).append(",")
         sb.append("\"antrean_ditolak\":").append(queueRejected).append(",")
+        sb.append("\"provider\":\"").append(esc(lastProvider)).append("\",")
+        sb.append("\"engine\":\"").append(esc(lastEngine)).append("\",")
         sb.append("\"giliran_ke\":").append(turnNo)
         sb.append("}")
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_LAST, sb.toString()).apply()

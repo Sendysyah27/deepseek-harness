@@ -51,19 +51,59 @@ mkdir -p "$OUT"
 
 echo "== kompilasi test Kotlin =="
 "$KOTLINC" -nowarn -cp "$JSON_JAR" -d "$OUT" \
+  "$PROJ/app/src/test/AndroidStubs.kt" \
+  "$PROJ/app/src/test/AndroidStubs2.kt" \
+  "$PROJ/app/src/test/AndroidStubs3.kt" \
+  "$PROJ/app/src/test/AndroidStubs4.kt" \
+  "$PROJ/app/src/test/AndroidStubs5.kt" \
+  "$PROJ/app/src/test/FakeAndroid.kt" \
   "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/SqliteSeam.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ToolRegistry.kt" \
-  "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviders.kt" \
-  "$PROJ/app/src/main/java/com/senzwh/deepharness/OpenAiCompatClient.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/OpenAiCompatClient.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviders.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/Governor.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/TurnMetrics.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/EventDb.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/SecureStore.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviderStore.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/AgentEngine.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelCaps.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmEngineChat.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelPickerController.kt" \
   "$PROJ/app/src/test/ToolRegistryTest.kt" \
-  "$PROJ/app/src/test/LlmProvidersTest.kt"
+  "$PROJ/app/src/test/LlmProvidersTest.kt" \
+  "$PROJ/app/src/test/OpenAiCompatClientTest.kt" \
+  "$PROJ/app/src/test/ModelCatalogTest.kt" \
+  "$PROJ/app/src/test/FirstRunStateTest.kt" \
+  "$PROJ/app/src/test/ModelCapsTest.kt" \
+  "$PROJ/app/src/test/GovernorModelsTest.kt" \
+  "$PROJ/app/src/test/EngineRouterTest.kt"
 
 echo "== jalankan ToolRegistryTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolRegistryTestKt
 
 echo "== jalankan LlmProvidersTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.LlmProvidersTestKt
+
+echo "== jalankan OpenAiCompatClientTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.OpenAiCompatClientTestKt
+
+echo "== jalankan ModelCatalogTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelCatalogTestKt
+
+echo "== jalankan FirstRunStateTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.FirstRunStateTestKt
+
+echo "== jalankan ModelCapsTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelCapsTestKt
+
+echo "== jalankan GovernorModelsTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.GovernorModelsTestKt
+
+echo "== jalankan EngineRouterTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.EngineRouterTestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"
