@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore signing keystores
+        run: |
+          echo "${{ secrets.DEBUG_KEYSTORE_B64 }}" | base64 -d > debug.keystore
+          echo "${{ secrets.PURE_KEYSTORE_B64 }}" | base64 -d > pure.keystore
+          test -s debug.keystore && test -s pure.keystore
+
       - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
