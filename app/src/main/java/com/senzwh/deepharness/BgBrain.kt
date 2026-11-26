@@ -217,6 +217,26 @@ object BgBrain {
     }
 
     private fun chatSync(ctx: Context, api: DsApiClient, prompt: String, reviewer: Boolean = false): String {
+        // FULL MIGRATION: engine "openai" → Models API; bypass DsApiClient/WebView.
+        if (AgentEngines.current(ctx) == "openai") {
+            LlmProviderStore.hydrate(ctx)
+            val actId = LlmProviderStore.activeId(ctx)
+            val prov = LlmProviders.activeProvider()
+            val key = LlmProviderStore.apiKey(ctx, actId)
+            if (prov.kind != LlmKind.OPENAI_COMPAT || key.isNullOrBlank()) {
+                throw Exception("Otak Latar: provider '$actId' belum siap (butuh OpenAI-compatible + API key).")
+            }
+            val latchBg = CountDownLatch(1)
+            val outBg = java.util.concurrent.atomic.AtomicReference<String?>(null)
+            val errBg = java.util.concurrent.atomic.AtomicReference<String?>(null)
+            val thinkBg2 = prefs(ctx).getString("dsModelVariant", "v3") == "r1"
+            LlmProviders.chat(key, prov, prompt, thinkBg2, { },
+                { text, _ -> outBg.set(text); latchBg.countDown() },
+                { e -> errBg.set(e); latchBg.countDown() })
+            latchBg.await(300, TimeUnit.SECONDS)
+            errBg.get()?.let { throw Exception(it) }
+            return outBg.get() ?: throw Exception("Otak Latar: Models API timeout / tanpa hasil.")
+        }
         val latch = CountDownLatch(1)
         val out = AtomicReference<String?>(null)
         val err = AtomicReference<String?>(null)

@@ -99,6 +99,19 @@ fun main() {
     }
     LlmProviders.setActive(LlmProviders.ID_DEEPSEEK)
 
+    // chat() — validasi gagal tanpa jaringan (onError dipanggil)
+    var err: String? = null
+    LlmProviders.chat(null, null, "x", false, { }, { _, _ -> }, { err = it })
+    check("chat provider null → error", err?.contains("belum dikonfigurasi", ignoreCase = true) == true, "err=$err")
+
+    err = null
+    LlmProviders.chat(null, LlmProviders.find(LlmProviders.ID_DEEPSEEK), "x", false, { }, { _, _ -> }, { err = it })
+    check("chat provider deepseek → error", err?.contains("bukan OpenAI-compatible", ignoreCase = true) == true, "err=$err")
+
+    err = null
+    LlmProviders.chat(null, LlmProviders.addCustom("nokey2", "X", "https://a.b/v1", null, "m", true), "x", false, { }, { _, _ -> }, { err = it })
+    check("chat tanpa key → error", err?.contains("belum ada", ignoreCase = true) == true, "err=$err")
+
     println(if (failed == 0) "SEMUA LULUS" else "GAGAL: $failed cek")
     if (failed != 0) kotlin.system.exitProcess(1)
 }

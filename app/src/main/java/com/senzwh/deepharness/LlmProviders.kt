@@ -8,8 +8,7 @@ package com.senzwh.deepharness
  * SecureStore hidup di `LlmProviderStore` (Android-only).
  *
  * Provider bawaan DeepSeek tetap menjadi default; provider kustom bertipe
- * OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, vLLM, endpoint lain
- * yang mengekspos /chat/completions).
+ * OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, vLLM, dll).
  */
 enum class LlmKind { DEEPSEEK, OPENAI_COMPAT }
 
@@ -108,4 +107,32 @@ object LlmProviders {
     fun activeId(): String = activeId
 
     fun activeProvider(): LlmProvider = find(activeId) ?: deepseek
+
+    /** Memanggil provider aktif (OpenAI-compatible) via OpenAiCompatClient.
+     *  onPartial dipanggil tiap ada fragmen jawaban baru (streaming).
+     *  onDone dipanggil sekali saat selesai: (content, thinking).
+     *  onError dipanggil bila gagal. */
+    fun chat(apiKey: String?, provider: LlmProvider?, prompt: String,
+             thinking: Boolean,
+             onPartial: (String) -> Unit,
+             onDone: (String, String) -> Unit,
+             onError: (String) -> Unit) {
+        if (provider == null) { onError("Provider LLM aktif belum dikonfigurasi."); return }
+        if (provider.kind != LlmKind.OPENAI_COMPAT) { onError("Provider aktif bukan OpenAI-compatible."); return }
+        val key = apiKey?.takeIf { it.isNotBlank() }
+        if (key.isNullOrBlank()) { onError("API key provider '${provider.id}' belum ada."); return }
+        try {
+            OpenAiCompatClient.chat(
+                provider.baseUrl, key, prompt, thinkingEnabled = thinking,
+                onPartial = onPartial,
+                onDone = { content, think -> onDone(content, think) },
+                onError = onError
+            )
+        } catch (e: Exception) {
+            onError(sanitize(e.message ?: e.toString()))
+        }
+    }
+
+    private fun sanitize(s: String): String =
+        s.replace(Regex("(?i)Bearer\\s+\\S+"), "Bearer <redacted>")
 }

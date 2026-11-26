@@ -106,6 +106,7 @@ import java.io.File
         "8." -> AksiMeta("📦", "Shizuku: File dex", "Jalur lama — pakai hanya bila perlu", 0)
         "61." -> AksiMeta("🔗", "Konektor MCP", "Server MCP resmi + kustom", 0)
         "62." -> AksiMeta("🔌", "Token API-Buatan", "Token klien API-Buatan, status ADA/BELUM", 0)
+        "73." -> AksiMeta("🧠", "Provider LLM (OpenAI-compatible)", "Atur base URL, model, API key, aktifkan otak", 0)
         // vc314 Worker B — Concat (kategori konektor, tombol backing 71.).
         "71." -> AksiMeta("🎬", "Concat", "Buka proyek Concat, token tersimpan aman", 0)
         "63." -> AksiMeta("🧑‍🏭", "Jobs Proot (Supervisor)", "Job latar proot: status, ekor log, kill, restart", 0)
@@ -1377,6 +1378,7 @@ import java.io.File
         addBtn("71. Concat") { setupView = "concat"; refreshSetupNative() }
         // vc183: catatan klasik tidak dirender lagi.
         // vc183: klasik tidak dirender sama sekali (dulu T8: dibangun lalu GONE).
+        addBtn("73. Provider LLM (OpenAI-compatible)") { showLlmProviderDialog() }
         // setupBtnViews tetap terdaftar & performClick tetap bekerja.
         return scroll
     }

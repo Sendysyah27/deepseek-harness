@@ -54,6 +54,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ToolRegistry.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviders.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/OpenAiCompatClient.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/RedactSecrets.kt" \
   "$PROJ/app/src/test/ToolRegistryTest.kt" \
   "$PROJ/app/src/test/LlmProvidersTest.kt"
 

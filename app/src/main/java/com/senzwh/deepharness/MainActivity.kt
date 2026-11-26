@@ -8697,6 +8697,44 @@ class MainActivity : Activity() {
     private fun sendToAgent(prompt: String, deltaPrompt: String? = null) {
         statusTv.text = "DeepSeek: berpikir…"
         beginStreamBubble()
+        // FULL MIGRATION: engine "openai" = otak Models API (OpenAI-compatible).
+        // DeepSeek Web/API Internal TIDAK dipakai di engine ini.
+        if (AgentEngines.current(this) == "openai") {
+            statusTv.text = "Models API: berpikir…"
+            LlmProviderStore.hydrate(this)
+            val actId = LlmProviders.activeId()
+            val prov = LlmProviders.activeProvider()
+            val key = LlmProviderStore.apiKey(this, actId)
+            if (prov.kind != LlmKind.OPENAI_COMPAT) {
+                endStreamBubble()
+                addBubble("⚠️ Provider '${prov.id}' bukan OpenAI-compatible. Atur provider via Setup > Model.", false, turn = true)
+                return
+            }
+            if (key.isNullOrBlank()) {
+                endStreamBubble()
+                addBubble("⚠️ Provider '${prov.id}' belum punya API key. Atur via Setup > Model.", false, turn = true)
+                return
+            }
+            val wantThink = (thinkingCheck.isChecked || autoThinkThisTurn) && !(internalTurn || verifyTurn)
+            LlmProviders.chat(key, prov, prompt, wantThink,
+                { partial ->
+                    if (internalTurn || verifyTurn) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
+                    else updateStreamBubble(partial)
+                },
+                { resp, think ->
+                    turnThinking = think
+                    endStreamBubble()
+                    runOnUiThread { statusTv.text = "Models API: AKTIF — asisten siap." }
+                    handleAgentResponse(resp)
+                },
+                { err ->
+                    endStreamBubble()
+                    if (!tryOfflineFallback(err)) {
+                        addBubble("⚠️ $err", false, turn = true)
+                    }
+                })
+            return
+        }
         val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
         val silent = internalTurn || verifyTurn
         // vc330 SESI: jenis giliran senyap untuk katup pengaman klien.
@@ -12698,6 +12736,52 @@ class MainActivity : Activity() {
                     .setNegativeButton("Periksa Ulang", { _, _ -> showWorkerDialog() }).show()
             }
         }.start()
+    }
+
+internal fun showLlmProviderDialog() {
+        val ctx = this
+        val th = currentTheme()
+        LlmProviderStore.hydrate(ctx)
+        val lay = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val curAct = LlmProviderStore.activeId(ctx)
+        lay.addView(tv("Otak aktif: $curAct", 12.5f, th.dim))
+        val provIdEt = EditText(ctx).apply { hint = "id (mis. openai, openrouter, ollama)"; setText(curAct == LlmProviders.ID_DEEPSEEK ? "openai" : curAct); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val labelEt = EditText(ctx).apply { hint = "label (mis. OpenAI)"; setText(LlmProviders.find(curAct)?.label ?: "OpenAI"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val baseEt = EditText(ctx).apply { hint = "base_url (https://api.openai.com/v1)"; setText(LlmProviders.find(curAct)?.baseUrl ?: "https://api.openai.com/v1"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val modelEt = EditText(ctx).apply { hint = "model (gpt-4o-mini, llama3, ...)"; setText(LlmProviders.find(curAct)?.model ?: "gpt-4o-mini"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val keyEt = EditText(ctx).apply { hint = "api_key (disimpan terenkripsi, tidak pernah tampil)"; inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD; setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        lay.addView(provIdEt); lay.addView(labelEt); lay.addView(baseEt); lay.addView(modelEt); lay.addView(keyEt)
+        thDialog("🧠 Provider LLM", lay, listOf(
+            Triple("Simpan & Aktifkan", true) { dd: android.app.AlertDialog ->
+                val id = provIdEt.text.toString().trim()
+                val label = labelEt.text.toString().trim()
+                val base = baseEt.text.toString().trim()
+                val model = modelEt.text.toString().trim()
+                val key = keyEt.text.toString().trim().ifBlank { LlmProviderStore.apiKey(ctx, id) }
+                if (id.isBlank() || label.isBlank() || base.isBlank() || model.isBlank()) {
+                    Toast.makeText(ctx, "id/label/base_url/model wajib diisi.", Toast.LENGTH_SHORT).show()
+                } else {
+                    try {
+                        val p = LlmProviders.addCustom(id, label, base, key, model, true)
+                        LlmProviderStore.save(ctx, p)
+                        LlmProviderStore.setActive(ctx, p.id)
+                        LlmProviders.setActive(p.id)
+                        getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("agentEngine", "openai").apply()
+                        Toast.makeText(ctx, "Provider '${p.id}' aktif. Otak = Models API.", Toast.LENGTH_LONG).show()
+                        dd.dismiss()
+                    } catch (e: Exception) {
+                        Toast.makeText(ctx, "Gagal: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            Triple("Pakai DeepSeek Web", false) { dd: android.app.AlertDialog ->
+                LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
+                LlmProviders.setActive(LlmProviders.ID_DEEPSEEK)
+                getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("agentEngine", "deepseek").apply()
+                Toast.makeText(ctx, "Otak kembali ke DeepSeek Web.", Toast.LENGTH_SHORT).show(); dd.dismiss()
+            },
+            Triple("Batal", false) { dd: android.app.AlertDialog -> dd.dismiss() }
+        ))
     }
 
 internal fun showApiTokenDialog() {
