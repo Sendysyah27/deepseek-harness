@@ -29,7 +29,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Tool registry yang bisa dipanggil agent DeepSeek lewat blok JSON. */
+/** Tool registry yang bisa dipanggil agent lewat blok JSON (dialek teks). */
 object Tools {
 
     /** vc216 Skill Forge: slug nama skill + nama sistem yang dilindungi.
@@ -244,7 +244,7 @@ object Tools {
 
     /** Argumen wajib per tool (v3.3.1): panggilan dengan argumen ini kosong
      *  DITOLAK sebelum jalan, dengan instruksi perbaiki-diri untuk model —
-     *  model DeepSeek kadang mengeluarkan blok tool "pengumuman" ber-args
+     *  model kadang mengeluarkan blok tool "pengumuman" ber-args
      *  kosong lalu malah bertanya ke user; penjaga ini memaksanya mengulang
      *  dengan argumen lengkap dalam giliran yang sama. */
     private val REQUIRED_ARGS: Map<String, String> = mapOf(
@@ -1404,7 +1404,7 @@ object Tools {
                                 // Setujui panel = "Udah, lanjut", Tolak panel = "Batal".
                                 // TTL = timeout + 30 dtk; selesai (apa pun hasilnya)
                                 // item ditarik dari panel agar tidak menggantung.
-                                panelId = try { ApprovalPanelStore.register(ctx, "", -1L, "DeepSeek", "wait_confirm",
+                                panelId = try { ApprovalPanelStore.register(ctx, "", -1L, "Models API", "wait_confirm",
                                     msg.take(140), "Agen menunggu konfirmasi manual lintas aplikasi (F1.1)",
                                     (timeout + 30) * 1000L) { approved -> pressed.set(approved); latch.countDown() } } catch (e: Exception) { null }
                             } else latch.countDown()
@@ -1849,7 +1849,7 @@ object Tools {
                     val h = args.optInt("hour", -1); val m = args.optInt("minute", 0)
                     if (h !in 0..23) "set_alarm butuh hour 0-23."
                     else {
-                        val label = args.optString("label", "Pengingat dari DeepSeek")
+                        val label = args.optString("label", "Pengingat dari Harness")
                         fun alarmIntent(skipUi: Boolean) = Intent(AlarmClock.ACTION_SET_ALARM).apply {
                             putExtra(AlarmClock.EXTRA_HOUR, h)
                             putExtra(AlarmClock.EXTRA_MINUTES, m)
@@ -2028,7 +2028,7 @@ object Tools {
                     else if (ins.length > 60000) "create_skill ditolak: instruction ${ins.length} karakter, maks 60000 — persingkat langkahnya."
                     else if (slug.length > 80) "create_skill ditolak: nama slug ${slug.length} karakter, maks 80."
                     else if (specVc262.blocked) { try { AttentionBudget.noteSkillBlocked(ctx) } catch (e: Exception) {}; "create_skill DITOLAK oleh SkillSpector (pemindai keamanan impor, BUKAN approval eksekusi tool): " + SkillSpector.verdictText(specVc262) + ". Perbaiki isi skill (hapus pola kredensial/shell/jaringan/injeksi) lalu coba lagi." }
-                    else if (linesVc293 > SkillJudge.MAX_LINES) "create_skill ditolak (vc293 aturan 500 baris): instruction $linesVc293 baris, maks ${SkillJudge.MAX_LINES}. Pindahkan detail ke bagian REFERENSI di akhir instruction (tandai 'REFERENSI — baca hanya bila ...') dan ringkas intinya <=500 baris — progressive disclosure hemat konteks DeepSeek web."
+                    else if (linesVc293 > SkillJudge.MAX_LINES) "create_skill ditolak (vc293 aturan 500 baris): instruction $linesVc293 baris, maks ${SkillJudge.MAX_LINES}. Pindahkan detail ke bagian REFERENSI di akhir instruction (tandai 'REFERENSI — baca hanya bila ...') dan ringkas intinya <=500 baris — progressive disclosure hemat konteks (dialek teks)."
                     else if (judgeVc293.d1 <= SkillJudge.D1_REJECT_MAX) run {
                         // VC303-P1-4 (LP-7): hitung create_skill yang ditolak
                         // D1 per skill per giliran, batas sama (5). Ke-6:
@@ -3004,10 +3004,8 @@ object Tools {
                         val targetId = if (idRaw.isBlank()) LlmProviderStore.activeId(ctx) else idRaw
                         val prov = LlmProviders.find(targetId)
                             ?: return "Provider '$targetId' tidak dikenal. Daftar: llm_provider_list"
-                        val key = if (targetId == LlmProviders.ID_DEEPSEEK) null else LlmProviderStore.apiKey(ctx, targetId)
-                        if (prov.kind != LlmKind.OPENAI_COMPAT) {
-                            "Provider '${prov.id}' bukan OpenAI-compatible (ini jalur DeepSeek, pakai chat normal)."
-                        } else if (!prov.enabled) {
+                        val key = LlmProviderStore.apiKey(ctx, targetId)
+                        if (!prov.enabled) {
                             // A3: provider nonaktif tidak bisa ditanya walau
                             // key-nya ada (client tidak mengecek enabled).
                             "Provider '${prov.id}' nonaktif."
@@ -3064,16 +3062,14 @@ object Tools {
                                     try { LlmProviders.setActive(next.id) } catch (e: Exception) { }
                                     "$removedNote Provider '${next.id}' sekarang aktif."
                                 } else {
-                                    // Tidak ada provider tersisa: simpan
-                                    // sentinel "deepseek" sebagai "tidak ada
-                                    // provider aktif" (konvensi setActive —
-                                    // id tak dikenal → deepseek), supaya
-                                    // activeId tidak menunjuk id yang sudah
-                                    // dihapus. Ini BUKAN fallback otak:
+                                    // Tidak ada provider tersisa: simpan ""
+                                    // (belum ada provider aktif, K1 Fase 6),
+                                    // supaya activeId tidak menunjuk id yang
+                                    // sudah dihapus. Ini BUKAN fallback otak:
                                     // pref agentEngine tetap "openai",
                                     // jadi helper melempar NO_PROVIDER
                                     // sampai provider baru diatur.
-                                    LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
+                                    LlmProviderStore.setActive(ctx, "")
                                     "$removedNote Belum ada provider aktif — atur provider baru di Setup > 73. Provider LLM."
                                 }
                             }
@@ -3116,25 +3112,16 @@ object Tools {
                     val lanes = mutableListOf<TeamRun.Lane>()
                     if (arrT != null) {
                         val profs = try { Agents.all(ctx) } catch (e: Exception) { emptyList() }
-                        val filled = try { AccountPool.filledSlots(ctx) } catch (e: Exception) { emptyList() }
-                        val used = HashSet<Int>()
                         for (i in 0 until minOf(arrT.length(), 4)) {
                             val o = arrT.optJSONObject(i) ?: continue
                             val t = o.optString("task").trim(); if (t.isBlank()) continue
                             val want = o.optString("agent").trim().lowercase()
                             val prof = profs.firstOrNull { it.id.lowercase() == want || it.name.lowercase() == want }
                                 ?: if (profs.isEmpty()) null else profs[i % profs.size]
-                            val slotWanted = o.optInt("slot", -1)
-                            // v4.46.0 F3: 1 lane = 1 slot. Slot tetap yang kosong
-                            // atau sudah dipakai lane lain = -1 (lane gagal jelas
-                            // di TeamRun, tanpa meminjam sesi akun lain).
-                            // 0/absen = otomatis (slot login pertama yang bebas).
-                            val slot = when {
-                                slotWanted in 1..5 && slotWanted in filled && !used.contains(slotWanted) -> slotWanted
-                                slotWanted == 0 || slotWanted == -1 -> filled.firstOrNull { !used.contains(it) } ?: -1
-                                else -> -1
-                            }
-                            if (slot > 0) used.add(slot)
+                            // K1 (Fase 6): slot hanya diteruskan apa adanya
+                            // (argumen tool + papan misi) — bukan gerbang;
+                            // lane jalan tanpa akun login.
+                            val slot = o.optInt("slot", -1)
                             lanes.add(TeamRun.Lane(prof?.id ?: "asisten", prof?.name ?: "Asisten", slot, t))
                         }
                     }
@@ -4718,11 +4705,18 @@ object Tools {
         val mi = android.app.ActivityManager.MemoryInfo()
         am.getMemoryInfo(mi)
         val ver = try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (e: Exception) { "?" }
+        // K1 (Fase 6): otak = provider Models API aktif (bukan sesi web).
+        val otakLine = try {
+            LlmProviderStore.hydrate(ctx)
+            val prov = LlmProviders.activeProvider()
+            if (prov != null) "Otak: Models API — ${prov.label} (${prov.id}), model ${prov.model}"
+            else "Otak: Models API — belum ada provider aktif (atur di Setup > 73)"
+        } catch (e: Exception) { "Otak: Models API" }
         return "Perangkat: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (${android.os.Build.DEVICE})\n" +
             "Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT}), ABI ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "-"}\n" +
             "RAM total ${(mi.totalMem / 1048576)} MB, tersedia ${(mi.availMem / 1048576)} MB\n" +
             "App: Harness v$ver (${ctx.packageName})\n" +
-            "Otak: DeepSeek via sesi web chat.deepseek.com (model deepseek-chat; DeepThink/Search mengikuti saklar di tab Chat)"
+            otakLine
     }
 
     private fun fmt(ts: Long): String =

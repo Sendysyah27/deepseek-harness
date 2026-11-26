@@ -355,11 +355,11 @@ class FloatingAgentActivity : Activity(), RecognitionListener {
         beforeId = lastHistoryId()
         val ok = try { BgBrain.submit(applicationContext, t, "panel") } catch (e: Exception) { false }
         if (!ok) {
-            // v4.10.1: mesin latar menolak (sesi DeepSeek mati / kuota Governor)
+            // v4.10.1: mesin latar menolak (otak Models API belum siap / kuota Governor)
             // TIDAK lagi otomatis meneruskan ke app. Tetap di panel, jujur soal
             // alasan, dan serahkan pilihan ke user lewat tombol Buka di App.
             pendingAppQuery = t
-            statusTv.text = "Mesin latar belum siap (sesi DeepSeek mati / kuota latar tercapai) — perintah TIDAK dijalankan. Ketuk 'Buka di App' untuk menjalankannya di dalam app, atau coba lagi nanti."
+            statusTv.text = "Mesin latar belum siap (otak Models API belum siap / kuota latar tercapai) — perintah TIDAK dijalankan. Ketuk 'Buka di App' untuk menjalankannya di dalam app, atau coba lagi nanti."
             resultTv.visibility = View.VISIBLE
             resultTv.text = "Tidak dijalankan di latar."
             return

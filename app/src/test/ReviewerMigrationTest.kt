@@ -4,9 +4,10 @@ package com.senzwh.deepharness
 //
 // Menjaga invarian: kind REVIEWER memakai bucket Governor "reviewer"
 // (bukan "bg"), routing REVIEWER mengikuti engine (openai → MODELS_API,
-// deepseek → DEEPSEEK_WEB, local → LOCAL_OFFLINE), reviewer di engine
-// openai INDEPENDEN dari sesi DeepSeek (reviewerIndependent), dan
-// reviewer mengirim panggilan teks biasa tanpa tools (toolsToJson null /
+// legacy/tak dikenal → MODELS_API, local → LOCAL_OFFLINE), reviewer di
+// engine openai SELALU INDEPENDEN (stateless, tanpa slot — fungsi
+// reviewerIndependent dihapus Fase 6 K1), dan reviewer mengirim
+// panggilan teks biasa tanpa tools (toolsToJson null /
 // kosong → null, native tool_calls hanya bila tools dipasok).
 //
 // Dijalankan oleh tools/run_tests.sh. Fungsi pure saja — JANGAN uji
@@ -45,26 +46,23 @@ fun main() {
     checkReviewer("routeFor openai + REVIEWER → MODELS_API",
         LlmEngineChat.routeFor("openai", LlmCallKind.REVIEWER) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("openai", LlmCallKind.REVIEWER))
-    checkReviewer("routeFor deepseek + REVIEWER → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.REVIEWER) == LlmRoute.DEEPSEEK_WEB,
+    checkReviewer("routeFor deepseek (legacy) + REVIEWER → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.REVIEWER) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("deepseek", LlmCallKind.REVIEWER))
     checkReviewer("routeFor local + REVIEWER → LOCAL_OFFLINE",
         LlmEngineChat.routeFor("local", LlmCallKind.REVIEWER) == LlmRoute.LOCAL_OFFLINE,
         "dapat=" + LlmEngineChat.routeFor("local", LlmCallKind.REVIEWER))
 
-    // 3. requiresWebView: openai tidak menyentuh WebView, deepseek ya.
+    // 3. requiresWebView (K1): TIDAK ADA engine yang menyentuh WebView.
     checkReviewer("requiresWebView openai → false",
         !LlmEngineChat.requiresWebView("openai"))
-    checkReviewer("requiresWebView deepseek → true",
-        LlmEngineChat.requiresWebView("deepseek"))
+    checkReviewer("requiresWebView legacy → false",
+        !LlmEngineChat.requiresWebView("deepseek"))
 
-    // 4. reviewerIndependent: hanya openai yang independen.
-    checkReviewer("reviewerIndependent openai → true",
-        LlmEngineChat.reviewerIndependent("openai"))
-    checkReviewer("reviewerIndependent deepseek → false",
-        !LlmEngineChat.reviewerIndependent("deepseek"))
-    checkReviewer("reviewerIndependent local → false",
-        !LlmEngineChat.reviewerIndependent("local"))
+    // 4. Fase 6 K1: reviewerIndependent DIHAPUS — reviewer kini selalu
+    // independen secara struktural (panggilan stateless via helper
+    // Models API, tanpa slot/akun giliran). Tidak ada lagi fungsi yang
+    // perlu dicek; invarian diwakili cek routeFor §2.
 
     // 5. toolsToJson: reviewer tanpa tools → null (panggilan teks biasa).
     checkReviewer("toolsToJson null → null (reviewer tanpa tools)",

@@ -89,7 +89,7 @@ object RustCore {
      */
     external fun skillTriggerJson(request: String): String
 
-    // ---- Slice 2: PowSolver (PoW DeepSeekHashV1) ----
+    // ---- Slice 2: PoW (DeepSeekHashV1) ----
     /** SHA3-256 sebagai 64 digit hex lowercase; "" / bukan-hex = gagal. */
     external fun powSha3Hex(input: String): String
     /** DeepSeekHashV1 (Keccak skip round 0) sebagai 64 digit hex. */
@@ -160,9 +160,9 @@ object RustCore {
      */
     external fun toolsLeavesJson(request: String): String?
 
-    // ---- Slice 11: Split DsApiClient (find + estTokens + upload) ----
+    // ---- Slice 11: split klien API lama (find + estTokens + upload) ----
     /**
-     * Split DsApiClient.kt. Request JSON `{"op":...}`:
+     * Split klien API lama. Request JSON `{"op":...}`:
      * `find_session_id`, `find_challenge`, `find_file_id`,
      * `est_tokens`, `safe_file_name`, `upload_file`.
      * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.
@@ -173,7 +173,7 @@ object RustCore {
      */
     external fun dsApiJson(request: String): String?
 
-    // ---- Slice 12: Otak latar/room (BgBrain/GroupChat/DsAgent/OcCoord) ----
+    // ---- Slice 12: otak latar/room ----
     /**
      * Logika murni BgBrain.kt. Request JSON `{"op":...}`:
      * `cut_boundary`, `trim_transcript`, `bg_quiet_hour`,
@@ -202,7 +202,7 @@ object RustCore {
     external fun groupChatJson(request: String): String?
 
     /**
-     * Logika murni DsAgent.kt. Request JSON `{"op":...}`:
+     * Logika murni pengirim WebView lama. Request JSON `{"op":...}`:
      * `poll_step`, `parse_eval_result`, `json_quote`,
      * `build_attach_js`, `build_send_js`, `ds_js`.
      * Respons `{"ok":true,...}` atau `{"ok":false,"error":...}`.

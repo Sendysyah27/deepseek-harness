@@ -5,10 +5,10 @@ package com.senzwh.deepharness
 // Menjaga invarian: kind ROOM dan GRAPH masuk bucket Governor "bg"
 // (kerja otonom = bucket latar, plan §3.2), kind TEAM masuk bucket
 // "team"; routing ROOM/TEAM/GRAPH mengikuti engine (openai → MODELS_API,
-// deepseek → DEEPSEEK_WEB, local → LOCAL_OFFLINE); engine openai tidak
-// menyentuh WebView; teks penolakan Governor menyebut provider + label
-// bucket "latar"/"tim"; dan jalur room/tim/graph mengirim prompt teks
-// biasa tanpa tools (toolsToJson null/kosong → null).
+// legacy/tak dikenal → MODELS_API, local → LOCAL_OFFLINE); TIDAK ADA
+// engine yang menyentuh WebView (K1); teks penolakan Governor menyebut
+// provider + label bucket "latar"/"tim"; dan jalur room/tim/graph
+// mengirim prompt teks biasa tanpa tools (toolsToJson null/kosong → null).
 //
 // Dijalankan oleh tools/run_tests.sh. Fungsi pure saja — JANGAN uji
 // MainActivity/BgBrain/GroupChat/TeamRun/OcCoord di sini.
@@ -71,14 +71,14 @@ fun main() {
     checkRoomTeamGraph("routeFor openai + GRAPH → MODELS_API",
         LlmEngineChat.routeFor("openai", LlmCallKind.GRAPH) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("openai", LlmCallKind.GRAPH))
-    checkRoomTeamGraph("routeFor deepseek + ROOM → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.ROOM) == LlmRoute.DEEPSEEK_WEB,
+    checkRoomTeamGraph("routeFor deepseek (legacy) + ROOM → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.ROOM) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("deepseek", LlmCallKind.ROOM))
-    checkRoomTeamGraph("routeFor deepseek + TEAM → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.TEAM) == LlmRoute.DEEPSEEK_WEB,
+    checkRoomTeamGraph("routeFor deepseek (legacy) + TEAM → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.TEAM) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("deepseek", LlmCallKind.TEAM))
-    checkRoomTeamGraph("routeFor deepseek + GRAPH → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.GRAPH) == LlmRoute.DEEPSEEK_WEB,
+    checkRoomTeamGraph("routeFor deepseek (legacy) + GRAPH → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.GRAPH) == LlmRoute.MODELS_API,
         "dapat=" + LlmEngineChat.routeFor("deepseek", LlmCallKind.GRAPH))
     checkRoomTeamGraph("routeFor local + ROOM → LOCAL_OFFLINE",
         LlmEngineChat.routeFor("local", LlmCallKind.ROOM) == LlmRoute.LOCAL_OFFLINE,
@@ -90,11 +90,11 @@ fun main() {
         LlmEngineChat.routeFor("local", LlmCallKind.GRAPH) == LlmRoute.LOCAL_OFFLINE,
         "dapat=" + LlmEngineChat.routeFor("local", LlmCallKind.GRAPH))
 
-    // 3. requiresWebView: hanya engine (tanpa kind) — openai/local false, deepseek true.
+    // 3. requiresWebView (K1): TIDAK ADA engine yang menyentuh WebView.
     checkRoomTeamGraph("requiresWebView openai → false",
         !LlmEngineChat.requiresWebView("openai"))
-    checkRoomTeamGraph("requiresWebView deepseek → true",
-        LlmEngineChat.requiresWebView("deepseek"))
+    checkRoomTeamGraph("requiresWebView legacy → false",
+        !LlmEngineChat.requiresWebView("deepseek"))
     checkRoomTeamGraph("requiresWebView local → false",
         !LlmEngineChat.requiresWebView("local"))
 

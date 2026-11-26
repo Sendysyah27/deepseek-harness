@@ -94,7 +94,7 @@ object ConcatApi {
     // Kotlin lama (`*Kotlin`) yang jalan. Error protokol ASLI dari
     // server (auth/down/api) DITERUSKAN apa adanya — bukan fallback.
 
-    /** Saklar seam Rust (mirip `rustPowSolver`): false = pakai Kotlin lama. */
+    /** Saklar seam Rust: false = pakai Kotlin lama. */
     internal var rustConcatApiClient: Boolean = true
 
     /** Sinyal internal: Rust tak bisa dipakai -> fallback ke `*Kotlin`. */

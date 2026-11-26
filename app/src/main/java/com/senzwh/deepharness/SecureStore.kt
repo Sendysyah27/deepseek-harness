@@ -11,8 +11,8 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Brankas kredensial: AES-256/GCM dengan kunci di Android Keystore (tidak pernah keluar dari HP).
- *  Dipakai untuk app password Gmail dsb — bukan untuk token DeepSeek (token itu tetap aturan lama:
- *  dibaca segar dari WebView tiap panggilan, tidak pernah disimpan). */
+ *  Dipakai untuk app password Gmail, API key provider LLM, dsb —
+ *  kredensial disimpan terenkripsi dan tidak pernah keluar dari HP. */
 object SecureStore {
 
     private const val PREFS = "harness_secure"

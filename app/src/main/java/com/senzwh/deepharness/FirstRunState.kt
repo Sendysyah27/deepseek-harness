@@ -67,8 +67,7 @@ object FirstRunState {
      * True bila fitur LLM harus menolak (state NO_PROVIDER): engine
      * "openai" TAPI tidak ada provider Models API yang configured.
      * Engine "local" TIDAK pernah NO_PROVIDER (agen aturan offline tetap
-     * jalan). Engine lain (legacy "deepseek" pra-migrasi) juga bukan
-     * NO_PROVIDER — jalurnya diatur Fase 6, bukan gerbang ini.
+     * jalan).
      */
     fun isNoProvider(engine: String, activeProvider: LlmProvider?): Boolean =
         engine == "openai" && LlmEngineChat.needsProviderSetup(activeProvider)

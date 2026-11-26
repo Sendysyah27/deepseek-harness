@@ -1,10 +1,10 @@
 package com.senzwh.deepharness
 
 // vc271 O5: antrean request ganti penolakan busy. Satu antrean FIFO per
-// klien (satu instance DsApiClient / satu SlotClient). Chat maks 3 menunggu,
-// reviewer antrean terpisah maks 1 dan didahulukan saat slot kosong (jadi
-// reviewer tidak mengantre tanpa batas di belakang chat panjang), timeout
-// antre 60 detik (lewat itu ditolak "antrean penuh"). Governor TIDAK dihitung
+// pemilik (owner) — chat maks 3 menunggu, reviewer antrean terpisah
+// maks 1 dan didahulukan saat antrean kosong (jadi reviewer tidak
+// mengantre tanpa batas di belakang chat panjang), timeout antre 60
+// detik (lewat itu ditolak "antrean penuh"). Governor TIDAK dihitung
 // di sini — hitungan tetap di pintu masuk eksekusi request (di dalam lambda
 // run yang dieksekusi), bukan saat masuk antre.
 class ApiRequestQueue(private val owner: String) {

@@ -20,10 +20,10 @@ object Agents {
     private val PALETTE = listOf("#4d8cff", "#e8a33d", "#2fbf9a", "#9a6bff", "#ef6aa5", "#7d8aa0")
 
     val BUILTINS = listOf(
-        Profile("asisten", "Asisten", "#4d8cff", "deepseek", "asisten", true),
-        Profile("mandor", "Mandor", "#e8a33d", "deepseek", "mandor", true),
-        Profile("mentor", "Mentor", "#2fbf9a", "deepseek", "tutor", true),
-        Profile("agen4", "Agen 4", "#9a6bff", "deepseek", "agen4", true)
+        Profile("asisten", "Asisten", "#4d8cff", "openai", "asisten", true),
+        Profile("mandor", "Mandor", "#e8a33d", "openai", "mandor", true),
+        Profile("mentor", "Mentor", "#2fbf9a", "openai", "tutor", true),
+        Profile("agen4", "Agen 4", "#9a6bff", "openai", "agen4", true)
     )
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
@@ -41,8 +41,10 @@ object Agents {
                 val arr = JSONArray(raw)
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    val engRaw = o.optString("engine", "deepseek")
-                    val eng = if (engRaw == "bridge" || engRaw == "qwen" || engRaw == "kimi") "deepseek" else engRaw
+                    // K1 (Fase 6): nilai engine legacy ("deepseek" | "bridge" |
+                    // "qwen" | "kimi") → "openai"; nilai lain dibiarkan.
+                    val engRaw = o.optString("engine", "openai")
+                    val eng = if (engRaw == "deepseek" || engRaw == "bridge" || engRaw == "qwen" || engRaw == "kimi") "openai" else engRaw
                     val cid = o.optString("id")
                     out.add(
                         Profile(
@@ -77,7 +79,7 @@ object Agents {
         val customs = all(ctx).filter { !it.builtin }
         val id = "agen" + System.currentTimeMillis()
         val accent = PALETTE[(BUILTINS.size + customs.size) % PALETTE.size]
-        val p = Profile(id, name.take(24), accent, "deepseek", "asisten", false)
+        val p = Profile(id, name.take(24), accent, "openai", "asisten", false)
         saveCustoms(ctx, customs + p)
         return p
     }

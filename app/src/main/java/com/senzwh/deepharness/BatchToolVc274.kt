@@ -130,7 +130,7 @@ object BatchToolVc274 {
         // vc282: status terstruktur (classify) menggantikan isFailed di
         // sini — aturannya sama (mark disalin), tetapi penanda [STATUS: ...]
         // bila ada menang atas substring-scan.
-        val ok = ApiToolLayer.classifyResult(result) == ApiToolLayer.ToolStatus.OK
+        val ok = WorkLog.classifyResult(result) == WorkLog.ToolStatus.OK
         val kind = when {
             result.startsWith("Tool tidak dikenal") -> "unknown"
             !ok -> "failed"
@@ -160,14 +160,14 @@ object BatchToolVc274 {
                 try {
                     // vc282: timeout batch — satu call baca yang menggantung
                     // tidak boleh menggantung seluruh batch selamanya.
-                    val toVc282 = ApiToolLayer.batchTimeoutSec(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject())
+                    val toVc282 = WorkLog.batchTimeoutSec(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject())
                     f.get(toVc282.toLong(), java.util.concurrent.TimeUnit.SECONDS)
                 } catch (e: java.util.concurrent.TimeoutException) {
                     val obj = pairs[idx].first
                     val tool = obj.optString("tool")
                     val args = obj.optJSONObject("args") ?: JSONObject()
                     try { f.cancel(true) } catch (e2: Exception) {}
-                    val toVc282 = ApiToolLayer.batchTimeoutSec(tool, args)
+                    val toVc282 = WorkLog.batchTimeoutSec(tool, args)
                     Outcome(tool, args, pairs[idx].second, "ERROR: tool " + tool + " melewati batas " + toVc282 + " dtk — dibatalkan. Giliran tidak menunggu lagi; eksekusi di latar mungkin masih berjalan sampai batas internalnya. Jangan kirim ulang perintah yang sama persis — pakai pola background + file hasil bila memang butuh lama, atau pecah tugasnya. Putuskan: lanjut dengan cara lain, atau berhenti dan beri tahu user.", null, 0, false, "failed", false, 0)
                 } catch (e: Exception) {
                     val obj = pairs[idx].first
@@ -303,7 +303,7 @@ object BatchToolVc274 {
             val disp = RedactSecrets.redact(oc.result)
             val cap = AgentPrompt.BATCH_RESULT_CAP_VC273
             val capped = if (disp.length > cap) disp.take(cap) + "…(dipotong, sisa " + (disp.length - cap) + " char" + (if ((oc.resultId ?: "").isNotBlank()) ", pakai get_result[" + oc.resultId + "] untuk sisanya" else "") + ")…" else disp
-            sb.append("\nHasil tool " + oc.tool + " " + ApiToolLayer.statusTag(ApiToolLayer.classifyResult(oc.result)) + " [HASIL TOOL " + oc.callId + "]" + (if (oc.resultId != null) " [id=" + oc.resultId + ", total " + oc.resultTotal + " char]" else "") + ":\n" + capped + "\n")
+            sb.append("\nHasil tool " + oc.tool + " " + WorkLog.statusTag(WorkLog.classifyResult(oc.result)) + " [HASIL TOOL " + oc.callId + "]" + (if (oc.resultId != null) " [id=" + oc.resultId + ", total " + oc.resultTotal + " char]" else "") + ":\n" + capped + "\n")
             if (oc.kind == "rejected") sb.append("PERINTAH SISTEM: keluarkan ULANG blok json tool '" + oc.tool + "' dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas.\n")
             if (oc.kind == "failed") sb.append("WAJIB: coba strategi atau tool LAIN untuk tujuan yang sama — jangan ulangi panggilan yang persis sama.\n")
             if (oc.prereqFailed) sb.append("ERROR PRASYARAT: call ini bergantung pada hasil call sebelumnya yang gagal atau belum selesai — prasyarat belum selesai, kirim ulang setelah prasyarat selesai.\n")

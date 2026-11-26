@@ -111,7 +111,7 @@ object BrowserCdpClient {
      * document.cookie; network/log capture juga tidak mengeksekusi JS).
      * Alasan kunci ini: evaluate() bisa membaca nilai kolom password
      * (typeJs PASSWORD_FIELD tidak berlaku di jalur CDP) + document.cookie
-     * (sesi DeepSeek + semua situs login, cookie dibagi per proses).
+     * (sesi browser agen + semua situs login, cookie dibagi per proses).
      */
     @Volatile
     var evaluateUnlockedVc316: Boolean = false

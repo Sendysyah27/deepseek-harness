@@ -36,11 +36,6 @@ object WorldState {
                 }
             }
         } catch (e: Exception) {}
-        try {
-            val act = AccountPool.activeSlot(ctx)
-            val filled = AccountPool.filledSlots(ctx).size
-            parts.add("akun DeepSeek aktif: " + (if (act == 0) "sesi live" else "slot $act") + " ($filled/4 slot terisi)")
-        } catch (e: Exception) {}
         try { parts.add("panggilan AI hari ini: " + Governor.count(ctx) + "/" + Governor.cap(ctx)) } catch (e: Exception) {}
         // vc241: goal-teratas dibuang bila pemanggil sudah punya blok TUJUAN AKTIF sendiri (grup vc240 M18, latar) — baterai/tanggal tidak ikut dibuang di mode ini.
         if (!slimVc240 && !dropGoalTopVc241) try {

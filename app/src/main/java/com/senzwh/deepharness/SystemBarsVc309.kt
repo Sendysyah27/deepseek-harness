@@ -76,7 +76,7 @@ object SystemBarsVc309 {
      *  Insets TIDAK di-consume (listener mengembalikan `insets` apa adanya)
      *  supaya turunan (ScrollView, WebView) tetap menerima inset yang sama.
      *  Root diasumsikan tanpa padding awal — benar untuk root MainActivity
-     *  (buildClassicUi, tanpa setPadding) maupun root SlotBrowser. */
+     *  (buildClassicUi, tanpa setPadding) maupun root activity lain. */
     fun installEdgeToEdge(window: Window, root: View) {
         try {
             if (Build.VERSION.SDK_INT >= 30) {

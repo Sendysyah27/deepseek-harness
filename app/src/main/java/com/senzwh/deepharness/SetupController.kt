@@ -319,16 +319,16 @@ import java.io.File
         return c
     }
 
-    /** F5c §5.9 — kartu Models API (pengganti kartu Login AI DeepSeek):
+    /** F5c §5.9 — kartu Models API (pengganti kartu login lama):
      *  status otak aktif + tombol ke dialog 73. */
     internal fun MainActivity.setupModelsApiCard(): LinearLayout {
         val c = cardBoxT()
         val th = currentTheme()
         c.addView(tv("MODELS API", 12f, th.dim, true))
-        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "deepseek" }
+        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "openai" }
         val prov = try {
             LlmProviderStore.hydrate(this)
-            LlmProviders.activeProvider().takeIf { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+            LlmProviders.activeProvider()?.takeIf { it.configured }
         } catch (e: Exception) { null }
         c.addView(tv(
             if (engine == "local") "Otak aktif: Lokal (offline) — agen aturan tanpa LLM."
@@ -345,7 +345,7 @@ import java.io.File
         val c = cardBoxT()
         val th = currentTheme()
         c.addView(tv("MESIN AGEN", 12f, th.dim, true))
-        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "deepseek" }
+        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "openai" }
         c.addView(tv(
             if (engine == "local") "Mesin: Lokal (offline)"
             else "Mesin: Models API (OpenAI-compatible)",
@@ -359,7 +359,7 @@ import java.io.File
 
     // F5c (sapu settings): setupSlotCard() DIHAPUS — pemilih slot Browser
     // 1–5, persona per slot, tombol Buka/Pakai Browser N, tombol Otomatis
-    // slot, + picker varian model DeepSeek V3/R1 (dsModelVariant) sudah
+    // slot, + picker varian model (dsModelVariant) sudah
     // tidak ada lagi. Kategori "mesin" kini memakai setupEngineCard().
 
     internal fun MainActivity.setupConnectorsCard(st: JSONObject): LinearLayout {
@@ -675,7 +675,7 @@ import java.io.File
         // vc183: header klasik tidak dirender lagi.
         fun addHeader(label: String) { }
         addHeader("🔌 KONEKSI & MESIN")
-        // F5c (sapu settings): tombol 1 "Login DeepSeek (tab Web)" DIHAPUS (K1).
+        // F5c (sapu settings): tombol 1 "Login (tab Web)" DIHAPUS (K1).
         addBtn("2. Aktifkan akses Notifikasi") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         addBtn("3. Aktifkan Accessibility (baca layar + tap/swipe)") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         addBtn("4. Izinkan Usage Stats (pemakaian app)") {
@@ -720,14 +720,14 @@ import java.io.File
             setupStatusTv.text = "Persona tersimpan ✓ (berlaku mulai pesan chat berikutnya)"
         }
         // F5c (sapu settings): tombol 11 "Tes Solver PoW" DIHAPUS (K1 —
-        // solver PoW mode API Internal DeepSeek).
+        // solver PoW mode API internal lama).
         // F5c (sapu settings): tombol 12 "Ganti Mode Chat WebView ⇄ API
         // Internal" DIHAPUS (K1 — toggle terkait WebView).
         // F5c (sapu settings): tombol 12b "Mode Operator" DIHAPUS (K1).
         // F5c (sapu settings): tombol 12c "Lihat Rekaman Diagnostik API"
         // DIHAPUS (K1).
         // F5c (sapu settings): tombol 12d "Bandingin Rekaman Browser
-        // DeepSeek" DIHAPUS (K1).
+        // lama" DIHAPUS (K1).
         addHeader("🧠 MEMORI, OTOMASI & PEMANGGILAN")
         addBtn("13. Bubble Melayang (panggil asisten dari app mana pun)") {
             val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
@@ -1020,7 +1020,7 @@ import java.io.File
         addBtn("31. Tes Otak Latar (tugas jalan di latar — hasil via notifikasi)") {
             val ok = BgBrain.submit(this, "TES OTAK LATAR: panggil tool get_battery dan get_location, lalu tulis laporan singkat 2-3 kalimat tentang kondisi HP user saat ini.", "tes", "🧠 Tes Otak Latar")
             setupStatusTv.text = if (ok) "Otak Latar: tes dikirim — hasil tiba sebagai notifikasi & masuk riwayat chat. App BOLEH ditutup sekarang."
-                else "Otak Latar: sesi DeepSeek terdeteksi mati — login ulang dulu di tab Web, lalu coba lagi."
+                else "Otak Latar: tes tidak dikirim (alasan: " + BgBrain.lastBlockReason(this).ifBlank { "tidak diketahui" } + ") — coba lagi nanti."
         }
         addBtn("32. Konsolidasi Memori — Jalankan Sekarang") {
             setupStatusTv.text = "Konsolidasi memori berjalan di latar (arsip riwayat tua + gabung fakta mirip + ringkasan LLM)…"
@@ -1207,11 +1207,11 @@ import java.io.File
         }
         addBtn("39. Mesin Agen — Models API / Lokal (offline)") {
             // F5c §5.9/frame 24: pemilih engine — hanya Models API (via
-            // dialog 73) / Lokal (offline). TANPA opsi DeepSeek (K1).
+            // dialog 73) / Lokal (offline). TANPA opsi lama (K1).
             val engine = AgentEngines.current(this)
             val prov = try {
                 LlmProviderStore.hydrate(this)
-                LlmProviders.activeProvider().takeIf { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+                LlmProviders.activeProvider()?.takeIf { it.configured }
             } catch (e: Exception) { null }
             val statusLine = when {
                 engine == "local" -> "Otak aktif: Lokal (offline) — agen aturan tanpa LLM."
@@ -1298,7 +1298,7 @@ import java.io.File
         addBtn("52. Ubuntu Proot — Unduh & Tes (Terminal mode proot)") { prootDialog() }
         addBtn("53. Serve Standby (F3) — service + autostart") { serveStandbyDialog() }
         addBtn("54. Job Latar (F2) — kelola & log") { jobDialog() }
-        addBtn("55. Tes Laporan Pagi (F5)") { val r = try { TriageDigest.runManual(host) } catch (e: Exception) { "error" }; val msg = when { r == "ok" -> "Laporan pagi tes dikirim ke Otak Latar — hasilnya masuk notifikasi + riwayat."; r == "empty" -> "Tidak ada notifikasi allowlist 12 jam terakhir — tidak ada laporan yang dibuat."; r.startsWith("blocked:baterai") -> "Otak Latar tidak jalan: baterai di bawah 20% dan tidak dicas — colok charger dulu."; r.startsWith("blocked:gerbang") -> "Otak Latar tidak jalan: jam hening / Wi-Fi-only aktif."; r.startsWith("blocked:sesi mati") -> "Otak Latar tidak jalan: sesi DeepSeek latar mati — login ulang di tab Web."; r.startsWith("blocked:kuota") -> "Otak Latar tidak jalan: kuota Governor habis."; else -> "Otak Latar tidak jalan sekarang ($r) — coba lagi nanti." }; Toast.makeText(host, msg, Toast.LENGTH_LONG).show() }
+        addBtn("55. Tes Laporan Pagi (F5)") { val r = try { TriageDigest.runManual(host) } catch (e: Exception) { "error" }; val msg = when { r == "ok" -> "Laporan pagi tes dikirim ke Otak Latar — hasilnya masuk notifikasi + riwayat."; r == "empty" -> "Tidak ada notifikasi allowlist 12 jam terakhir — tidak ada laporan yang dibuat."; r.startsWith("blocked:baterai") -> "Otak Latar tidak jalan: baterai di bawah 20% dan tidak dicas — colok charger dulu."; r.startsWith("blocked:gerbang") -> "Otak Latar tidak jalan: jam hening / Wi-Fi-only aktif."; r.startsWith("blocked:sesi mati") -> "Otak Latar tidak jalan: latar sedang jeda (sesi mati, flag lama) — coba lagi beberapa menit lagi."; r.startsWith("blocked:kuota") -> "Otak Latar tidak jalan: kuota Governor habis."; else -> "Otak Latar tidak jalan sekarang ($r) — coba lagi nanti." }; Toast.makeText(host, msg, Toast.LENGTH_LONG).show() }
         addBtn("56. Kill Switch F1") { f1Dialog() }
         addBtn("57. Dump Prompt (debug) — aktif/mati") { val p = host.getSharedPreferences("harness", Context.MODE_PRIVATE); val on = !p.getBoolean("debugPromptDump", false); p.edit().putBoolean("debugPromptDump", on).apply(); host.setupStatusTv.text = if (on) "Dump prompt AKTIF: prompt teredaksi ditulis ke filesDir/dump/harness-prompt-last.txt tiap kirim API. Matikan lagi sesudah mengukur." else "Dump prompt MATI." }
         addBtn("58. Tes Pola Redaksi") { host.setupStatusTv.text = RedactSecrets.selfTest().joinToString("\n") }
@@ -1378,7 +1378,7 @@ import java.io.File
             packRow.addView(b)
         }
         col.addView(HorizontalScrollView(this).apply { addView(packRow); isHorizontalScrollBarEnabled = false })
-        col.addView(tv("Mesin: deepseek (tetap)", 12f, th.dim).apply { setPadding(0, dp(10), 0, 0) })
+        col.addView(tv("Mesin: " + p.engine, 12f, th.dim).apply { setPadding(0, dp(10), 0, 0) })
         val buttons = mutableListOf<Triple<String, Boolean, (android.app.AlertDialog) -> Unit>>(
             Triple("Simpan", true) { d: android.app.AlertDialog ->
                 val nm = eName.text.toString().trim()

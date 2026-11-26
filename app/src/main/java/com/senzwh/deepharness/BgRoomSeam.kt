@@ -6,26 +6,24 @@ import org.json.JSONObject
 
 /**
  * Slice 12 (vc329) — helper seam otak latar/room ke core Rust
- * (`bgBrainJson`, `groupChatJson`, `dsAgentJson`, `ocCoordJson`;
- * modul `bg_brain`, `group_chat`, `ds_agent`, `oc_coord`).
+ * (`bgBrainJson`, `groupChatJson`, `ocCoordJson`;
+ * modul `bg_brain`, `group_chat`, `oc_coord`).
  *
- * Pola seperti `DsApiSeam.kt` slice 11: SATU tempat membangun request
- * JSON + mem-parse respons. `{"ok":false}`/null = Rust tak-tersedia /
- * operasi gagal -> pemanggil WAJIB fallback ke implementasi Kotlin
- * lama (`*Kotlin` di `BgBrain`/`GroupChat`/`DsAgent`/`OcCoord`);
- * saklar hanya dimatikan bila seam mengembalikan `null`, JSON
- * tak-terparse, atau exception di seam.
+ * Pola: SATU tempat membangun request JSON + mem-parse respons.
+ * `{"ok":false}`/null = Rust tak-tersedia / operasi gagal ->
+ * pemanggil WAJIB fallback ke implementasi Kotlin lama (`*Kotlin`
+ * di `BgBrain`/`GroupChat`/`OcCoord`); saklar hanya dimatikan bila
+ * seam mengembalikan `null`, JSON tak-terparse, atau exception di seam.
  *
- * AMBIGUITAS `null` (pola `DsApiSeam.kt`): `slotResolve`,
- * `spinningPattern` dan `parsePermEvent` mengembalikan `null` sebagai
- * HASIL SAH Kotlin (tidak ada slot / tidak ada pola / bukan event
- * izin) MAUPUN sebagai sinyal "seam gagal". Pemanggil SELALU fallback
- * ke `*Kotlin` bila seam null, dan `*Kotlin` menghitung ulang hasil
- * yang sama. Benar, hanya sedikit boros.
+ * AMBIGUITAS `null`: `spinningPattern` dan `parsePermEvent`
+ * mengembalikan `null` sebagai HASIL SAH Kotlin (tidak ada pola /
+ * bukan event izin) MAUPUN sebagai sinyal "seam gagal". Pemanggil
+ * SELALU fallback ke `*Kotlin` bila seam null, dan `*Kotlin`
+ * menghitung ulang hasil yang sama. Benar, hanya sedikit boros.
  *
  * Yang TIDAK lewat sini (tetap Kotlin, peta §2.6): WebView latar
  * BgBrain, notifikasi Android, dialog Views, thread/loop orkestrasi,
- * pemanggilan SlotClient/DB/network, dan semua callback listener.
+ * pemanggilan DB/network, dan semua callback listener.
  * Seam ini hanya membawa LOGIKA MURNI (string/angka/keputusan).
  */
 object BgBrainSeam {
@@ -269,19 +267,6 @@ object GroupChatSeam {
         return (0 until a.length()).map { a.optString(it) }
     }
 
-    /** Resolve slot `GroupChat.startRound`: nomor slot (1..3) atau
-     *  null = tidak ada slot kosong ATAU seam gagal -> pemanggil
-     *  fallback ke `*Kotlin` (hitung ulang, hasil sama). */
-    fun slotResolve(bound: Int?, used: List<Int>, filled: List<Int>, slotPersona: Map<Int, String>): Int? {
-        val o = opValue("slot_resolve") {
-            if (bound != null) put("bound", bound)
-            val u = JSONArray(); for (i in used) u.put(i); put("used", u)
-            val f = JSONArray(); for (i in filled) f.put(i); put("filled", f)
-            val sp = JSONObject(); for ((k, v) in slotPersona) sp.put(k.toString(), v); put("slot_persona", sp)
-        } ?: return null
-        return if (o.isNull("value")) null else o.optInt("value")
-    }
-
     /** `GroupChat.buildPrompt`: perakitan prompt grup penuh. `catSlim`
      *  HARUS sudah dipotong di Kotlin (`catalogForTask` + backstop
      *  30k vc321 — JANGAN kirim katalog penuh dari Rust). `memories`
@@ -382,84 +367,6 @@ object GroupChatSeam {
     fun renderNotif3Lines(body: String): String? =
         opStr("render_notif_3lines") { put("body", body) }
 }
-
-object DsAgentSeam {
-    /** Saklar slice 12 — default ikut `RustCore.available`. */
-    var rustDsAgent = RustCore.available
-
-    private fun opRaw(request: JSONObject): JSONObject? {
-        if (!rustDsAgent) return null
-        return try {
-            val raw = RustCore.dsAgentJson(request.toString()) ?: run { rustDsAgent = false; return null }
-            JSONObject(raw)
-        } catch (e: Exception) {
-            rustDsAgent = false
-            null
-        }
-    }
-
-    private fun opValue(op: String, build: JSONObject.() -> Unit): JSONObject? {
-        val req = JSONObject().put("op", op)
-        req.build()
-        val o = opRaw(req) ?: return null
-        if (!o.optBoolean("ok")) return null
-        return o
-    }
-
-    private fun opStr(op: String, build: JSONObject.() -> Unit): String? {
-        val o = opValue(op, build) ?: return null
-        return o.optString("value")
-    }
-
-    private fun opObj(op: String, build: JSONObject.() -> Unit): JSONObject? {
-        val o = opValue(op, build) ?: return null
-        return o.optJSONObject("value")
-    }
-
-    /** Satu langkah `DsAgent.pollAnswer`. Outcome: "timeout" |
-     *  "unchanged" | "continue" | "done". `firePartial` = panggil
-     *  `onPartial(text)` (teks berubah + non-blank). */
-    data class PollStep(val outcome: String, val firePartial: Boolean, val newStable: Int, val newLastText: String)
-
-    fun pollStep(
-        tries: Int, baseCount: Int, baseText: String, lastText: String,
-        stable: Int, count: Int, text: String
-    ): PollStep? {
-        val v = opObj("poll_step") {
-            put("tries", tries); put("base_count", baseCount); put("base_text", baseText)
-            put("last_text", lastText); put("stable", stable); put("count", count); put("text", text)
-        } ?: return null
-        return PollStep(v.optString("outcome"), v.optBoolean("fire_partial"), v.optInt("new_stable"), v.optString("new_last_text"))
-    }
-
-    /** `DsAgent.eval`: hasil `JSONTokener.nextValue` — string -> diri
-     *  sendiri, null -> "null", angka/bool -> toString, objek/array ->
-     *  JSON compact, gagal parse -> "". Objek/array dibandingkan
-     *  SEMANTIK di P15 (urutan key org.json berbasis hash). */
-    fun parseEvalResult(raw: String): String? =
-        opStr("parse_eval_result") { put("raw", raw) }
-
-    /** `JSONObject.quote` (org.json): escape kontrol + `"`/`\`, `/`
-     *  TIDAK di-escape, non-ASCII mentah. */
-    fun jsonQuote(s: String): String? =
-        opStr("json_quote") { put("s", s) }
-
-    /** `DsAgent.attachFile`: template JS unggah berkas (placeholder
-     *  B64HERE/NAMEHERE/MIMEHERE). */
-    fun buildAttachJs(b64: String, name: String, mime: String): String? =
-        opStr("build_attach_js") { put("b64", b64); put("name", name); put("mime", mime) }
-
-    /** `DsAgent.sendAndAwait`: template JS kirim prompt
-     *  (`$thinking`/`$search`/`$quoted`). */
-    fun buildSendJs(thinking: Boolean, search: Boolean, quoted: String): String? =
-        opStr("build_send_js") { put("thinking", thinking); put("search", search); put("quoted", quoted) }
-
-    /** Template JS tetap `DsAgent`: "probe" | "page_text" |
-     *  "last_state" (byte-identik dengan literal Kotlin). */
-    fun dsJs(name: String): String? =
-        opStr("ds_js") { put("name", name) }
-}
-
 object OcCoordSeam {
     /** Saklar slice 12 — default ikut `RustCore.available`. */
     var rustOcCoord = RustCore.available

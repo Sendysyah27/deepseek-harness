@@ -34,7 +34,7 @@ data class GoalStep(val id: Long, val goalId: Long, val text: String, val dueTs:
 
 /** Memori persisten harness: fakta tentang user, riwayat percakapan, pengingat.
  *  Semua lokal di HP (SQLite), tidak pernah keluar perangkat selain disuntikkan
- *  sebagai konteks ke prompt DeepSeek atas kendali user. */
+ *  sebagai konteks ke prompt model atas kendali user. */
 class MemoryDb private constructor(ctx: Context) :
     SQLiteOpenHelper(ctx.applicationContext, "memory.db", null, 7) {
 

@@ -126,7 +126,7 @@ object ScreenWatch {
         val f = frameFile(ctx)
         if (!f.exists() || f.length() == 0L) return "Belum ada potret layar. Potret disimpan otomatis saat perubahan layar terdeteksi selama pantauan aktif."
         val age = ((System.currentTimeMillis() - f.lastModified()) / 1000).toInt()
-        return "Potret layar terakhir: ${f.absolutePath} (${f.length() / 1024} KB, $age dtk lalu). Untuk MELIHAT isinya pakai analyze_photo pada path ini (mesin DeepSeek) — mesin Bridge belum bisa membaca gambar."
+        return "Potret layar terakhir: ${f.absolutePath} (${f.length() / 1024} KB, $age dtk lalu). Untuk MELIHAT isinya pakai analyze_photo pada path ini (mesin Models API) — mesin lokal belum bisa membaca gambar."
     }
 
     fun stop(ctx: Context, why: String): String {

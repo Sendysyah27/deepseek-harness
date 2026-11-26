@@ -1,22 +1,25 @@
 package com.senzwh.deepharness
 
 /**
- * Registry provider LLM — otak model alternatif selain DeepSeek.
+ * Registry provider LLM — otak Models API (OpenAI-compatible).
  *
  * Modul ini TIDAK bergantung Android (tidak ada Context/Android API), agar
  * bisa diuji dengan `tools/run_tests.sh` (JVM murni). Persistensi ke prefs/
  * SecureStore hidup di `LlmProviderStore` (Android-only).
  *
- * Provider bawaan DeepSeek tetap menjadi default selama transisi; provider
- * kustom bertipe OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, vLLM,
- * dll). Id provider kustom BUKAN engine — engine hanya
- * "openai" | "local" | "deepseek" (lihat AgentEngines).
+ * K1 (Fase 6): TIDAK ADA provider bawaan jalur web/API internal lama lagi.
+ * Semua provider adalah OpenAI-compatible (OpenAI, OpenRouter, Groq,
+ * Ollama, vLLM, dll — termasuk preset "deepseek-platform" yang memakai
+ * Models API standar https://api.deepseek.com/v1, §8.2-1). Id provider
+ * kustom BUKAN engine — engine hanya "openai" | "local" (lihat
+ * AgentEngines). Tanpa provider aktif yang configured → belum ada
+ * provider aktif (activeId ""), BUKAN fallback ke provider bawaan.
  *
  * §3.1 (Fase 0b): field guard per-provider di LlmProvider (null = pakai
  * default global) + daftar PRESETS (template, BUKAN provider aktif —
  * memilih preset hanya mengisi field; key tetap diisi user sendiri).
  */
-enum class LlmKind { DEEPSEEK, OPENAI_COMPAT }
+enum class LlmKind { OPENAI_COMPAT }
 
 data class LlmProvider(
     val id: String,
@@ -39,7 +42,6 @@ data class LlmProvider(
     val hasKey: Boolean get() = !apiKey.isNullOrBlank()
     val configured: Boolean
         get() = when (kind) {
-            LlmKind.DEEPSEEK -> true
             // Provider lokal (Ollama di HP sendiri) boleh tanpa key —
             // key hanya wajib bila base URL bukan lokal.
             LlmKind.OPENAI_COMPAT -> enabled && baseUrl.isNotBlank() && model.isNotBlank() &&
@@ -48,14 +50,7 @@ data class LlmProvider(
 }
 
 object LlmProviders {
-    const val ID_DEEPSEEK = "deepseek"
     const val ID_OPENAI = "openai"
-
-    private val deepseek = LlmProvider(
-        ID_DEEPSEEK, "DeepSeek (API Internal / Web)", LlmKind.DEEPSEEK,
-        "https://chat.deepseek.com/api/v0", null, "deepseek-chat",
-        enabled = true, builtIn = true
-    )
 
     /**
      * §3.1 — Preset bawaan (template pengisi field, BUKAN provider aktif).
@@ -94,11 +89,12 @@ object LlmProviders {
     fun preset(id: String): LlmProvider? = PRESETS.firstOrNull { it.id == id.trim() }
 
     private val custom = mutableListOf<LlmProvider>()
-    private var activeId: String = ID_DEEPSEEK
+    // "" = belum ada provider aktif (K1, Fase 6 — bukan fallback bawaan).
+    private var activeId: String = ""
 
     private val idRegex = Regex("[a-z0-9_]+")
 
-    fun all(): List<LlmProvider> = listOf(deepseek) + custom
+    fun all(): List<LlmProvider> = custom.toList()
 
     fun find(id: String): LlmProvider? = all().firstOrNull { it.id == id }
 
@@ -147,10 +143,13 @@ object LlmProviders {
         if (!validateId(trimmedId)) {
             throw IllegalArgumentException("id provider tidak valid: '$id' (huruf kecil/angka/underscore, tanpa spasi)")
         }
-        // §3.1/C4: yang dicadangkan hanya "deepseek" dan "local".
-        // "openai" TIDAK dicadangkan — id itu dipakai dialog provider
-        // untuk provider kustom pertama (MainActivity:12747).
-        if (trimmedId == ID_DEEPSEEK || trimmedId == "local") {
+        // §3.1/C4: yang dicadangkan hanya "local" (id itu nama engine
+        // offline — provider kustom tidak boleh memakainya). "openai"
+        // TIDAK dicadangkan — id itu dipakai dialog provider untuk
+        // provider kustom pertama (MainActivity:12747). "deepseek" juga
+        // TIDAK dicadangkan lagi (K1, Fase 6): provider bawaan internal
+        // sudah dihapus, jadi id itu bebas dipakai provider kustom.
+        if (trimmedId == "local") {
             throw IllegalArgumentException("id '$trimmedId' dicadangkan untuk provider bawaan")
         }
         val trimmedLabel = label.trim()
@@ -180,8 +179,8 @@ object LlmProviders {
     /**
      * §1 C3: hapus provider kustom. Bila yang dihapus adalah provider
      * AKTIF, aktif pindah ke provider kustom pertama yang configured;
-     * bila tidak ada, jatuh ke deepseek (default masa transisi — sesudah
-     * §6.4 perilaku ini diganti "belum ada provider aktif").
+     * bila tidak ada, aktif menjadi "" (belum ada provider aktif —
+     * §6.4, bukan fallback ke provider bawaan).
      */
     fun removeCustom(id: String): Boolean {
         val trimmed = id.trim()
@@ -189,7 +188,7 @@ object LlmProviders {
         if (existing < 0) return false
         custom.removeAt(existing)
         if (activeId == trimmed) {
-            activeId = custom.firstOrNull { it.configured }?.id ?: ID_DEEPSEEK
+            activeId = custom.firstOrNull { it.configured }?.id ?: ""
         }
         return true
     }
@@ -206,7 +205,8 @@ object LlmProviders {
 
     fun activeId(): String = activeId
 
-    fun activeProvider(): LlmProvider = find(activeId) ?: deepseek
+    /** Provider aktif, atau null bila belum ada provider aktif (K1, Fase 6). */
+    fun activeProvider(): LlmProvider? = find(activeId)
 
     /** Memanggil provider aktif (OpenAI-compatible) via OpenAiCompatClient.
      *  onPartial dipanggil tiap ada fragmen jawaban baru (streaming).
@@ -218,7 +218,6 @@ object LlmProviders {
              onDone: (String, String) -> Unit,
              onError: (String) -> Unit) {
         if (provider == null) { onError("Provider LLM aktif belum dikonfigurasi."); return }
-        if (provider.kind != LlmKind.OPENAI_COMPAT) { onError("Provider aktif bukan OpenAI-compatible."); return }
         val key = apiKey?.takeIf { it.isNotBlank() }
         if (key.isNullOrBlank() && !isLocalBaseUrl(provider.baseUrl)) { onError("API key provider '${provider.id}' belum ada."); return }
         try {

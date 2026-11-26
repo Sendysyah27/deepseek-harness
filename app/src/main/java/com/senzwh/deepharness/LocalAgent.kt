@@ -7,7 +7,7 @@ import java.util.Date
 import java.util.Locale
 
 /** Mesin perintah lokal (mode offline darurat): pola bahasa Indonesia sederhana yang
- *  dieksekusi TANPA internet/DeepSeek — pengingat, fakta, baterai, notif, keuangan,
+ *  dieksekusi TANPA internet/model online — pengingat, fakta, baterai, notif, keuangan,
  *  lokasi, buka app, jam. Mengembalikan teks jawaban bila perintah dipahami, null bila tidak. */
 object LocalAgent {
 

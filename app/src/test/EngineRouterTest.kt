@@ -4,8 +4,9 @@ package com.senzwh.deepharness
 // LlmEngineChat lainnya. Dijalankan manual dengan kotlinc — JANGAN edit
 // tools/run_tests.sh.
 //
-// Menjaga invarian: engine openai TIDAK PERNAH menyentuh WebView dan
-// TIDAK ADA kind yang jatuh ke DeepSeek saat engine openai.
+// Menjaga invarian: TIDAK ADA engine yang menyentuh WebView (K1, Fase 6)
+// dan TIDAK ADA kind yang jatuh ke jalur selain MODELS_API saat engine
+// openai (atau legacy/tak dikenal — satu-satunya mesin online).
 
 private var failedRouter = 0
 
@@ -20,12 +21,13 @@ private fun checkRouter(name: String, cond: Boolean, detail: String = "") {
 fun main() {
     println("== EngineRouterTest ==")
 
-    // requiresWebView (T10)
+    // requiresWebView (T10, K1): selalu false — tidak ada WebView lagi.
     checkRouter("requiresWebView openai → false", !LlmEngineChat.requiresWebView("openai"))
-    checkRouter("requiresWebView deepseek → true", LlmEngineChat.requiresWebView("deepseek"))
+    checkRouter("requiresWebView legacy → false",
+        !LlmEngineChat.requiresWebView("deepseek"))
     checkRouter("requiresWebView local → false", !LlmEngineChat.requiresWebView("local"))
-    checkRouter("requiresWebView tak dikenal → true (default aman)",
-        LlmEngineChat.requiresWebView("qwen"))
+    checkRouter("requiresWebView tak dikenal → false",
+        !LlmEngineChat.requiresWebView("qwen"))
 
     // routeFor semua kind di engine openai (T10)
     for (kind in LlmCallKind.values()) {
@@ -33,10 +35,10 @@ fun main() {
             LlmEngineChat.routeFor("openai", kind) == LlmRoute.MODELS_API,
             "dapat=" + LlmEngineChat.routeFor("openai", kind))
     }
-    checkRouter("routeFor deepseek + INTERACTIVE → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.INTERACTIVE) == LlmRoute.DEEPSEEK_WEB)
-    checkRouter("routeFor deepseek + BACKGROUND → DEEPSEEK_WEB",
-        LlmEngineChat.routeFor("deepseek", LlmCallKind.BACKGROUND) == LlmRoute.DEEPSEEK_WEB)
+    checkRouter("routeFor deepseek (legacy) + INTERACTIVE → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.INTERACTIVE) == LlmRoute.MODELS_API)
+    checkRouter("routeFor deepseek (legacy) + BACKGROUND → MODELS_API",
+        LlmEngineChat.routeFor("deepseek", LlmCallKind.BACKGROUND) == LlmRoute.MODELS_API)
     checkRouter("routeFor local + INTERACTIVE → LOCAL_OFFLINE",
         LlmEngineChat.routeFor("local", LlmCallKind.INTERACTIVE) == LlmRoute.LOCAL_OFFLINE)
     checkRouter("routeFor local + BACKGROUND → LOCAL_OFFLINE",

@@ -13,7 +13,7 @@ import java.util.zip.ZipOutputStream
 /**
  * v4.12.0 — Backup & Pulihkan Otak: zip berisi folder otak semua agen
  * (filesDir/otak*) + settings.json (snapshot SharedPreferences "harness"
- * TANPA kunci berbau token/kredensial). Token DeepSeek TIDAK ikut —
+ * TANPA kunci berbau token/kredensial). Token provider TIDAK ikut —
  * sesudah pulih, login/slot diisi ulang manual (itu memang desain aman).
  * vc245 GELOMBANG 4 (K-09, pilihan ekspor DB): zip JUGA berisi
  * memory-db.json (exportJson: fakta/skill/jadwal/aturan) yang diimpor
@@ -43,17 +43,16 @@ object BrainBackup {
     // legacy — restore tidak boleh membangkitkan H-K1) DIKELUARKAN dari
     // allowlist. (vc313: daftar blokir domain sensitif dihapus total.)
     val SETTINGS_ALLOWLIST = setOf(
-        "apiMode", "askExtendSteps", "bgSessionDead", "debugPromptDump", "defSearch", "defThink",
-        "dsLogin", "f2QuietInit", "f2p1PromptFix", "f4Purged", "flowLogin", "flowOnboarded", "flowSetup",
-        "govWifiOnly", "operatorMode", "modeBebas", "notifDigest", "overlayOn", "panelSpeak", "proactiveOn",
+        "askExtendSteps", "bgSessionDead", "debugPromptDump", "defSearch", "defThink",
+        "f2QuietInit", "f2p1PromptFix", "f4Purged", "flowOnboarded", "flowSetup",
+        "govWifiOnly", "modeBebas", "notifDigest", "overlayOn", "panelSpeak", "proactiveOn",
         "profilLanjutanOpen", "screenWatchOn", "serveStandby", "shakeSummon", "voiceAuto", "wakeWordOn",
-        "persona", "bubbleTap", "bubbleAlphaPct", "bubbleSizeDp", "ckptDiff", "dsSessEvents", "emergencyNumber",
+        "persona", "bubbleTap", "bubbleAlphaPct", "bubbleSizeDp", "ckptDiff", "emergencyNumber",
         "privAdbHost", "privAdbPort", "rootStatus", "routines", "serveSeenVersion", "briefingHour",
         "chatFontPx", "govQuietEnd", "govQuietStart", "maxToolSteps", "msgCount", "resultSeq",
         "bgDeadRetryTs", "bgLastRateLimitTs", "ckptPending", "currentSession", "govDelayNotifTs",
         "notifSessionId", "ocCurrentTask", "serveDownNotifTs", "serveF3TickTs", "tokInAll", "tokInSess",
         "tokOutAll", "tokOutSess", "turnCkptResumedFor", "agentEngine", "behaviorPack", "bgLastBlock",
-        "dsApiDiag", "dsModelVariant",
         "pendingExtractProposals", "quickChipsNative", "redactMigrationReport", "sessDefDivMode",
         "sessOutRoot", "teamBoard", "termHistNative", "themeMode", "turnCkpt", "turnJournal"
     )
@@ -379,7 +378,7 @@ object BrainBackup {
                 ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit()
                     .remove("bgPending").remove("bgPendingQueue").remove("bgNotifSeq").remove("bgSecondConfirm").apply()
             } catch (e: Exception) {}
-            "Pulih selesai: $files berkas otak dipulihkan" + (if (skippedMd > 0) " ($skippedMd berkas .md dilewati — redaksi gagal, tidak disalin mentah)" else "") + (if (settingsJson != null) " + pengaturan diterapkan" + (if (skippedSettings > 0) " ($skippedSettings kunci dilewati — tidak diizinkan restore)" else "") else "") + (if (memoryDbJson != null) (if (dbImported >= 0) " + memori DB diimpor ($dbImported item: fakta/skill/jadwal/aturan" + (if (versionsRestoredVc301 > 0 || versionsSkippedVc301 > 0) "; riwayat versi skill: $versionsRestoredVc301 dipulihkan, $versionsSkippedVc301 dilewati (sudah ada / skill tidak ditemukan)" else "; riwayat versi skill: tidak ada di backup ini (zip lama — versi TIDAK ikut pulih)") + ")" + (if (skillsBlockedVc265 > 0) " ($skillsBlockedVc265 skill DITOLAK SkillSpector — skor risiko >= 80, tidak diimpor)" else "") else " + memori DB GAGAL diimpor") else " + TANPA memori DB (zip lama tanpa memory-db.json — fakta/skill tidak ikut pulih)") + (if (mcpRestoredVc246) " + Client ID/daftar server MCP dipulihkan" else " + TANPA data server MCP (zip lama)") + (if (mcpSkipped > 0) " ($mcpSkipped entri MCP dilewati — tidak valid)" else "") + ". Semantik restore: pengaturan DITIMPA per kunci (hanya allowlist); memori DB DIGABUNG (upsert — item lama yang tidak ada di backup tetap ada). Graph/riwayat chat/goal TIDAK dipulihkan oleh backup ini. Antrean parkir persetujuan DIHAPUS saat restore (vc305 H-K1 — parkir lama tidak bisa bangkit). Restart app agar semua kebaca bersih. Login DeepSeek/slot isi ulang manual (token tidak ikut backup)."
+            "Pulih selesai: $files berkas otak dipulihkan" + (if (skippedMd > 0) " ($skippedMd berkas .md dilewati — redaksi gagal, tidak disalin mentah)" else "") + (if (settingsJson != null) " + pengaturan diterapkan" + (if (skippedSettings > 0) " ($skippedSettings kunci dilewati — tidak diizinkan restore)" else "") else "") + (if (memoryDbJson != null) (if (dbImported >= 0) " + memori DB diimpor ($dbImported item: fakta/skill/jadwal/aturan" + (if (versionsRestoredVc301 > 0 || versionsSkippedVc301 > 0) "; riwayat versi skill: $versionsRestoredVc301 dipulihkan, $versionsSkippedVc301 dilewati (sudah ada / skill tidak ditemukan)" else "; riwayat versi skill: tidak ada di backup ini (zip lama — versi TIDAK ikut pulih)") + ")" + (if (skillsBlockedVc265 > 0) " ($skillsBlockedVc265 skill DITOLAK SkillSpector — skor risiko >= 80, tidak diimpor)" else "") else " + memori DB GAGAL diimpor") else " + TANPA memori DB (zip lama tanpa memory-db.json — fakta/skill tidak ikut pulih)") + (if (mcpRestoredVc246) " + Client ID/daftar server MCP dipulihkan" else " + TANPA data server MCP (zip lama)") + (if (mcpSkipped > 0) " ($mcpSkipped entri MCP dilewati — tidak valid)" else "") + ". Semantik restore: pengaturan DITIMPA per kunci (hanya allowlist); memori DB DIGABUNG (upsert — item lama yang tidak ada di backup tetap ada). Graph/riwayat chat/goal TIDAK dipulihkan oleh backup ini. Antrean parkir persetujuan DIHAPUS saat restore (vc305 H-K1 — parkir lama tidak bisa bangkit). Restart app agar semua kebaca bersih. Login provider isi ulang manual (API key tidak ikut backup)."
         } catch (e: Exception) {
             "Pulih GAGAL: ${e.message}"
         }

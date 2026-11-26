@@ -100,4 +100,79 @@ object WorkLog {
 
     fun secsText(ms: Long): String =
         String.format(java.util.Locale.US, "%.1f", ms / 1000.0).replace('.', ',')
+
+    // ---- Status terstruktur hasil tool (pindahan dari ApiToolLayer.kt
+    // vc282, Fase 6 K1 — lapisan itu dibubarkan; status hasil tool BUKAN
+    // khusus jalur web lama, dipakai semua jalur Models API + lokal) ----
+    // Penanda status yang sama dipakai isFailed di atas: "[STATUS: ok]"
+    // = sukses walau teks mengandung kata mark; "[STATUS: failed/
+    // timeout/unknown]" = gagal. Substring-scan hanya fallback bila
+    // tidak ada penanda.
+    enum class ToolStatus { OK, FAILED, TIMEOUT, UNKNOWN }
+
+    fun statusTag(status: ToolStatus): String = when (status) {
+        ToolStatus.OK -> "[STATUS: ok]"
+        ToolStatus.FAILED -> "[STATUS: failed]"
+        ToolStatus.TIMEOUT -> "[STATUS: timeout]"
+        ToolStatus.UNKNOWN -> "[STATUS: unknown]"
+    }
+
+    fun statusOfTag(result: String): ToolStatus? {
+        return when {
+            // vc299 m16: simulasi gagal = GAGAL (dicek dulu; tag ini
+            // tidak mengandung "[STATUS: ok]" tapi eksplisit lebih aman).
+            result.contains("[STATUS: simulasi-gagal]") -> ToolStatus.FAILED
+            result.contains("[STATUS: ok]") -> ToolStatus.OK
+            result.contains("[STATUS: failed]") -> ToolStatus.FAILED
+            result.contains("[STATUS: timeout]") -> ToolStatus.TIMEOUT
+            result.contains("[STATUS: unknown]") -> ToolStatus.UNKNOWN
+            else -> null
+        }
+    }
+
+    // Klasifikasi deterministik hasil tool mentah -> status. Aturan SAMA
+    // dengan isFailed (daftar mark disalin, bukan diubah) supaya keduanya
+    // tidak pernah berpendapat beda: "id tidak ditemukan" TETAP gagal
+    // (tes C vc280), timeout O18 TETAP timeout, "Tool tidak dikenal"
+    // TETAP unknown (bukan ok).
+    private val FAIL_MARKS = listOf(
+        "gagal", "tidak terbaca", "exception", "tidak ditemukan", "tidak ada",
+        "tool tidak dikenal", "ditolak", "tidak bisa", "tidak berhasil",
+        "tidak tersimpan", "dibatalkan"
+    )
+
+    fun classifyResult(result: String): ToolStatus {
+        statusOfTag(result)?.let { return it }
+        if (result.startsWith("Tool tidak dikenal")) return ToolStatus.UNKNOWN
+        val low = result.lowercase()
+        if (result.startsWith("\u26a0\ufe0f") || result.startsWith("Error") || result.startsWith("Gagal")) {
+            if (low.contains("melewati batas") && low.contains("dtk")) return ToolStatus.TIMEOUT
+            return ToolStatus.FAILED
+        }
+        if (low.contains("melewati batas") && low.contains("dtk")) return ToolStatus.TIMEOUT
+        if (FAIL_MARKS.any { low.contains(it) }) return ToolStatus.FAILED
+        return ToolStatus.OK
+    }
+
+    fun isTimeoutResult(result: String): Boolean = classifyResult(result) == ToolStatus.TIMEOUT
+
+    // Timeout batch (vc282, cermin tabel vc278 O18(a) jalur tunggal):
+    // baca cepat 30 dtk, tulis/shell umum 120 dtk, run_terminal mengikuti
+    // timeout yang sudah ada (proot 900 dtk, termux 90 dtk). Dipakai
+    // Future.get di kelompok baca batch supaya satu call yang menggantung
+    // tidak menggantung seluruh batch selamanya.
+    val READ_FAST_TOOLS_VC282 = setOf(
+        "read_file", "list_files", "recall_search", "otak_read",
+        "storage_info", "list_tools", "get_result", "grep_result",
+        "list_sessions", "list_goals", "list_rooms", "list_workers",
+        "list_artifacts", "list_skills", "list_tasks",
+        "list_skill_versions", "read_skill_version"
+    )
+
+    fun batchTimeoutSec(tool: String, args: JSONObject): Int {
+        if (tool == "run_terminal") {
+            return if (args.optString("mode", "") == "proot") 900 else 90
+        }
+        return if (tool in READ_FAST_TOOLS_VC282) 30 else 120
+    }
 }

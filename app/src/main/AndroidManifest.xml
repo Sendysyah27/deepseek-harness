@@ -217,47 +217,6 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- v4.46.0 F1: browser slot multi-akun — SATU PROSES PER SLOT
-             (cookie + localStorage DeepSeek terpisah per akun). exported=false:
-             hanya dibuka dari dalam app. Receiver panen hanya menerima
-             broadcast eksplisit dari paket sendiri. -->
-        <activity
-            android:name=".SlotBrowser1"
-            android:exported="false"
-            android:label="Browser 1 — DeepSeek"
-            android:process=":slot1"
-            android:screenOrientation="portrait" />
-        <activity
-            android:name=".SlotBrowser2"
-            android:exported="false"
-            android:label="Browser 2 — DeepSeek"
-            android:process=":slot2"
-            android:screenOrientation="portrait" />
-        <activity
-            android:name=".SlotBrowser3"
-            android:exported="false"
-            android:label="Browser 3 — DeepSeek"
-            android:process=":slot3"
-            android:screenOrientation="portrait" />
-        <activity
-            android:name=".SlotBrowser4"
-            android:exported="false"
-            android:label="Browser 4 — DeepSeek"
-            android:process=":slot4"
-            android:screenOrientation="portrait" />
-        <activity
-            android:name=".SlotBrowser5"
-            android:exported="false"
-            android:label="Browser 5 — DeepSeek"
-            android:process=":slot5"
-            android:screenOrientation="portrait" />
-        <receiver
-            android:name=".SlotHarvestReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.senzwh.deepharness.SLOT_HARVEST" />
-            </intent-filter>
-        </receiver>
         <activity
             android:name=".CaptureConsentActivity"
             android:exported="false"

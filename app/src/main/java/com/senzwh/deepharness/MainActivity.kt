@@ -51,14 +51,6 @@ import java.io.File
 
 class MainActivity : Activity() {
 
-    internal lateinit var webView: WebView
-    internal fun webViewReady(): Boolean = ::webView.isInitialized
-    // B13 (Fase 1): klien DeepSeek MALAS — nullable; dibuat hanya bila
-    // engine deepseek (startup) atau saat pertama kali jalur deepseek
-    // membutuhkannya (ensureDsClients). Engine openai TIDAK PERNAH
-    // membuat DsAgent/DsApiClient — semua pemakaian dijaga null.
-    private var agent: DsAgent? = null
-    internal var apiClient: DsApiClient? = null
     internal lateinit var statusTv: TextView
     internal lateinit var chatList: LinearLayout
     internal lateinit var chatScroll: ScrollView
@@ -346,7 +338,6 @@ class MainActivity : Activity() {
     // bukan saat launch (diet launch: Setup 64 tombol + Terminal/Monitor/
     // Grup/Profil/Wizard + WebView keluar dari jalur buka app).
     internal var tabStack: FrameLayout? = null
-    private var webSetupDone = false
     private val tabBtns = HashMap<String, Button>()
     private var agentSteps = 0
     private var rejectRetryCount = 0
@@ -453,9 +444,7 @@ class MainActivity : Activity() {
         val ckP = prefs.getLong("ckptPending", 0)
         focusSb.append("\nCheckpoint: ").append(if (ckP > 0) "MENUNGGU keputusan Terima/Urungkan (tugas #$ckP)" else "tidak ada yang menunggu")
         o.put("focusText", focusSb.toString())
-        o.put("dsLogin", ::statusTv.isInitialized && (statusTv.text?.toString() ?: "").contains("LOGIN AKTIF"))
         o.put("flowOnboarded", prefs.getBoolean("flowOnboarded", false))
-        o.put("flowLogin", prefs.getBoolean("flowLogin", false))
         o.put("flowSetup", prefs.getBoolean("flowSetup", false))
         o.put("perms", permStatusJson())
         return o.toString()
@@ -494,7 +483,7 @@ class MainActivity : Activity() {
             getSharedPreferences("harness", MODE_PRIVATE).edit().putBoolean(if (key == "think") "defThink" else "defSearch", on).apply()
             // v4.48.9.20: cerminan picker varian model (Mesin) — satu sumber
             // kebenaran dengan toggle "DeepThink bawaan" di Persona.
-            if (key == "think") getSharedPreferences("harness", MODE_PRIVATE).edit().putString("dsModelVariant", if (on) "r1" else "v3").apply()
+            if (key == "think") getSharedPreferences("harness", MODE_PRIVATE).edit().putString("thinkVariant", if (on) "on" else "off").apply()
             runOnUiThread {
                 try {
                     if (key == "think" && ::thinkingCheck.isInitialized) thinkingCheck.isChecked = on
@@ -681,7 +670,6 @@ class MainActivity : Activity() {
         runOnUiThread {
             try {
                 when (id) {
-                    "deepseek" -> uiTab("Web")
                     "termux" -> {
                         if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf("com.termux.permission.RUN_COMMAND"), 98)
                         else packageManager.getLaunchIntentForPackage("com.termux")?.let { startActivity(it) }
@@ -916,13 +904,11 @@ class MainActivity : Activity() {
             o.put("voiceAuto", prefs.getBoolean("voiceAuto", true))
             o.put("panelSpeak", prefs.getBoolean("panelSpeak", true))
             o.put("shakeSummon", prefs.getBoolean("shakeSummon", false))
-            o.put("apiMode", prefs.getBoolean("apiMode", false))
             o.put("wakeWordOn", prefs.getBoolean("wakeWordOn", false))
             o.put("tokIn", prefs.getLong("tokInAll", 0))
             o.put("tokOut", prefs.getLong("tokOutAll", 0))
             o.put("tokInSess", prefs.getLong("tokInSess", 0))
             o.put("tokOutSess", prefs.getLong("tokOutSess", 0))
-            o.put("sessEvents", prefs.getString("dsSessEvents", "") ?: "")
             o.put("govQuietStart", prefs.getInt("govQuietStart", -1))
             o.put("govQuietEnd", prefs.getInt("govQuietEnd", -1))
             o.put("govWifiOnly", prefs.getBoolean("govWifiOnly", false))
@@ -948,8 +934,7 @@ class MainActivity : Activity() {
             } catch (e: Exception) {}
             o.put("chatFont", prefs.getInt("chatFontPx", 16)) // vc306: default 16
             o.put("sessMsgCount", try { MemoryDb.get(this).historyCount(currentSessionId) } catch (e: Exception) { 0 })
-            o.put("dsLogin", ::statusTv.isInitialized && (statusTv.text?.toString() ?: "").contains("LOGIN AKTIF"))
-            o.put("connectors", try { Connectors.statusJson(this, o.optBoolean("dsLogin", false)) } catch (e: Exception) { org.json.JSONArray() })
+            o.put("connectors", try { Connectors.statusJson(this) } catch (e: Exception) { org.json.JSONArray() })
             var agEngine = ""
             try { agEngine = Agents.active(this).engine } catch (e: Exception) {}
             o.put("ckptTask", prefs.getLong("ckptPending", 0))
@@ -958,18 +943,17 @@ class MainActivity : Activity() {
             val perms = try { permStatusJson() } catch (e: Exception) { JSONObject() }
             fun permBadge(k: String): String = if (perms.optString(k) == "ok") "Aktif" else "Belum"
             val b = JSONObject()
-            b.put("0", if (o.getBoolean("dsLogin")) "Login aktif" else "Belum login")
             b.put("1", permBadge("notifListener"))
             b.put("2", permBadge("a11y"))
             b.put("3", permBadge("usage"))
             b.put("5", permBadge("battery"))
             b.put("8", permBadge("files"))
-            b.put("12", if (prefs.getBoolean("apiMode", false)) "API Internal" else "WebView")
+            b.put("12", "Models API")
             try { b.put("48", ScreenWatch.consentStatusText(this)) } catch (e: Exception) {}
             b.put("13", if (prefs.getBoolean("overlayOn", false)) "ON" else "OFF")
             b.put("16", permBadge("assistant"))
             b.put("23", if (prefs.getBoolean("wakeWordOn", false)) "ON" else "OFF")
-            if (agEngine.isNotBlank()) b.put("39", "DeepSeek")
+            if (agEngine.isNotBlank()) b.put("39", if (agEngine == "local") "Lokal" else "Models API")
             if (prefs.getLong("ocCurrentTask", 0) > 0) b.put("33", "Sedang bekerja")
             b.put("44", permBadge("assistant"))
             b.put("45", if (prefs.getBoolean("rootMode", false)) "ON" else "OFF")
@@ -1285,11 +1269,10 @@ class MainActivity : Activity() {
     @Volatile private var pendingThemeRecreateVc308: Boolean = false
 
     /** Benar bila ada giliran sedang berjalan. Selama true, recreate()
-     *  DILARANG: WebView + DsAgent mati bersama Activity lama dan giliran
-     *  putus di tengah jalan (mesin latar vc304/vc305). */
+     *  DILARANG: WebView browser agen mati bersama Activity lama dan
+     *  giliran putus di tengah jalan (mesin latar vc304/vc305). */
     private fun turnRunningVc308(): Boolean {
-        if (turnActive || internalTurn) return true
-        return try { agent?.busy == true } catch (e: Exception) { false }
+        return turnActive || internalTurn
     }
 
     /** Terapkan tema baru ke seluruh UI via recreate(). Bila giliran sedang
@@ -1495,7 +1478,6 @@ class MainActivity : Activity() {
     // vc181: tema ganda + dialog bertema + override agen + refresh chrome.
     private var webBoxRef: LinearLayout? = null
     private var webTopRowRef: LinearLayout? = null
-    private var webSlotRowRef: LinearLayout? = null
     internal var groupBoxRef: LinearLayout? = null
     internal var groupHeadRef: LinearLayout? = null
     internal var groupHead2Ref: HorizontalScrollView? = null
@@ -1622,19 +1604,11 @@ class MainActivity : Activity() {
         }
     }
 
+    // Fase 6 K1: ubin "Login / Muat DeepSeek" DIHAPUS — tab Web kini
+    // hanya berisi Jelajah Agen (browser agen Models API).
     private fun buildWebTopRow(): LinearLayout {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(4), dp(4), dp(4), dp(2)) }
-        row.addView(webTile("⬇", "Login / Muat DeepSeek", true) { setBrowserMode(false); try { webView.loadUrl("https://chat.deepseek.com/") } catch (e: Exception) {} })
-        row.addView(webTile("🧭", "Jelajah Agen", false) { setBrowserMode(true) })
-        return row
-    }
-
-    private fun buildWebSlotRow(): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(4), dp(2), dp(4), dp(4)) }
-        for (slot in 1..5) {
-            val cls: Class<*> = when (slot) { 1 -> SlotBrowser1::class.java; 2 -> SlotBrowser2::class.java; 3 -> SlotBrowser3::class.java; 4 -> SlotBrowser4::class.java; else -> SlotBrowser5::class.java }
-            row.addView(webTile("🌐", "Browser $slot", false) { try { startActivity(Intent(this@MainActivity, cls).putExtra("slot", slot)) } catch (e: Exception) {} })
-        }
+        row.addView(webTile("🧭", "Jelajah Agen", true) { setBrowserMode(true) })
         return row
     }
 
@@ -1644,13 +1618,9 @@ class MainActivity : Activity() {
             val box = webBoxRef ?: return
             box.setBackgroundColor(th.bg)
             webTopRowRef?.let { box.removeView(it) }
-            webSlotRowRef?.let { box.removeView(it) }
             val top = buildWebTopRow()
-            val slots = buildWebSlotRow()
             box.addView(top, 0)
-            box.addView(slots, 1)
             webTopRowRef = top
-            webSlotRowRef = slots
             webBtnsRef = top
             bUrlTv?.setTextColor(th.dim)
         } catch (e: Exception) {}
@@ -1744,7 +1714,8 @@ class MainActivity : Activity() {
         // (T-BR-23, pos-ssr.site). Matikan optimasi itu SEBELUM WebView
         // pertama dibuat (buildUi di bawah membuat WebView login).
         // Harga: draw() lebih lambat — hanya dipakai saat tangkapan layar;
-        // tampilan live tidak berubah.
+        // tampilan live tidak berubah. (Masih relevan: browser agen
+        // tetap memakai WebView untuk tab-tabnya.)
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
                 android.webkit.WebView.enableSlowWholeDocumentDraw()
@@ -1756,6 +1727,7 @@ class MainActivity : Activity() {
         // HarnessService). Sinkron by design: data kecil (JSON prefs),
         // harus selesai sebelum routing routine dipercaya.
         try { Automation.migrateSessionIds(this) } catch (e: Exception) {}
+        try { migratePrefsF6() } catch (e: Exception) {}
         buildUi()
         // vc309 Worker A — edge-to-edge penuh + bar ikut tema (§2 laporan):
         // apply di onCreate sesudah buildUi() supaya tiap recreate() —
@@ -1781,9 +1753,9 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {}
         }.start()
-        addBubble("Halo. Aku asisten DeepSeek-mu dengan konteks HP ini. Kalau belum login, buka tab Web dan login dulu. Contoh perintah: 'notif apa aja yang masuk hari ini?', 'app apa yang paling lama kupakai?', 'buka WhatsApp', atau 'cek baterai'.", false)
-        // vc176: setupWebView() dipindah ke post pertama (ensureWeb) —
-        // WebView init tidak lagi di jalur launch.
+        addBubble("Halo. Aku asistenmu dengan konteks HP ini. Contoh perintah: 'notif apa aja yang masuk hari ini?', 'app apa yang paling lama kupakai?', 'buka WhatsApp', atau 'cek baterai'.", false)
+        // Fase 6 K1: WebView login sudah tidak ada — tidak ada init
+        // WebView di jalur launch.
         try {
             val i = Intent(this, HarnessService::class.java)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
@@ -1795,7 +1767,6 @@ class MainActivity : Activity() {
         Thread { try { PrivServer.rebindIfNeeded(this) } catch (e: Exception) {} }.start()
         EventDb.get(this).add("app", packageName, "Harness dibuka")
         Thread { try { RedactMigration.runOnce(this) } catch (e: Exception) {} }.start()
-        Thread { try { DsSafetyMigration.runOnce(this) } catch (e: Exception) {} }.start()
         Embedder.maybeBackfill(this)
         // F2 (v4.39.0): default jam hening D2 (23:00-05:00) bila belum disetel.
         try {
@@ -1860,18 +1831,12 @@ class MainActivity : Activity() {
         val th = currentTheme()
         val webBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(th.bg) }
         webBoxRef = webBox
-        // vc181 (mockup Web Login v4 DIKUNCI): baris atas = ubin Login/Muat
-        // DeepSeek + Jelajah Agen (ikon di atas label); tanpa segmen LOGIN AI,
-        // tanpa Chat Baru, tanpa Cek Sesi. Baris slot = ubin Browser 1-4.
+        // Fase 6 K1: baris atas = ubin Jelajah Agen saja (login DeepSeek
+        // + baris slot Browser 1-5 dihapus).
         val topRow = buildWebTopRow()
         webBox.addView(topRow)
         webTopRowRef = topRow
-        val slotBtns = buildWebSlotRow()
-        webBox.addView(slotBtns)
-        webSlotRowRef = slotBtns
         webBtnsRef = topRow
-        webView = WebView(this).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f) }
-        webBox.addView(webView)
         // T4b1: kontainer Jelajah Agen (WebView terpisah dari login)
         val bBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         val bBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -1912,7 +1877,7 @@ class MainActivity : Activity() {
 
         val header = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(6)) }
         header.addView(TextView(this).apply { text = "Harness"; textSize = 19f; setTextColor(TEXT) })
-        statusTv = TextView(this).apply { text = "Sesi DeepSeek: memeriksa…"; textSize = 12f; setTextColor(DIM) }
+        statusTv = TextView(this).apply { text = "Models API: memeriksa…"; textSize = 12f; setTextColor(DIM) }
         header.addView(statusTv)
         // T7: header lama disembunyikan — sapaan + status pindah ke Beranda
         // ala mockup. statusTv tetap di hierarki agar semua penulis status
@@ -2424,11 +2389,11 @@ class MainActivity : Activity() {
         showTab("Beranda", deferRefresh = true)
         // Isi Beranda setelah frame pertama (input sudah responsif).
         window.decorView.post { try { refreshBeranda() } catch (e: Exception) {} }
-        // WebView + agen + probe ~800ms setelah frame pertama (bukan di
+        // Probe status provider ~800ms setelah frame pertama (bukan di
         // jalur launch) — cukup lama agar user sempat melihat Beranda,
-        // cukup cepat agar status sesi tetap muncul sendiri.
+        // cukup cepat agar status tetap muncul sendiri.
         window.decorView.postDelayed({
-            try { ensureWeb(); refreshSessionStatus() } catch (e: Exception) {}
+            try { refreshSessionStatus() } catch (e: Exception) {}
         }, 800)
     }
 
@@ -2487,14 +2452,11 @@ class MainActivity : Activity() {
         }
     }
 
-    // vc176: bangun Web + setup (WebView init, agen, loadUrl) sekali saja;
-    // aman dipanggil berulang (no-op bila sudah).
+    // Fase 6 K1: bangun tab Web (Jelajah Agen) sekali saja; aman
+    // dipanggil berulang (no-op bila sudah). WebView login DeepSeek
+    // sudah tidak ada — tidak ada setup tambahan.
     private fun ensureWeb() {
         ensureTab("Web")
-        if (!webSetupDone && ::webView.isInitialized) {
-            webSetupDone = true
-            try { setupWebView() } catch (e: Exception) {}
-        }
     }
 
     internal fun showTab(name: String, deferRefresh: Boolean = false) {
@@ -2545,71 +2507,31 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------------- WebView / DeepSeek ----------------
+    // ---------------- Migrasi pref (Fase 6 K1) ----------------
 
-    private fun setupWebView() {
-        val s = webView.settings
-        s.javaScriptEnabled = true
-        s.domStorageEnabled = true
-        s.databaseEnabled = true
-        s.loadWithOverviewMode = true
-        s.useWideViewPort = true
-        s.userAgentString = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
-        // T8: login Google butuh jendela popup OAuth — tanpa dukungan
-        // multi-jendela, ketukan tombol Google mati diam-diam di WebView.
-        s.setSupportMultipleWindows(true)
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?): Boolean {
-                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
-                var popupRef: WebView? = null
-                val closePopup: () -> Unit = {
-                    popupRef?.let { p -> (p.parent as? ViewGroup)?.removeView(p); p.destroy() }
-                    popupRef = null
-                    webView.visibility = View.VISIBLE
-                }
-                val popup = WebView(this@MainActivity)
-                popupRef = popup
-                val ps = popup.settings
-                ps.javaScriptEnabled = true
-                ps.domStorageEnabled = true
-                try { ps.userAgentString = s.userAgentString } catch (e: Exception) {}
-                CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true)
-                popup.webChromeClient = object : WebChromeClient() {
-                    override fun onCloseWindow(window: WebView?) { closePopup() }
-                }
-                popup.webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(v: WebView?, url: String?): Boolean {
-                        val u = url ?: return false
-                        return if (u.contains("chat.deepseek.com")) { webView.loadUrl(u); closePopup(); true } else false
-                    }
-                }
-                transport.webView = popup
-                resultMsg.sendToTarget()
-                webView.visibility = View.GONE
-                (webView.parent as? ViewGroup)?.addView(popup, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                return true
-            }
-        }
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView, url: String) {
-                CookieManager.getInstance().flush()
-                if (url.contains("chat.deepseek.com")) { try { if (apiClient != null && operatorMode()) apiClient?.injectDeepSeekCaptureShim() } catch (e: Exception) {} }
-                main.postDelayed({ refreshSessionStatus() }, 1500)
-            }
-        }
-        // §6.4 (Fase 5): migrasi pref agentEngine SATU KALI saat upgrade —
-        // "deepseek"|"qwen"|"kimi"|"bridge"|id kustom → "openai"; "local"
-        // tetap. Pref apiMode DIHAPUS (satu baris).
-        // Tahap provider untuk user UPGRADE (bukan install baru): user yang
-        // sudah menuntaskan wizard lama (flowOnboarded + flowSetup) TIDAK
-        // dikunci di wizard baru — tahap provider dianggap tuntas
-        // (flowProvider=true); bila belum ada provider configured →
-        // flowProviderSkipped=true + banner (§5.7), BUKAN wizard paksa.
-        // Install baru (wizard lama belum tuntas) tidak disentuh → wizard baru.
-        // (Tanpa flowProvider=true di sini, flowDone() yang diperluas akan
-        // mengunci SEMUA user upgrade di wizard — itu yang dilarang §6.4.)
+    // §6.4 (Fase 5) + Fase 6 K1: migrasi pref SATU KALI saat upgrade.
+    // Dipanggil sekali dari onCreate (dulu blok ini hidup di setupWebView
+    // yang sudah dihapus K1 — WebView login DeepSeek tidak ada lagi).
+    // - agentEngine: "deepseek"|"qwen"|"kimi"|"bridge"|id kustom -> "openai";
+    //   "local" tetap. Pref apiMode DIHAPUS.
+    // - Tahap provider untuk user UPGRADE (bukan install baru): user yang
+    //   sudah menuntaskan wizard lama (flowOnboarded + flowSetup) TIDAK
+    //   dikunci di wizard baru — tahap provider dianggap tuntas
+    //   (flowProvider=true); bila belum ada provider configured ->
+    //   flowProviderSkipped=true + banner (§5.7), BUKAN wizard paksa.
+    //   Install baru (wizard lama belum tuntas) tidak disentuh -> wizard baru.
+    //   (Tanpa flowProvider=true di sini, flowDone() yang diperluas akan
+    //   mengunci SEMUA user upgrade di wizard — itu yang dilarang §6.4.)
+    // - Fase 6 K1 (keputusan Sendy §8.2-6, hapus bersih): key mati DeepSeek
+    //   dihapus — dsModelVariant (dimigrasi dulu ke thinkVariant netral:
+    //   "r1"->"on", "v3"->"off", "auto"->"auto"), dsLogin, flowLogin,
+    //   dsApiDiag, dsSessEvents, dsSafetyMigration270,
+    //   dsSafetyMigrationReport, dan semua key berawalan dsSrvSessId_ /
+    //   dsSlotSrv_ / dsSrvSessFor_ / dsDead_ / govCount / govDay (counter
+    //   lama Governor — count() kini dihitung dari pemakaian Models API).
+    //   "bgSessionDead" TIDAK dihapus (masih dibaca submit gate BgBrain —
+    //   flag dorman yang membersihkan diri sendiri).
+    private fun migratePrefsF6() {
         try {
             val p = getSharedPreferences("harness", MODE_PRIVATE)
             val ed = p.edit()
@@ -2622,6 +2544,19 @@ class MainActivity : Activity() {
             if (migratedEngine != rawEngine) { ed.putString("agentEngine", migratedEngine); changed = true }
             if (p.contains("bridgeModel")) { ed.remove("bridgeModel"); changed = true }
             if (p.contains("apiMode")) { ed.remove("apiMode"); changed = true }
+            val oldVariant = p.getString("dsModelVariant", null)
+            if (oldVariant != null) {
+                if (!p.contains("thinkVariant")) {
+                    ed.putString("thinkVariant", when (oldVariant) { "r1" -> "on"; "auto" -> "auto"; else -> "off" })
+                }
+                ed.remove("dsModelVariant"); changed = true
+            }
+            for (dead in listOf("dsLogin", "flowLogin", "dsApiDiag", "dsSessEvents", "dsSafetyMigration270", "dsSafetyMigrationReport")) {
+                if (p.contains(dead)) { ed.remove(dead); changed = true }
+            }
+            for (k in p.all.keys.toList()) {
+                if (k.startsWith("dsSrvSessId_") || k.startsWith("dsSlotSrv_") || k.startsWith("dsSrvSessFor_") || k.startsWith("dsDead_") || k.startsWith("govCount") || k.startsWith("govDay")) { ed.remove(k); changed = true }
+            }
             if (changed) ed.apply()
             if (!p.contains("flowProvider") && p.getBoolean("flowOnboarded", false) && p.getBoolean("flowSetup", false)) {
                 val ed2 = p.edit()
@@ -2630,20 +2565,10 @@ class MainActivity : Activity() {
                 ed2.apply()
             }
         } catch (e: Exception) {}
-        // B13 (Fase 1): klien DeepSeek malas — HANYA bila engine deepseek.
-        // Engine openai tidak membuat DsAgent/DsApiClient sama sekali;
-        // klien dibuat nanti oleh ensureDsClients() bila jalur deepseek
-        // membutuhkannya (mis. ganti profil agen ke deepseek).
-        if (AgentEngines.current(this) != "openai") {
-            agent = DsAgent(webView)
-            apiClient = DsApiClient(webView)
-            webView.loadUrl("https://chat.deepseek.com/")
-        }
     }
 
     private fun refreshSessionStatus() {
-        // B13: engine openai tidak punya sesi DeepSeek — status awal
-        // dibaca dari provider Models API yang aktif.
+        // Status awal dibaca dari provider Models API yang aktif.
         if (AgentEngines.current(this) == "openai") {
             val prov = try { LlmProviderStore.hydrate(this); LlmProviders.activeProvider() } catch (e: Exception) { null }
             statusTv.text = if (prov != null && prov.kind == LlmKind.OPENAI_COMPAT && prov.configured) {
@@ -2654,41 +2579,6 @@ class MainActivity : Activity() {
             }
             return
         }
-        val dsAgent = agent ?: return
-        dsAgent.probe { st ->
-            runOnUiThread {
-                statusTv.text = when (st) {
-                    "READY" -> "Sesi DeepSeek: LOGIN AKTIF — asisten siap."
-                    "LOGIN" -> "Sesi DeepSeek: BELUM LOGIN — buka tab Web, login pakai akunmu."
-                    else -> "Sesi DeepSeek: memuat… ($st)"
-                }
-            }
-        }
-    }
-
-    /**
-     * B13 lazy: buat DsAgent/DsApiClient saat pertama kali jalur deepseek
-     * membutuhkannya. Jalur ini DIPERLUKAN walau startup openai: engine
-     * bisa beralih ke deepseek saat aplikasi jalan (Agents.apply() menulis
-     * agentEngine saat ganti profil agen). Mengembalikan false bila engine
-     * openai (klien TIDAK dibuat) atau WebView belum siap — pemanggil WAJIB
-     * gagal jujur, bukan NPE. Konstruktor hanya menyimpan referensi WebView
-     * (aman di thread mana pun); loadUrl dilempar ke main thread bila perlu.
-     */
-    private fun ensureDsClients(): Boolean {
-        if (agent != null && apiClient != null) return true
-        if (AgentEngines.current(this) == "openai") return false
-        if (!::webView.isInitialized) return false
-        return try {
-            if (agent == null) agent = DsAgent(webView)
-            if (apiClient == null) apiClient = DsApiClient(webView)
-            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-                webView.loadUrl("https://chat.deepseek.com/")
-            } else {
-                runOnUiThread { try { webView.loadUrl("https://chat.deepseek.com/") } catch (e: Exception) {} }
-            }
-            true
-        } catch (e: Exception) { false }
     }
 
     // ---------------- Chat + agent loop ----------------
@@ -4312,7 +4202,7 @@ class MainActivity : Activity() {
     /** Potong teks mentah tool (JSON dsb) dari tampilan streaming — user hanya lihat prose. */
     private fun sanitizePartial(p: String): String {
         var t = p
-        t = DsSafetyStrip.strip(t)
+        t = AgentPrompt.stripSafetyTags(t)
         // vc331: markup DSML tidak pernah tampil live saat streaming —
         // blok utuh dihapus + potong di pembuka DSML pertama (tanda
         // giliran masih mengalir); bubble final tetap memakai strip
@@ -4380,7 +4270,7 @@ class MainActivity : Activity() {
 
     /** F4 (v4.38.0): perintah lokal "cari di otak kedua: <kata kunci>".
      *  Dijawab dari indeks semantik TANPA memanggil LLM (tidak memakai
-     *  kuota/sesi DeepSeek, tidak menyentuh turn machinery). Mengembalikan
+     *  kuota/panggilan LLM, tidak menyentuh turn machinery). Mengembalikan
      *  true bila teks adalah perintah ini. Hasil selalu berlabel sumbernya:
      *  semantik (dengan tanggal dari embeddingDisplay) atau teks biasa bila
      *  paket belum diunduh / embed gagal / skor di bawah ambang. Di bawah
@@ -4467,14 +4357,22 @@ class MainActivity : Activity() {
     }
 
     // vc230 R-10(c): sumber kebenaran thinking = pref varian saja
-    // (dsModelVariant: v3/auto/r1); checkbox hanya cerminan. Migrasi
+    // (thinkVariant: off/on/auto); checkbox hanya cerminan. Migrasi
     // satu kali dari defThink lama bila varian belum pernah ditulis.
+    // Fase 6 K1: key lama dsModelVariant ("v3"/"r1") dimigrasi ke
+    // thinkVariant ("off"/"on") di sini + di migratePrefsF6.
     internal fun thinkingVariantVc230(): String {
         val p = getSharedPreferences("harness", MODE_PRIVATE)
-        val v = p.getString("dsModelVariant", null)
+        val v = p.getString("thinkVariant", null)
         if (v != null) return v
-        val migrated = if (p.getBoolean("defThink", false)) "r1" else "v3"
-        p.edit().putString("dsModelVariant", migrated).apply()
+        val legacy = p.getString("dsModelVariant", null)
+        if (legacy != null) {
+            val mapped = when (legacy) { "r1" -> "on"; "auto" -> "auto"; else -> "off" }
+            p.edit().putString("thinkVariant", mapped).remove("dsModelVariant").apply()
+            return mapped
+        }
+        val migrated = if (p.getBoolean("defThink", false)) "on" else "off"
+        p.edit().putString("thinkVariant", migrated).apply()
         return migrated
     }
 
@@ -4588,8 +4486,8 @@ class MainActivity : Activity() {
         addBubble("📎 Mengirim " + attaches.size + " lampiran dengan konteks: " + contextText.take(200), true)
         Thread {
             try {
-                val apiOn = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode() } catch (e: Exception) { false }
-                if (apiOn) {
+                // Fase 6 K1: gerbang apiMode dihapus — jalur dipilih engine
+                // (openai = vision Models API, lokal = fallback per berkas).
                     val files = ArrayList<Triple<ByteArray, String, String>>()
                     val failedRead = ArrayList<String>()
                     for (pa in attaches) {
@@ -4604,7 +4502,7 @@ class MainActivity : Activity() {
                     } else {
                     val prompt = "Konteks dari user: " + contextText + "\n\nBaca semua berkas terlampir berikut dan jawab sesuai konteks di atas. " + (if (failedRead.isNotEmpty()) "Catatan: berkas berikut GAGAL dibaca dan TIDAK ikut diunggah: " + failedRead.joinToString(", ") + ". Sebutkan kegagalan ini di jawabanmu." else "")
                     // F4b: engine openai = vision Models API (sinkron,
-                    // di Thread ini); engine deepseek = blok lama persis.
+                    // di Thread ini); engine lokal = fallback per berkas.
                     val engineAttachVcF4b = AgentEngines.current(this@MainActivity)
                     if (engineAttachVcF4b == "openai") {
                         try {
@@ -4619,26 +4517,12 @@ class MainActivity : Activity() {
                             for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e2: Exception) {} }
                         }
                     } else {
-                    // B13: klien DeepSeek bisa belum ada (startup openai) —
-                    // gagal jujur + fallback per berkas seperti jalur error.
-                    val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
-                    if (dsClientVc212 == null) {
-                        runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: engine DeepSeek belum siap (otak = Models API) — fallback per berkas dengan konteks yang sama.", false) }
-                        for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
-                    } else dsClientVc212.uploadFilesAndAsk(files, prompt, false, { answer, failedUp ->
-                        runOnUiThread {
-                            val failNote = if (failedRead.isNotEmpty() || failedUp.isNotEmpty()) "\n\n⚠️ Berkas yang gagal diunggah (tidak dibaca model). Ini BUKAN karena agen tidak bisa menerima file — alasan gagal per berkas: " + (failedRead + failedUp).joinToString("; ") + ". Sampaikan alasan ini apa adanya ke user, jangan jawab 'tidak bisa menerima file'." else ""
-                            sendContinuation("Hasil lampiran multi-file (jalur lampiran: upload penuh via API Internal):\n" + answer + failNote + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.")
-                        }
-                    }, { err ->
-                        runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: $err — fallback per berkas dengan konteks yang sama.", false) }
-                        for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
-                    })
-                    }
-                    }
-                } else {
+                    // Fase 6 K1: engine lokal — vision Models API tidak
+                    // tersedia; fallback per berkas seperti jalur error.
+                    runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: engine lokal (otak = Models API tidak aktif) — fallback per berkas dengan konteks yang sama.", false) }
                     for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e: Exception) {} }
-                }
+                    }
+                    }
             } catch (e: Exception) {
                 runOnUiThread { addBubble("⚠️ Kirim lampiran gagal: ${e.message}", false) }
             }
@@ -4689,7 +4573,7 @@ class MainActivity : Activity() {
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
                 // F4b: engine openai = vision Models API (sinkron,
-                // di Thread ini); engine deepseek = blok lama persis.
+                // di Thread ini); engine lokal = fallback per berkas.
                 val engineFrameVcF4b = AgentEngines.current(this@MainActivity)
                 if (engineFrameVcF4b == "openai") {
                     try {
@@ -4700,18 +4584,9 @@ class MainActivity : Activity() {
                     }
                     analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
                 } else {
-                // B13: klien DeepSeek bisa belum ada (startup openai).
-                val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
-                if (dsClientVc212 == null) {
-                    acc.add("GAGAL: engine DeepSeek belum siap (otak = Models API)")
-                    analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
-                } else dsClientVc212.uploadFileAndAsk(jpegBytes, "frame.jpg", "image/jpeg", "Jelaskan adegan pada frame video ini secara singkat.", false, { answer ->
-                    acc.add(answer)
-                    analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
-                }, { err ->
-                    acc.add("GAGAL: $err")
-                    analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
-                })
+                // Fase 6 K1: engine lokal — vision Models API tidak tersedia.
+                acc.add("GAGAL: engine lokal — vision tidak tersedia")
+                analyzeFramesCombinedVc212(frames, name, question, idx + 1, acc)
                 }
             } catch (e: Exception) {
                 acc.add("GAGAL: ${e.message}")
@@ -4874,7 +4749,6 @@ class MainActivity : Activity() {
         malformedRetry = 0
         gateRetryVc249 = 0
         refusalRetryVc251 = 0
-        turnSlotVc249 = -1
         pendingAskVc229 = null
         addBubble(text, true)
         requestStartMs = System.currentTimeMillis()
@@ -4932,7 +4806,7 @@ class MainActivity : Activity() {
         invalidNames.clear()
         pendingEndReason = null
         turnStoppedReason = null // vc232 S4
-        forcedToolVc282 = ApiToolLayer.detectForcedTool(text)
+        forcedToolVc282 = AgentPrompt.detectForcedTool(text)
         toolChoiceRepairVc282 = 0
         // F5b: reset state giliran openai-native (cermin blok reset di atas).
         openaiTurnMessagesVc5b.clear()
@@ -4991,7 +4865,7 @@ class MainActivity : Activity() {
         // berubah (60/60.000, vc230). Hitungan diambil SEBELUM giliran
         // ini (msgCount_<sesi> di prefs "harness", belum termasuk pesan
         // ini — sama seperti sessMsgCountVc235 di bawah).
-        val (histNVc321, histCapVc321) = TurnMetrics.historyBudgetVc321(getSharedPreferences("harness", MODE_PRIVATE).getInt("msgCount_" + currentSessionId, 0))
+        val (histNVc321, histCapVc321) = LlmEngineChat.historyBudget(getSharedPreferences("harness", MODE_PRIVATE).getInt("msgCount_" + currentSessionId, 0))
         val transcript = mdb.historyTranscriptVc230(histNVc321, histCapVc321, currentSessionId)
         mdb.addHistory("user", text, currentSessionId)
         if (mdb.sessionTitle(currentSessionId) == "Sesi baru") {
@@ -5016,7 +4890,7 @@ class MainActivity : Activity() {
         // F5b: varian katalog mengikuti dialek giliran ini — native
         // (tanpa daftar tool teks, skema dikirim sebagai `tools`) bila
         // provider mendukung native; teks bila dialek teks. Engine
-        // deepseek selalu false (katalog teks lama, tidak berubah).
+        // Dialek teks selalu memakai katalog teks lama (tidak berubah).
         var prompt = AgentPrompt.buildSystemPrompt(this, true, text, nativeTools = openaiNativeActiveVc5b()) + "\n\n"
         prompt += AgentPrompt.CTX_LABEL_RULES + "\n\n"
         // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan).
@@ -5166,7 +5040,7 @@ class MainActivity : Activity() {
             if (batt >= 0) sb.append(" • baterai ").append(batt).append("%")
             try { val siVc230 = mdb.sessionInfoVc230(currentSessionId); val dfVc230 = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale("id", "ID")); sb.append(" • sesi ini: ").append(siVc230.first).append(" pesan, dimulai ").append(if (siVc230.second > 0) dfVc230.format(java.util.Date(siVc230.second)) else "-") } catch (e: Exception) {}
             sb.append(" • agen aktif: ").append(Agents.active(this).name)
-            sb.append(" • mesin: ").append(prefsA.getString("agentEngine", "deepseek") ?: "deepseek")
+            sb.append(" • mesin: ").append(prefsA.getString("agentEngine", "openai") ?: "openai")
             if (prefsA.getLong("ckptPending", 0) > 0) sb.append(" • ADA checkpoint tugas koordinator menunggu keputusan Terima/Urungkan dari user")
             sb.append("]")
             if (planItems.isNotEmpty()) {
@@ -5368,12 +5242,11 @@ class MainActivity : Activity() {
         val sessions = all.filter { it.pinned } + all.filter { !it.pinned }
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val active = try { Agents.active(this) } catch (e: Exception) { null }
-        val apiOn = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", true)
         val info = cardBoxT()
         info.addView(tv("INFO CHAT", 12f, th.dim, true))
         info.addView(tv("Sesi aktif: " + mdb.sessionTitle(currentSessionId), 13f, th.text, true))
         info.addView(tv("Pesan di sesi ini: " + (try { mdb.historyCount(currentSessionId) } catch (e: Exception) { 0 }), 12.5f, th.text))
-        info.addView(tv("Agen: " + (active?.name ?: "?") + " • Mesin: " + (active?.engine ?: "?") + " • Mode: " + (if (apiOn) "API Internal" else "WebView"), 12.5f, th.text))
+        info.addView(tv("Agen: " + (active?.name ?: "?") + " • Mesin: " + (active?.engine ?: "?") + " • Mode: " + (if ((active?.engine ?: "") == "openai") "Models API" else "Lokal"), 12.5f, th.text))
         content.addView(info)
         var dlgRef: android.app.AlertDialog? = null
         content.addView(thBtn("＋ Sesi Baru") { dlgRef?.dismiss(); uiSessionNew() }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) })
@@ -6623,7 +6496,6 @@ class MainActivity : Activity() {
             if (shouldShowNoProviderBanner()) box.addView(buildNoProviderBanner())
             val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             val greet = when (hour) { in 4..10 -> "Selamat Pagi"; in 11..14 -> "Selamat Siang"; in 15..17 -> "Selamat Sore"; else -> "Selamat Malam" }
-            val logged = (if (::statusTv.isInitialized) statusTv.text?.toString() else "")?.contains("LOGIN AKTIF") == true
             val th = currentTheme()
             val navy = th.text
             val logoNavy = Color.rgb(34, 34, 34)
@@ -6644,15 +6516,14 @@ class MainActivity : Activity() {
             head.addView(hcol)
             // F5c: pill status otak — engine openai: label provider aktif /
             // "Otak belum diatur" (tap → dialog 73). Engine lain: perilaku lama.
-            val engineNow = try { AgentEngines.current(this) } catch (e: Exception) { "deepseek" }
+            val engineNow = try { AgentEngines.current(this) } catch (e: Exception) { "openai" }
             val activeProvNow = if (engineNow == "openai") activeModelsProvider() else null
             val pillText = when {
                 engineNow == "openai" && activeProvNow != null -> "🧠 " + activeProvNow.label
                 engineNow == "openai" -> "🧠 Otak belum diatur"
-                logged -> "DeepSeek Aktif"
-                else -> "Belum Login"
+                else -> "🧠 Lokal"
             }
-            val pillOk = if (engineNow == "openai") activeProvNow != null else logged
+            val pillOk = if (engineNow == "openai") activeProvNow != null else true
             head.addView(TextView(this).apply {
                 text = pillText
                 textSize = 11.5f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -6767,7 +6638,7 @@ class MainActivity : Activity() {
             }
             // Pintasan kecil tambahan (fungsi di luar 4 ubin mockup)
             val links = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, 0) }
-            val linkDefs = listOf("📊 Monitor" to "Monitor", "🌐 Web Login" to "Web", "📤 Ekspor" to "EXPORT", "🧭 Setup Awal" to "WIZARD")
+            val linkDefs = listOf("📊 Monitor" to "Monitor", "🌐 Web" to "Web", "📤 Ekspor" to "EXPORT", "🧭 Setup Awal" to "WIZARD")
             for ((label, dest) in linkDefs) {
                 links.addView(thBtn(label) {
                     when (dest) {
@@ -6849,27 +6720,17 @@ class MainActivity : Activity() {
             box.addView(thBtn("Kelola Agen (tambah/edit)", true) { setupAgentsDialog() }.apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(3), 0, dp(3)) }
             })
-            val tok = cardBoxT()
-            tok.addView(tv("PEMAKAIAN TOKEN (API INTERNAL)", 12f, th.dim, true))
-            tok.addView(tv("Sesi ini: ↑ " + fmtNum(prefLong("tokInSess")) + " • ↓ " + fmtNum(prefLong("tokOutSess")), 13f, th.text))
-            tok.addView(tv("Total: ↑ " + fmtNum(prefLong("tokInAll")) + " • ↓ " + fmtNum(prefLong("tokOutAll")), 13f, th.text))
-            val jejak = cardBoxT()
-            jejak.addView(tv("JEJAK SESI SERVER", 12f, th.dim, true))
-            val rawEv = getSharedPreferences("harness", MODE_PRIVATE).getString("dsSessEvents", "") ?: ""
-            val evLines = mutableListOf<String>()
-            try {
-                if (rawEv.trimStart().startsWith("[")) { val a = org.json.JSONArray(rawEv); for (i in 0 until a.length()) evLines.add(a.optString(i)) }
-                else if (rawEv.isNotBlank()) evLines.addAll(rawEv.split("\n"))
-            } catch (e: Exception) {}
-            if (evLines.isEmpty()) jejak.addView(tv("Belum ada jejak sesi.", 12.5f, th.dim))
-            for (l in evLines.takeLast(12)) jejak.addView(tv(l, 11.5f, th.dim))
+            // Fase 6 K1: kartu "PEMAKAIAN TOKEN (API INTERNAL)" DIHAPUS —
+            // satu-satunya penulis counter (tokInSess/tokOutSess/tokInAll/
+            // tokOutAll) adalah klien lama yang dihapus; jalur Models API
+            // belum mencatat usage — kartu akan beku bila dipertahankan.
+            // (Pencatatan usage Models API = tindak lanjut, bukan hapusan.)
             val sc = cardBoxT()
             sc.addView(tv("PINTASAN", 12f, th.dim, true))
             sc.addView(thFuncTile("🧠", "OTAK AGEN", "Soul, memory & file agents tiap agen") { setupBrainDialog() })
             sc.addView(thFuncTile("🎭", "PAK PERILAKU AGEN", "Pak perilaku: Asisten, Mandor, Mentor, dsb.") { setupBehaviorDialog() })
-            // F5c (sapu settings): ubin "POOL AKUN DEEPSEEK" DIHAPUS (K1 —
-            // login & slot browser DeepSeek). uiAccountsDialog() dibiarkan
-            // sebagai fungsi mati sampai Fase 6 menghapus AccountPool.
+            // Fase 6 K1: ubin "POOL AKUN DEEPSEEK" + uiAccountsDialog()
+            // DIHAPUS (login & slot browser DeepSeek).
             sc.addView(thFuncTile("🗂", "KELOLA SESI PERCAKAPAN", "Riwayat & sesi percakapan tersimpan") { showSessionDialog() })
             sc.addView(thFuncTile("🎛", "COMMAND CENTER", "Antrean & persetujuan koordinator") { showCommandCenter() })
             (sc.getChildAt(sc.childCount - 1).layoutParams as LinearLayout.LayoutParams).bottomMargin = 0
@@ -6882,12 +6743,10 @@ class MainActivity : Activity() {
             lanHead.addView(tv("⚙️ Lanjutan", 13f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
             lanHead.addView(tv(if (lanjutanOpen) "▾" else "▸", 16f, th.dim, true))
             lan.addView(lanHead)
-            lan.addView(tv("Token, Jejak Sesi Server, Serve :4199, Job Latar, Kill Switch", 11.5f, th.dim))
+            lan.addView(tv("Serve :4199, Job Latar, Kill Switch", 11.5f, th.dim))
             lan.setOnClickListener { getSharedPreferences("harness", MODE_PRIVATE).edit().putBoolean("profilLanjutanOpen", !lanjutanOpen).apply(); refreshProfil() }
             box.addView(lan)
             if (lanjutanOpen) {
-                box.addView(tok)
-                box.addView(jejak)
                 val dev = cardBoxT()
                 dev.addView(tv("SERVE :4199 — " + ServeHealth.lastStatus(this), 12.5f, th.dim))
                 dev.addView(thFuncTile("⚡", "BANGKITKAN SERVE :4199", "Hidupkan ulang serve lokal bila tidur") { Thread { try { val r = ServeHealth.revive(this@MainActivity); runOnUiThread { Toast.makeText(this@MainActivity, r, Toast.LENGTH_LONG).show() } } catch (e: Exception) {} }.start() })
@@ -7159,7 +7018,7 @@ class MainActivity : Activity() {
         val c = cardBox()
         val th = currentTheme()
         c.addView(tv("Kenalan dulu 👋", 16f, TEXT, true))
-        c.addView(tv("Halo! Harness adalah asisten AI yang tinggal di HP kamu: satu aplikasi, satu otak AI DeepSeek. Sebelum mulai, kenalan dulu — nama dan gayamu bisa diubah kapan pun di Setup.", 13f, TEXT))
+        c.addView(tv("Halo! Harness adalah asisten AI yang tinggal di HP kamu: satu aplikasi, satu otak AI (Models API). Sebelum mulai, kenalan dulu — nama dan gayamu bisa diubah kapan pun di Setup.", 13f, TEXT))
         c.addView(tv("Bahasa: Indonesia", 12f, DIM))
         // 1. Nama kamu (pref baru userName, maks 24 char).
         c.addView(tv("Nama kamu", 13f, TEXT, true))
@@ -7886,16 +7745,15 @@ class MainActivity : Activity() {
         }.apply { setBounds(0, 0, px, px) }
     }
 
-    // Label chip model dari data yang ADA (pref dsModelVariant via
-    // thinkingVariantVc230 — v3/r1/auto). TIDAK mengarang "V4 Pro":
-    // nama itu tidak ada di data Harness.
+    // Label chip model dari data yang ADA (pref thinkVariant via
+    // thinkingVariantVc230 — off/on/auto).
     private fun modelLabelVc306(): String = try {
         when (thinkingVariantVc230()) {
-            "r1" -> "DeepSeek R1"
+            "on" -> "Reasoning"
             "auto" -> "Otomatis"
-            else -> "DeepSeek V3"
+            else -> "Standar"
         }
-    } catch (e: Exception) { "DeepSeek V3" }
+    } catch (e: Exception) { "Standar" }
 
     // ---- Header kaca (C5) ----
     private fun syncGlassHeaderVc306() {
@@ -7908,7 +7766,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) { "" }
                 glassHeaderTitleTvVc306?.text = title.ifBlank { "Sesi baru" }
                 val status = try { if (::statusTv.isInitialized) statusTv.text?.toString() ?: "" else "" } catch (e: Exception) { "" }
-                glassHeaderStatusTvVc306?.text = status.ifBlank { "Sesi DeepSeek" }
+                glassHeaderStatusTvVc306?.text = status.ifBlank { "Sesi Models API" }
                 glassHeaderDotVc306?.background = android.graphics.drawable.GradientDrawable().apply {
                     shape = android.graphics.drawable.GradientDrawable.OVAL
                     setColor(if (turnActive) Color.rgb(24, 178, 122) else faintColorVc306())
@@ -8025,17 +7883,17 @@ class MainActivity : Activity() {
         var dlgRef: android.app.AlertDialog? = null
         val th = currentTheme()
         val prefsH = getSharedPreferences("harness", MODE_PRIVATE)
-        val variant = try { thinkingVariantVc230() } catch (e: Exception) { "v3" }
+        val variant = try { thinkingVariantVc230() } catch (e: Exception) { "off" }
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(tv("Varian aktif: " + modelLabelVc306() + ". Mengubah varian hanya mengubah thinking_enabled di body completion; sesi + PoW tidak berubah.", 12f, th.dim))
-        for ((key, label) in listOf("v3" to "DeepSeek V3", "r1" to "DeepSeek R1 (DeepThink)", "auto" to "Otomatis")) {
+        body.addView(tv("Varian aktif: " + modelLabelVc306() + ". Mengubah varian hanya mengubah flag thinking di permintaan.", 12f, th.dim))
+        for ((key, label) in listOf("off" to "Standar", "on" to "Reasoning (DeepThink)", "auto" to "Otomatis")) {
             body.addView(thBtn(label + if (variant == key) " ✓" else "", variant == key) {
                 dlgRef?.dismiss()
-                prefsH.edit().putString("dsModelVariant", key).apply()
-                // v3/r1 selaras dengan toggle DeepThink bawaan (uiSetDefMode
-                // ikut menulis dsModelVariant yang sama); "auto" dibiarkan.
-                if (key == "v3") uiSetDefMode("think", false)
-                if (key == "r1") uiSetDefMode("think", true)
+                prefsH.edit().putString("thinkVariant", key).apply()
+                // off/on selaras dengan toggle DeepThink bawaan (uiSetDefMode
+                // ikut menulis thinkVariant yang sama); "auto" dibiarkan.
+                if (key == "off") uiSetDefMode("think", false)
+                if (key == "on") uiSetDefMode("think", true)
                 syncGlassHeaderVc306()
             }.apply {
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(6), 0, 0) }
@@ -8543,36 +8401,21 @@ class MainActivity : Activity() {
                     (mime == "application/pdf" || ext == "pdf" || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ext == "docx" || ext == "doc" || mime == "application/msword" || ext in listOf("txt", "md", "csv")) -> {
                         // vc212 Item 2: dokumen teks penuh lewat API; gagal -> fallback perilaku lama.
                         val qDoc = question
-                        val useApiDoc = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode() } catch (e: Exception) { false }
-                        runOnUiThread { showTab("Chat"); addBubble("📄 Dokumen '" + name + "' — mengunggah teks penuh lewat API internal… (status: mengunggah, menunggu parsing server…)", false) }
+                        // Fase 6 K1: dokumen lewat vision Models API bila
+                        // engine openai; engine lokal -> fallback lokal.
+                        val useApiDoc = AgentEngines.current(this@MainActivity) == "openai"
+                        runOnUiThread { showTab("Chat"); addBubble("📄 Dokumen '" + name + "' — mengunggah teks penuh lewat Models API… (status: mengunggah, menunggu parsing…)", false) }
                         if (!useApiDoc) {
-                            runOnUiThread { addBubble("📄 Dokumen '" + name + "' tidak lewat API (API Internal tidak aktif) — fallback ke perilaku lama.", false) }
+                            runOnUiThread { addBubble("📄 Dokumen '" + name + "' tidak lewat Models API (engine lokal) — fallback ke perilaku lama.", false) }
                             fallbackDocVc212(cacheF, name, ext, qDoc)
                         } else {
                             val promptDoc = "Baca dokumen terlampir '" + name + "' SELURUHNYA. " + (if (qDoc.isNotBlank()) "Pertanyaan user: $qDoc" else "Ringkas isi dokumen ini secara lengkap dan tunjukkan hal penting di dalamnya.") + "\n\nJawab dalam Bahasa Indonesia."
-                            // F4b: engine openai = vision Models API (sinkron,
-                            // di Thread ini); engine deepseek = blok lama persis.
-                            val engineDocVcF4b = AgentEngines.current(this@MainActivity)
-                            if (engineDocVcF4b == "openai") {
-                                try {
-                                    val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, LlmCallKind.INTERACTIVE)
-                                    runOnUiThread { addBubble("📄 Status parsing: SUCCESS — dokumen '" + name + "' dibaca lewat Models API (vision).", false); sendContinuation("Hasil baca dokumen '" + name + "' (vision Models API):\n" + answer + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.") }
-                                } catch (e: Exception) {
-                                    runOnUiThread { addBubble("📄 Status parsing: GAGAL (" + (e.message ?: "gagal") + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
-                                    fallbackDocVc212(cacheF, name, ext, qDoc)
-                                }
-                            } else {
-                            // B13: klien DeepSeek bisa belum ada (startup openai).
-                            val dsClientVc212 = apiClient ?: if (ensureDsClients()) apiClient else null
-                            if (dsClientVc212 == null) {
-                                runOnUiThread { addBubble("📄 Status parsing server: GAGAL (engine DeepSeek belum siap — otak = Models API) — fallback ke perilaku lama untuk '" + name + "'.", false) }
+                            try {
+                                val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, LlmCallKind.INTERACTIVE)
+                                runOnUiThread { addBubble("📄 Status parsing: SUCCESS — dokumen '" + name + "' dibaca lewat Models API (vision).", false); sendContinuation("Hasil baca dokumen '" + name + "' (vision Models API):\n" + answer + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.") }
+                            } catch (e: Exception) {
+                                runOnUiThread { addBubble("📄 Status parsing: GAGAL (" + (e.message ?: "gagal") + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
                                 fallbackDocVc212(cacheF, name, ext, qDoc)
-                            } else dsClientVc212.uploadFilesAndAsk(listOf(Triple(bytes, name, mime.ifBlank { mimeForNameVc212(name) })), promptDoc, false, { answer, _ ->
-                                runOnUiThread { addBubble("📄 Status parsing server: SUCCESS — dokumen '" + name + "' dibaca penuh lewat API.", false); sendContinuation("Hasil baca dokumen '" + name + "' (teks penuh via API internal; jalur lampiran: upload penuh via API Internal):\n" + answer + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.") }
-                            }, { err ->
-                                runOnUiThread { addBubble("📄 Status parsing server: GAGAL (" + err + ") — fallback ke perilaku lama untuk '" + name + "'.", false) }
-                                fallbackDocVc212(cacheF, name, ext, qDoc)
-                            })
                             }
                         }
                     }
@@ -8618,29 +8461,16 @@ class MainActivity : Activity() {
                         }
                     }
                     mime.startsWith("audio/") -> {
-                        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        // Fase 6 K1: lampiran audio dulu memakai jalur Web
+                        // lama yang sudah dihapus — tidak ada jalur
+                        // transkripsi audio di Models API. Jujur ke user.
                         runOnUiThread {
-                            showTab("Web")
-                            addBubble("🎵 Audio '" + name + "' — mengirim lewat Web untuk transkripsi…", false)
-                            // B13: DsAgent bisa belum ada (startup openai) —
-                            // ini jalan di main thread (runOnUiThread), jadi
-                            // akses langsung di sini akan crash bila null.
-                            val dsAgentVc212 = agent ?: if (ensureDsClients()) agent else null
-                            if (dsAgentVc212 == null) {
-                                endStreamBubble(); showTab("Chat")
-                                addBubble("⚠️ Analisa audio lewat Web gagal: engine DeepSeek belum siap (otak = Models API)", false)
-                            } else dsAgentVc212.attachFile(b64, name, mime, question.ifBlank { "Transkrip dan ringkas isi audio ini." }, { resp ->
-                                endStreamBubble(); showTab("Chat")
-                                addBubble("🎵 Audio '" + name + "' terkirim lewat Web — jawaban model di bawah.", false)
-                                handleAgentResponse(resp)
-                            }, { err ->
-                                endStreamBubble(); showTab("Chat")
-                                addBubble("⚠️ Analisa audio lewat Web gagal: $err", false)
-                            })
+                            showTab("Chat")
+                            addBubble("🎵 Audio '" + name + "' belum bisa dianalisa — lampiran audio memakai jalur Web lama yang sudah dihapus (K1). Yang didukung: gambar, PDF, teks, video.", false)
                         }
                     }
                     else -> runOnUiThread {
-                        addBubble("📎 File '$name' ($mime) belum didukung untuk dianalisa. Yang didukung: gambar, PDF, teks, video, audio.", false)
+                        addBubble("📎 File '$name' ($mime) belum didukung untuk dianalisa. Yang didukung: gambar, PDF, teks, video.", false)
                     }
                 }
             } catch (e: Exception) {
@@ -8650,11 +8480,10 @@ class MainActivity : Activity() {
     }
 
     /** v4.3.0 — Kelanjutan yang MEMBAWA KONTEKS (fix agen "tidak bisa pakai tool").
-     *  Jalur API Internal membuka sesi DeepSeek BARU di tiap panggilan; kelanjutan
-     *  polos membuat model buta (tanpa katalog tool, rencana, dan jejak langkah)
-     *  sehingga menyimpulkan ia tidak punya akses tool. Fungsi ini merakit ulang
-     *  konteks ringkas khusus jalur API; jalur WebView (sesi berkelanjutan)
-     *  tetap menerima teks polos seperti sebelumnya. */
+     *  Jalur Models API (teks) membuka konteks BARU di tiap panggilan;
+     *  kelanjutan polos membuat model buta (tanpa katalog tool, rencana,
+     *  dan jejak langkah) sehingga menyimpulkan ia tidak punya akses tool.
+     *  Fungsi ini merakit ulang konteks ringkas khusus jalur API. */
 
     // v4.48.6 (Butir 3): header segmen prompt awal (urutan bangun = urutan
     // di bawah; dipakai guard + pengukuran lapisan agar konsisten).
@@ -8876,11 +8705,12 @@ class MainActivity : Activity() {
     // v4.48.7 (dedup): hasToolResult=true hanya dari ketiga cabang hasil tool di execToolAndContinue.
     // vc316 IXL — LANJUTAN DELTA (perbaikan akar input_exceeds_limit,
     // lihat UKURAN-INPUT-VC316.md §4): lanjutan TIDAK LAGI membangun
-    // ulang seluruh prompt. Alasan terukur: DsApiClient/SlotClient
-    // memakai SATU sesi server yang dipakai ulang (chat_session_id
-    // sama, parent_message_id selalu null), jadi tiap POST prompt
-    // penuh TERSIMPAN sebagai pesan di sesi server — konteks server
-    // menumpuk ~1 prompt penuh per POST. Giliran tool = POST awal +
+    // ulang seluruh prompt. Alasan terukur (jalur lama, dihapus K1):
+    // klien lama memakai SATU sesi server yang dipakai ulang
+    // (chat_session_id sama, parent_message_id selalu null), jadi tiap
+    // POST prompt penuh TERSIMPAN sebagai pesan di sesi server —
+    // konteks server menumpuk ~1 prompt penuh per POST. Giliran tool
+    // = POST awal +
     // 1 lanjutan per langkah tool, sehingga giliran ke-3 di sesi BARU
     // pun sudah melewati batas server (~64.000 token buffer web)
     // sementara giliran tanpa tool (1 POST) lolos. Lanjutan kini hanya
@@ -8891,7 +8721,7 @@ class MainActivity : Activity() {
     // digest (cap 2000, bukti giliran sebelumnya), work-notes (cap
     // 4000+1000 — WAJIB dipertahankan, berisi "jangan ulangi"), dan
     // HASIL TOOL TERBARU + trailer. Yang DIHAPUS dari lanjutan karena
-    // sudah ada di POST awal giliran ini DI SESI SERVER YANG SAMA:
+    // sudah ada di POST awal giliran ini DI RIWAYAT YANG SAMA:
     // system prompt + katalog (s.d. 94.817 char), skills/fakta/goals
     // (cap 20.000+20.000+10.000), dan riwayat 30 pesan/30.000 char.
     // Perilaku tool TIDAK berubah: nama/argumen/hasil tool, cap langkah,
@@ -8912,8 +8742,8 @@ class MainActivity : Activity() {
             continueOpenaiVc5b(emptyList(), text)
             return
         }
-        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
-        if (!apiMode) { sendToAgent(text); return }
+        // Fase 6 K1: gerbang apiMode dihapus — lanjutan selalu dibangun
+        // sebagai delta (anchor + rencana + jejak + digest) lalu helper.
         val anchorVc316 = AgentPrompt.continuationAnchorVc316(currentTurnUser)
         val sb = StringBuilder()
         sb.append(anchorVc316)
@@ -9152,35 +8982,31 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    // vc322 SESI: deltaPrompt = prompt delta giliran 1-1 (jangkar +
-    // perintah user + work-notes) dari dispatchTurn — HANYA giliran
-    // pertama 1-1 yang membawa delta; lanjutan tool (sendContinuation)
-    // membawa deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu
-    // sudah delta vc316). vc330 SESI: verifikasi diri membawa delta
+    // vc322: deltaPrompt = prompt delta giliran 1-1 (jangkar + perintah
+    // user + work-notes) dari dispatchTurn — HANYA giliran pertama 1-1
+    // yang membawa delta; lanjutan tool (sendContinuation) membawa
+    // deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu sudah
+    // delta vc316). vc330: verifikasi diri membawa delta
     // (deltaVerifyPromptVc330 — tanpa ctxHist 20.000 char) dan tugas
     // latar membawa delta (deltaExtractPromptVc330 — jendela 13 pesan,
     // bukan 40/40.000); rescue tetap default null = prompt penuh.
-    // silentKindVc330 ("verify"/"extract"/null) memberi tahu klien
-    // bahwa giliran ini SENYAP — katup vc330 di runChat melewatinya
-    // tanpa POST bila guard reset akan menembak. Klien
-    // (SlotClient/DsApiClient) yang memutuskan delta vs penuh dari
-    // keadaan wadah (tersimpan + primed + bukan reset/forceFresh). Jalur
-    // WebView di bawah SELALU memakai prompt penuh (bukan sesi API Internal). Governor tetap dihitung
-    // dari prompt penuh (konservatif — kuota tidak berubah).
+    // Delta vs penuh diputuskan dari riwayat pesan percakapan ini
+    // (LlmEngineChat.historyBudget). Governor tetap dihitung dari
+    // prompt penuh (konservatif — kuota tidak berubah).
     private fun sendToAgent(prompt: String, deltaPrompt: String? = null) {
-        statusTv.text = "DeepSeek: berpikir…"
+        statusTv.text = "Models API: berpikir…"
         beginStreamBubble()
         // FULL MIGRATION: engine "openai" = otak Models API (OpenAI-compatible).
-        // DeepSeek Web/API Internal TIDAK dipakai di engine ini.
+        // Jalur web/API internal lama TIDAK dipakai di engine ini.
         if (AgentEngines.current(this) == "openai") {
             statusTv.text = "Models API: berpikir…"
             LlmProviderStore.hydrate(this)
             val actId = LlmProviders.activeId()
             val prov = LlmProviders.activeProvider()
             val key = LlmProviderStore.apiKey(this, actId)
-            if (prov.kind != LlmKind.OPENAI_COMPAT) {
+            if (prov == null) {
                 endStreamBubble()
-                addBubble("⚠️ Provider '${prov.id}' bukan OpenAI-compatible. Atur provider via Setup > Model.", false, turn = true)
+                addBubble("⚠️ Otak belum diatur — atur provider dulu di Setup > 73. Provider LLM.", false, turn = true)
                 return
             }
             if (key.isNullOrBlank()) {
@@ -9225,9 +9051,12 @@ class MainActivity : Activity() {
                 else -> null
             }
             // chatMessagesForEngine memblokir thread pemanggil (latch) —
-            // jalan di thread latar seperti callback model deepseek;
+            // jalan di thread latar seperti callback model lama;
             // handleAgentResponse memang dirancang dipanggil dari sana
             // (addMsg/addBubble mem-post ke UI thread sendiri).
+            turnSource = "Models API"
+            dumpPromptLast(prompt)
+            recordSendPoint(prompt)
             Thread {
                 try {
                     if (nativeVc5b) {
@@ -9257,89 +9086,18 @@ class MainActivity : Activity() {
             }.start()
             return
         }
-        // B13: jalur deepseek butuh klien DeepSeek — buat malas bila
-        // engine beralih ke deepseek sesudah startup openai.
-        if (!ensureDsClients()) {
-            endStreamBubble()
-            addBubble("⚠️ Engine DeepSeek belum siap — buka tab Web / chat 1-1 dulu.", false, turn = true)
-            return
+        // C1 (Fase 6): engine lokal — tanpa provider Models API. Coba
+        // jawab lokal (reminder/fakta/buka-app); bila tidak bisa, beri
+        // tahu jujur.
+        endStreamBubble()
+        if (!tryOfflineFallback("network unreachable", "Lokal")) {
+            addBubble("📴 Mode offline lokal — hanya reminder/fakta/buka-app.", false, turn = true)
         }
-        val apiMode = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false) || operatorMode()
-        val silent = internalTurn || verifyTurn
-        // vc330 SESI: jenis giliran senyap untuk katup pengaman klien.
-        val silentKindVc330: String? = when {
-            verifyTurn -> "verify"
-            internalTurn -> "extract"
-            else -> null
-        }
-        if (apiMode) {
-            dumpPromptLast(prompt)
-            recordSendPoint(prompt)
-            turnSource = "API Internal"
-            turnThinking = ""
-            // v4.46.0 F2: slot browser — pref tetap tanpa token = error jelas,
-            // JANGAN jatuh ke WebView (akan memakai akun yang salah).
-            val slotPref = AccountPool.slotPref(this)
-            val slotEff = AccountPool.resolveSlot(this)
-            val slotAuth = if (slotEff != null) AccountPool.slotAuth(this, slotEff) else null
-            if (slotPref in 1..5 && slotAuth == null) {
-                endStreamBubble()
-                addBubble("⚠️ Browser $slotPref belum login — buka Browser $slotPref di Setup, login, lalu ulangi.", false, turn = true)
-                return
-            }
-            if (slotEff != null && slotAuth != null) {
-                turnSlotVc249 = slotEff
-                turnSource = "Browser $slotEff (API Internal)"
-                val slotClient = SlotClient(this, slotEff, slotAuth.first, slotAuth.second)
-                slotClient.chat(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
-                    if (silent) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
-                    else updateStreamBubble(partial)
-                }, { resp, think ->
-                    turnThinking = think
-                    endStreamBubble()
-                    runOnUiThread { statusTv.text = "Browser $slotEff: AKTIF — asisten siap." }
-                    handleAgentResponse(resp)
-                }, { err ->
-                    endStreamBubble()
-                    // TIDAK ADA fallback WebView untuk slot: akun slot adalah
-                    // pilihan eksplisit; fallback akan memakai akun WebView
-                    // utama yang berbeda.
-                    addBubble("⚠️ $err", false, turn = true)
-                }, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330)
-                return
-            }
-            val chatFn: (String, Boolean, Boolean, (String) -> Unit, (String, String) -> Unit, (String) -> Unit) -> Unit =
-                { p, t, s, op, od, oe -> apiClient?.chat(p, t, s, op, od, oe, deltaPrompt = deltaPrompt, silentKindVc330 = silentKindVc330) }
-            chatFn(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
-                // Giliran senyap (verifikasi/ekstraksi): JANGAN tampilkan teks mentah —
-                // proses mikir model bisa bocor jadi bubble sampah. Cukup label status.
-                if (silent) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
-                else updateStreamBubble(partial)
-            }, { resp, think ->
-                turnThinking = think
-                endStreamBubble()
-                runOnUiThread { statusTv.text = "Sesi DeepSeek: LOGIN AKTIF — asisten siap." }
-                handleAgentResponse(resp)
-            }, { err ->
-                endStreamBubble()
-                if (!tryOfflineFallback(err, "DeepSeek")) {
-                    addBubble("⚠️ $err\nJatuh kembali ke jalur WebView…", false, turn = true)
-                    runOnUiThread { sendViaWebView(prompt) }
-                }
-            })
-            return
-        }
-        sendViaWebView(prompt)
     }
 
-    /** J1: mesin agen untuk giliran ini adalah DeepSeek (jalur bawaan). */
-    // ---------- v4.7.0: Sesi Awet (checkpoint giliran) + Pool Akun ----------
+    /** J1: mesin agen untuk giliran ini adalah Models API (jalur bawaan). */
+    // ---------- v4.7.0: Sesi Awet (checkpoint giliran) ----------
     private fun turnPrefs() = getSharedPreferences("harness", MODE_PRIVATE)
-
-    /** v4.43.17 MODE OPERATOR: saklar diagnostik — paksa API Internal + rekam
-     *  diagnostik mentah (DsApiClient.recordDiag). Diaktifkan dari tombol
-     *  Setup 12b; Operator mengontrol default-nya lewat build. */
-    internal fun operatorMode(): Boolean = try { getSharedPreferences("harness", MODE_PRIVATE).getBoolean("operatorMode", false) } catch (e: Exception) { false }
 
     private fun saveTurnCheckpoint(userText: String) {
         try {
@@ -9496,62 +9254,6 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    fun uiAccountsDialog() {
-        val th = currentTheme()
-        val act = AccountPool.activeSlot(this)
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        var outerHolder: android.app.AlertDialog? = null
-        for (s in 1..5) {
-            val filled = try { !SecureStore.get(this, "dsSlot${s}_token").isNullOrBlank() } catch (e: Exception) { false }
-            val label = "Slot $s — " + (if (filled) "Terisi" else "Kosong") + (if (act == s) " • AKTIF" else "")
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(10), dp(4), dp(10)) }
-            row.addView(tv(label, 14f, th.text).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
-            row.addView(tv("›", 18f, th.dim, true))
-            row.setOnClickListener {
-                if (!filled) {
-                    saveCurrentSessionToSlot(s)
-                } else {
-                    outerHolder?.dismiss()
-                    val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                    thDialog("Slot $s", body, listOf(
-                        Triple("Jadikan akun aktif", true) { d: android.app.AlertDialog -> AccountPool.setActive(this, s); android.widget.Toast.makeText(this, "Akun aktif: Slot $s", android.widget.Toast.LENGTH_SHORT).show(); d.dismiss() },
-                        Triple("Timpa dengan sesi login saat ini", false) { d: android.app.AlertDialog -> saveCurrentSessionToSlot(s); d.dismiss() },
-                        Triple("Hapus slot", false) { d: android.app.AlertDialog ->
-                            try { SecureStore.put(this, "dsSlot${s}_token", ""); SecureStore.put(this, "dsSlot${s}_cookie", "") } catch (e: Exception) {}
-                            if (AccountPool.activeSlot(this) == s) AccountPool.setActive(this, 0)
-                            android.widget.Toast.makeText(this, "Slot $s dihapus", android.widget.Toast.LENGTH_SHORT).show()
-                            d.dismiss()
-                        },
-                        Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }
-                    ), danger = setOf("Hapus slot"))
-                }
-            }
-            col.addView(row)
-        }
-        col.addView(thBtn("Reset Tanda Akun") { AccountPool.clearAllDead(this); android.widget.Toast.makeText(this, "Semua tanda akun mati dihapus — API internal akan mencoba lagi.", android.widget.Toast.LENGTH_LONG).show() })
-        col.addView(thBtn("Pakai Sesi Live") { AccountPool.setActive(this, 0); android.widget.Toast.makeText(this, "Akun aktif: sesi WebView (live)", android.widget.Toast.LENGTH_SHORT).show() })
-        outerHolder = thDialog("Pool Akun DeepSeek — aktif: " + (if (act == 0) "Sesi Live" else "Slot $act"), col, listOf(Triple("Tutup", false) { d: android.app.AlertDialog -> d.dismiss() }))
-    }
-
-    private fun saveCurrentSessionToSlot(slot: Int) {
-        Thread {
-            val tok = try { apiClient?.captureTokenNow() } catch (e: Exception) { null }
-            val cookie = try { apiClient?.currentCookie() ?: "" } catch (e: Exception) { "" }
-            runOnUiThread {
-                if (tok.isNullOrBlank()) {
-                    android.widget.Toast.makeText(this, "Token sesi tidak ditemukan — pastikan tab Web sudah LOGIN.", android.widget.Toast.LENGTH_LONG).show()
-                } else {
-                    try {
-                        AccountPool.saveSlot(this, slot, tok, cookie)
-                        android.widget.Toast.makeText(this, "Sesi tersimpan ke Slot $slot", android.widget.Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        android.widget.Toast.makeText(this, "Gagal menyimpan slot: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }.start()
-    }
-
     // vc240 m17: guard ulang setelah suffix ditempel. Rencana aktif
     // dan perintah user TIDAK dipangkas (keduanya di luar promptNoUser
     // yang diguard), tetapi bila total tetap melebihi cap sesudah guard
@@ -9573,53 +9275,24 @@ class MainActivity : Activity() {
                 try { addMsg("⚠️ Guard ulang suffix: prompt + perintah user masih melebihi cap " + capVc240 + " char sebesar " + (toSendVc240.length - capVc240) + " char — rencana dan perintah user tidak dipangkas, prompt dikirim utuh.", "meta", turn = true) } catch (e: Exception) {}
             }
         }
-        // vc322 SESI: giliran 1-1 lanjutan dikirim sebagai DELTA
-        // (jangkar + perintah user + work-notes segar) bila wadah server
-        // sudah ada + primed — klien yang memutuskan (sendToAgent ->
-        // SlotClient/DsApiClient). Prompt PENUH tetap dikirim bila ini
-        // giliran pertama di wadah baru / sesudah reset / forceFresh.
-        // vc327 SESI (H3): giliran auto-save vc298 ("ingat:" / koreksi)
-        // TIDAK LAGI memaksa prompt penuh — delta kini membawa blok
+        // vc322: giliran 1-1 lanjutan dikirim sebagai DELTA (jangkar +
+        // perintah user + work-notes segar) bila riwayat pesan percakapan
+        // ini sudah membawa prompt penuh — LlmEngineChat.historyBudget
+        // yang memutuskan. Prompt PENUH tetap dikirim bila ini giliran
+        // pertama di percakapan baru / sesudah reset.
+        // vc327 (H3): giliran auto-save vc298 ("ingat:" / koreksi) TIDAK
+        // LAGI memaksa prompt penuh — delta kini membawa blok
         // "[SISTEM — AUTO-SAVE]" ringkas (dicap 2000 char, isi simpanan
         // ikut; lihat AgentPrompt.deltaTurnPromptVc327). Model tetap
         // membaca instruksi auto-save + menyampaikan konfirmasi simpanan
         // ke user; yang hilang hanya pengiriman ulang ~90k char prompt
-        // penuh tiap auto-save (2 auto-save = 1 reset = 1 sesi baru di
-        // vc322). Bila wadah belum primed, klien tetap mengirim PENUH
-        // (delta diabaikan) — konfirmasi tidak pernah hilang.
+        // penuh tiap auto-save. Bila percakapan belum membawa prompt
+        // penuh, klien tetap mengirim PENUH (delta diabaikan) —
+        // konfirmasi tidak pernah hilang.
         val deltaVc322 = AgentPrompt.deltaTurnPromptVc327(rawUser, AgentPrompt.workNotesBlockVc302(this, currentSessionId), AgentPrompt.autoSaveBlockVc327(promptNoUser))
         sendToAgent(toSendVc240, deltaVc322)
     }
 
-
-    private fun sendViaWebView(prompt: String) {
-        // B13: jalur WebView butuh DsAgent — buat malas bila belum ada.
-        if (!ensureDsClients()) {
-            endStreamBubble()
-            addBubble("⚠️ Engine DeepSeek belum siap — buka tab Web / chat 1-1 dulu.", false, turn = true)
-            pendingEndReason = "error"
-            verifyTurn = false // vc232 S7: giliran verifikasi yang gagal terminal tidak boleh bocor
-            endUserTurn()
-            return
-        }
-        turnSource = "WebView"
-        turnThinking = ""
-        val silent = internalTurn || verifyTurn
-        agent?.sendAndAwait(prompt, (thinkingCheck.isChecked || autoThinkThisTurn) && !silent, searchCheck.isChecked, { partial ->
-            if (silent) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
-            else updateStreamBubble(partial)
-        }, { resp ->
-            endStreamBubble()
-            runOnUiThread { statusTv.text = "Sesi DeepSeek: LOGIN AKTIF — asisten siap." }
-            handleAgentResponse(resp)
-        }, { err ->
-            endStreamBubble()
-            if (!tryOfflineFallback(err, "DeepSeek")) addBubble("⚠️ $err", false, turn = true)
-            pendingEndReason = "error"
-            verifyTurn = false // vc232 S7: giliran verifikasi yang gagal terminal tidak boleh bocor
-            endUserTurn()
-        })
-    }
 
     private fun extractTool(text: String): Pair<String, JSONObject?> = AgentPrompt.extractToolCall(text)
 
@@ -10049,8 +9722,8 @@ class MainActivity : Activity() {
 
     // ================= F5b: loop tool native (Models API) =================
     // Semua helper di blok ini hanya dipakai jalur engine openai. Jalur
-    // deepseek TIDAK menyentuhnya (kecuali sendToolResultVc5b yang untuk
-    // deepseek memanggil sendContinuation persis seperti semula).
+    // Dialek teks TIDAK menyentuhnya (kecuali sendToolResultVc5b yang untuk
+    // dialek teks memanggil sendContinuation persis seperti semula).
 
     /** F5b: giliran ini memakai function calling native? false bila engine
      *  bukan openai, bila giliran sudah jatuh ke dialek teks, atau bila
@@ -10202,7 +9875,7 @@ class MainActivity : Activity() {
      *  langkah (tool + status saja, tanpa evidence — evidence lengkap
      *  sudah ada di pesan role:tool) + rencana aktif. Mencegah model
      *  mengulang langkah yang sudah selesai (pengganti JEJAK 12.000 char
-     *  di delta deepseek — di sini riwayat messages sudah lengkap, jadi
+     *  di delta teks — di sini riwayat messages sudah lengkap, jadi
      *  yang dibutuhkan hanya ringkasan orientasi). */
     private fun openaiTurnContextVc5b(): String {
         val sb = StringBuilder()
@@ -10271,7 +9944,7 @@ class MainActivity : Activity() {
                     try { EventDb.get(this).add("llm", packageName, "provider menolak role:tool ($err) → toolRoleFallback=true, hasil tool dikirim format teks") } catch (e2: Exception) {}
                     val textMsgs = toolMsgs.map { tm ->
                         val nm = openaiToolNamesVc5b[tm.toolCallId] ?: "tool"
-                        val st = ApiToolLayer.statusTag(ApiToolLayer.classifyResult(tm.content))
+                        val st = WorkLog.statusTag(WorkLog.classifyResult(tm.content))
                         ChatMessage("user", "Hasil tool $nm $st:\n" + tm.content)
                     }
                     continueOpenaiTextResultsVc5b(textMsgs, instruction)
@@ -10312,22 +9985,22 @@ class MainActivity : Activity() {
     }
 
     /** F5b: kirim hasil SATU tool balik ke model.
-     *  Engine deepseek → teks lama persis (`deepseekText`,
-     *  hasToolResult = `deepseekHasToolResult`).
+     *  Dialek teks → teks lama persis (`legacyText`,
+     *  hasToolResult = `legacyHasToolResult`).
      *  Engine openai native → pesan role:tool (tool_call_id = id native) +
      *  instruksi lanjut sebagai pesan user (continueOpenaiVc5b).
      *  Engine openai + provider toolRoleFallback → hasil sebagai pesan user
      *  format teks "Hasil tool <nama> [STATUS: ...]:\n<hasil>" (§2.5.3). */
-    private fun sendToolResultVc5b(deepseekText: String, tool: String, callId: String, resultId: String?, resultTotal: Int, result: String, instructionNative: String, deepseekHasToolResult: Boolean = true) {
+    private fun sendToolResultVc5b(legacyText: String, tool: String, callId: String, resultId: String?, resultTotal: Int, result: String, instructionNative: String, legacyHasToolResult: Boolean = true) {
         if (AgentEngines.current(this) != "openai" || !openaiNativeActiveVc5b()) {
-            sendContinuation(deepseekText, hasToolResult = deepseekHasToolResult)
+            sendContinuation(legacyText, hasToolResult = legacyHasToolResult)
             return
         }
         // Cap hasil tunggal 12000 char (bandingkan batch: 3000/call) —
         // sisa bisa dibaca model via get_result bila ada resultId.
         val contentVc5b = toolResultContentVc5b(result, resultId, resultTotal, 12000)
         if (openaiRoleFallbackOnVc5b()) {
-            val st = ApiToolLayer.statusTag(ApiToolLayer.classifyResult(result))
+            val st = WorkLog.statusTag(WorkLog.classifyResult(result))
             continueOpenaiTextResultsVc5b(listOf(ChatMessage("user", "Hasil tool $tool $st:\n" + contentVc5b)), instructionNative)
             return
         }
@@ -10341,7 +10014,7 @@ class MainActivity : Activity() {
     private fun sendBatchResultsVc5b(outcomes: List<BatchOutcomeVc273>, leftover: Int, steerSuffix: String) {
         if (openaiRoleFallbackOnVc5b()) {
             val textMsgs = outcomes.map { oc ->
-                var t = "Hasil tool ${oc.tool} " + ApiToolLayer.statusTag(ApiToolLayer.classifyResult(oc.result)) + " [HASIL TOOL ${oc.callId}]" + (if (oc.resultId != null) " [id=${oc.resultId}, total ${oc.resultTotal} char]" else "") + ":\n" + toolResultContentVc5b(oc.result, oc.resultId, oc.resultTotal, AgentPrompt.BATCH_RESULT_CAP_VC273)
+                var t = "Hasil tool ${oc.tool} " + WorkLog.statusTag(WorkLog.classifyResult(oc.result)) + " [HASIL TOOL ${oc.callId}]" + (if (oc.resultId != null) " [id=${oc.resultId}, total ${oc.resultTotal} char]" else "") + ":\n" + toolResultContentVc5b(oc.result, oc.resultId, oc.resultTotal, AgentPrompt.BATCH_RESULT_CAP_VC273)
                 if (oc.kind == "rejected") t += "\nPERINTAH SISTEM: panggil ulang tool '${oc.tool}' lewat function calling dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas."
                 if (oc.kind == "failed") t += "\nWAJIB: coba strategi atau tool LAIN untuk tujuan yang sama — jangan ulangi panggilan yang persis sama."
                 if (oc.prereqFailed) t += "\nERROR PRASYARAT: call ini bergantung pada hasil call sebelumnya yang gagal atau belum selesai — prasyarat belum selesai, kirim ulang setelah prasyarat selesai."
@@ -10376,7 +10049,7 @@ class MainActivity : Activity() {
 
     /** F5b (K2): overload engine openai — respons terstruktur ChatResult
      *  (content + toolCalls native + finishReason). Overload lama (String)
-     *  DIPERTAHANKAN untuk engine deepseek — isinya tidak diubah.
+     *  DIPERTAHANKAN untuk dialek teks — isinya tidak diubah.
      *  - content non-kosong → bubble seperti `visible` (dibersihkan dari
      *    markup tool mentah);
      *  - toolCalls → validasi + eksekusi lewat eksekutor yang SUDAH ADA
@@ -10386,8 +10059,8 @@ class MainActivity : Activity() {
      *    native) lewat continueOpenaiVc5b — BUKAN teks "Hasil tool ...";
      *  - blok JSON teks dari provider native = TEKS BIASA (ditampilkan
      *    apa adanya, JANGAN dieksekusi — plan §2.4.2);
-     *  - rescue dari turnThinking DIHAPUS di jalur ini (tetap ada di
-     *    overload String untuk deepseek);
+     *  - rescue dari turnThinking DIHAPUS di jalur ini (dihapus juga di
+     *    overload String untuk dialek teks);
      *  - tool_choice pseudo vc282 DIGANTI native (dikirim di sendToAgent /
      *    continueOpenaiVc5b); yang tersisa di sini hanya cek 1x repair.
      *  - maxToolSteps dihitung dari NativeToolCall yang dieksekusi per
@@ -10397,7 +10070,7 @@ class MainActivity : Activity() {
         // Giliran verifikasi: jawaban final tanpa tool (request dikirim
         // tool_choice "none"). Bila provider tetap mengembalikan tool_calls,
         // JANGAN eksekusi — verifikasi tidak konklusif (cermin guard
-        // deepseek). Bila bersih, verdict lewat pipeline String yang sama.
+        // dialek teks). Bila bersih, verdict lewat pipeline String yang sama.
         if (verifyTurn) {
             verifyTurn = false
             if (resp.toolCalls.isNotEmpty()) {
@@ -10464,7 +10137,7 @@ class MainActivity : Activity() {
             }
         }
         if (resp.toolCalls.isNotEmpty()) {
-            // Bubble content dulu (seperti jalur deepseek), lalu eksekusi.
+            // Bubble content dulu (seperti jalur teks), lalu eksekusi.
             if (cleanedVc5b.isNotEmpty()) {
                 if (vc228HasFactualClaim(cleanedVc5b)) {
                     val warnVc5b = vc228ClaimWarning(cleanedVc5b, turnWork.toList())
@@ -10524,7 +10197,7 @@ class MainActivity : Activity() {
         // Blok JSON teks (bukan tool_calls) = TEKS BIASA — ditampilkan apa
         // adanya, JANGAN dieksekusi (plan §2.4.2). Delegasi ke overload
         // String hanya aman bila TIDAK ADA blok tool teks di konten
-        // (overload itu mengeksekusi blok teks — benar untuk deepseek,
+        // (overload itu mengeksekusi blok teks — benar untuk dialek teks,
         // salah untuk openai). Rescue thinking dimatikan untuk openai:
         // turnThinking dikosongkan sebelum delegasi.
         turnThinking = ""
@@ -10539,7 +10212,7 @@ class MainActivity : Activity() {
     }
 
     private fun handleAgentResponse(respRaw: String) {
-        val resp = DsSafetyStrip.strip(respRaw)
+        val resp = AgentPrompt.stripSafetyTags(respRaw)
         var (visible, obj) = extractTool(resp)
         // vc271 O1: tool call rusak yang berhasil diperbaiki parser tetap
         // dicatat jenis kerusakannya ke ledger (pola kerusakan model terukur).
@@ -10553,42 +10226,8 @@ class MainActivity : Activity() {
         // 64 tool). Selamatkan bila jawaban sendiri tidak memuat panggilan
         // dan ini bukan giliran internal/verifikasi. Eksekusinya tetap
         // lewat gerbang persetujuan yang sama seperti panggilan normal.
-        if (obj == null && !internalTurn && !verifyTurn && turnThinking.isNotBlank()) {
-            var rescued = AgentPrompt.extractDsmlCall(turnThinking)
-            var rescueKind = "DSML"
-            if (rescued == null) { rescued = AgentPrompt.extractTagCall(turnThinking)?.second; rescueKind = "tag <tool=>" }
-            if (rescued != null && rescued.optString("tool").isBlank()) rescued = null
-            if (rescued != null) {
-                // vc229 R-05(d): rescue dari thinking HANYA untuk tool baca
-                // SAFE. Tool berisiko dari thinking TIDAK dieksekusi: isi
-                // thinking pemicu ditampilkan lengkap + model diminta kirim
-                // ulang sebagai jawaban final bila memang dimaksud.
-                val rescuedTool = rescued.optString("tool")
-                if (ToolGate.level(rescuedTool) != RiskLevel.SAFE) {
-                    val thinkingFull = turnThinking
-                    turnThinking = ""
-                    // vc316 Worker BR (a): fragmen berpikir pemicu bisa memuat
-                    // markup DSML mentah — bersihkan sebelum tampil (hanya
-                    // tampilan; tidak dikirim ke tool/server dari sini).
-                    addBubble("🧩 Panggilan tool '$rescuedTool' ditemukan di fragmen berpikir — TIDAK dieksekusi karena tool ini berisiko (rescue vc229 hanya untuk tool baca SAFE). Isi fragmen berpikir pemicu (lengkap, markup tool mentah dibersihkan):\n" + AgentPrompt.stripRawToolMarkupForDisplay(thinkingFull), false, turn = true)
-                    sendContinuation("SISTEM (rescue ditolak): panggilan tool '$rescuedTool' hanya muncul di fragmen berpikirmu, bukan di jawaban final — dan tool itu berisiko, jadi TIDAK dieksekusi. Bila kamu memang bermaksud menjalankan tool itu, kirim ulang SEKARANG sebagai blok json jawaban final (dengan argumen lengkap) dan tunggu persetujuan user; bila tidak, lanjutkan tanpa tool itu.")
-                    return
-                }
-                obj = rescued
-                visible = ""
-                // vc262 H-M1 (visibilitas, BUKAN gate): teks lama mengklaim
-                // rescue hanya untuk tool baca SAFE — itu sudah tidak benar
-                // sejak vc247 (level() selalu SAFE, rescue apa pun jalan).
-                // Eksekusi rescue kini dicatat di ledger.
-                try { DecisionLedger.add(this, "1-1", "flag", "Tool '" + rescuedTool + "' dari fragmen berpikir dieksekusi via rescue (format " + rescueKind + ") — gerbang vc247 nonaktif, rescue TIDAK dibatasi tool baca SAFE.") } catch (e: Exception) {}
-                addMsg("🧩 Panggilan tool model terdeteksi di fragmen berpikir (format $rescueKind) — diselamatkan & dijalankan (gerbang vc247 nonaktif: rescue TIDAK dibatasi tool baca SAFE — tercatat di ledger).", "meta", turn = true)
-            }
-            turnThinking = ""
-        }
         // D4 (Fase 1) sabuk pengaman kedua: jawaban kosong = gagal jujur,
         // bukan giliran senyap. (Lapis pertama sudah di client Fase 0.)
-        // Ditempatkan sesudah rescue thinking — tool call yang diselamatkan
-        // dari fragmen berpikir tetap jalan walau respRaw kosong.
         if (respRaw.isBlank() && obj == null) {
             addBubble("⚠️ Model mengembalikan jawaban kosong — tidak ada jawaban atau tool call. Coba kirim ulang.", false, turn = true)
             endUserTurn()
@@ -10601,14 +10240,14 @@ class MainActivity : Activity() {
         // client-side, BUKAN enforcement server-side).
         if (forcedToolVc282 != null && !internalTurn && !verifyTurn) {
             val forcedVc282 = forcedToolVc282
-            val parsedChoiceVc282 = ApiToolLayer.parseWithRepair(resp)
+            val parsedChoiceVc282 = AgentPrompt.parseWithRepair(resp)
             val calledVc282 = parsedChoiceVc282.calls.map { it.optString("tool") } + listOfNotNull(obj?.optString("tool"))
             if (forcedVc282 != null && forcedVc282 in calledVc282) {
                 forcedToolVc282 = null
             } else if (forcedVc282 != null && toolChoiceRepairVc282 == 0) {
                 toolChoiceRepairVc282 = 1
                 addMsg("🎯 Pseudo tool_choice: tugas ini menuntut tool '$forcedVc282' dulu — menyuruh model memanggilnya sekali lagi.", "meta", turn = true)
-                sendContinuation(ApiToolLayer.toolChoiceRepairText(forcedVc282))
+                sendContinuation(AgentPrompt.toolChoiceRepairText(forcedVc282))
                 return
             } else if (forcedVc282 != null) {
                 forcedToolVc282 = null
@@ -10627,14 +10266,7 @@ class MainActivity : Activity() {
             }
             if (verifyTurn) {
                 verifyTurn = false
-                // vc330 KATUP: sentinel "dilewati" dari klien (wadah
-                // penuh, tanpa POST) BUKAN verdict — WAJIB dicek
-                // SEBELUM cleanVerdict (cleanVerdict akan memetakan
-                // teks ini jadi "koreksi" di cabang else). UI menampilkan
-                // "dilewati", BUKAN "lolos verifikasi".
-                if (visible.trim() == AgentPrompt.VERIFY_SKIPPED_VC330) {
-                    addMsg("⏭️ Verifikasi diri dilewati vc330 (wadah server penuh — giliran senyap tidak boleh membuat wadah baru)", "meta", turn = true)
-                } else when (val cleaned = cleanVerdict(visible)) {
+                when (val cleaned = cleanVerdict(visible)) {
                     "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
                     null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
                     else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false, turn = true)
@@ -10649,7 +10281,7 @@ class MainActivity : Activity() {
                 // untuk respons kedua. Tidak ada loop: sekali saja.
                 if (AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 0 && AgentPrompt.isRefusalAnswer(visible)) {
                     refusalRetryVc251 = 1
-                    addMsg("🔁 Mode Bebas: DeepSeek menolak topik ini — mencoba sekali lagi dengan framing netral.", "meta", turn = true)
+                    addMsg("🔁 Mode Bebas: Model menolak topik ini — mencoba sekali lagi dengan framing netral.", "meta", turn = true)
                     sendContinuation(AgentPrompt.MODE_BEBAS_REFRAME)
                     return
                 }
@@ -10732,13 +10364,9 @@ class MainActivity : Activity() {
                             // char disebut eksplisit.
                             val rawEvidenceVc301 = "JEJAK TOOL GILIRAN INI:\n" + trailVc249 + prevSectionVc287 + "\nPESAN USER:\n" + currentTurnUser + "\nFAKTA PIN:\n" + pinnedRevVc249
                             val evidenceVc249 = if (rawEvidenceVc301.length > 16000) rawEvidenceVc301.take(16000) + "…(dipotong, sisa " + (rawEvidenceVc301.length - 16000) + " char)…" else rawEvidenceVc301
-                            // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
-                            // (AccountPool.REVIEWER_SLOT) — tanpa fallback ke
-                            // slot lain. Slot 5 kosong = reviewer dilewati
-                            // dengan penanda jujur (bukan lolos diam-diam).
-                            // F2b B3: engine dibaca SEKALI — openai lewat
-                            // LlmEngineChat (Models API, reviewer independen,
-                            // tanpa slot Browser 5); deepseek tetap jalur lama.
+                            // Fase 6 K1: reviewer konteks-nol lewat helper
+                            // Models API (independen, stateless); engine
+                            // lokal = reviewer dilewati dengan penanda jujur.
                             val engineVc249 = AgentEngines.current(this)
                             var unsVc249: List<Int> = emptyList()
                             var concVc249 = false
@@ -10770,37 +10398,12 @@ class MainActivity : Activity() {
                                     } catch (e: Exception) { reviewFailVc275 = true }
                                     // openai = reviewer independen (stateless,
                                     // tanpa sesi server bersama giliran agen).
-                                    indepNoteVc275 = if (LlmEngineChat.reviewerIndependent(engineVc249)) "" else AgentPrompt.reviewerIndependenceNote(turnSlotVc249, null)
+                                    indepNoteVc275 = ""
                                     reviewerDoneVc249 = true
                                 }
                             } else {
-                                // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
-                                // (AccountPool.REVIEWER_SLOT) — tanpa fallback ke
-                                // slot lain. Slot 5 kosong = reviewer dilewati
-                                // dengan penanda jujur (bukan lolos diam-diam).
-                                val rSlotVc249 = try { AccountPool.reviewerSlot(this) } catch (e: Exception) { null }
-                                val rAuthVc249 = if (rSlotVc249 != null) try { AccountPool.slotAuth(this, rSlotVc249) } catch (e: Exception) { null } else null
-                                if (rSlotVc249 == null || rAuthVc249 == null) {
-                                    addMsg(ReviewerVc298.SKIP_NOTE, "meta", turn = true)
-                                } else if (Governor.overCapReviewer(this)) {
-                                    // vc277 O16(b): kuota reviewer habis — reviewer
-                                    // dilewati dengan penanda, bukan diam-diam lolos.
-                                    addMsg(Governor.reviewerOverCapText(this), "meta", turn = true)
-                                } else {
-                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer, bukan interaktif — chatSync reviewer=true bump reviewer + memakai sesi server TETAP reviewer slot 5 sejak vc298, bukan sesi ephemeral baru tiap review); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
-                                    try {
-                                        val (rawVc249, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
-                                        val (u1Vc275, c1Vc275) = AgentPrompt.parseZeroCtxReview(rawVc249)
-                                        if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
-                                            val (raw2Vc275, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.reviewerRetryPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
-                                            val (u2Vc275, c2Vc275) = AgentPrompt.parseZeroCtxReview(raw2Vc275)
-                                            if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
-                                        }
-                                    } catch (e: Exception) { reviewFailVc275 = true }
-                                    // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
-                                    indepNoteVc275 = AgentPrompt.reviewerIndependenceNote(turnSlotVc249, rSlotVc249)
-                                    reviewerDoneVc249 = true
-                                }
+                                // Fase 6 K1: engine lokal — reviewer butuh Models API.
+                                addMsg("⚠️ Reviewer dilewati — engine lokal (atur provider Models API di Setup > 73).", "meta", turn = true)
                             }
                             if (reviewerDoneVc249) {
                                 // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
@@ -10809,7 +10412,7 @@ class MainActivity : Activity() {
                                 // yang mengutip peringatan sistem giliran ini
                                 // (StuckDetector, kunci giliran, cap langkah)
                                 // tidak dihapus filter [KLAIM DIHAPUS].
-                                val unsVc249FiltVc282 = ApiToolLayer.dropSystemBackedClaims(claimsVc249, unsVc249FiltVc266, turnSystemNotesVc282.toList() + listOfNotNull(turnStoppedReason))
+                                val unsVc249FiltVc282 = AgentPrompt.dropSystemBackedClaims(claimsVc249, unsVc249FiltVc266, turnSystemNotesVc282.toList() + listOfNotNull(turnStoppedReason))
                                 if (reviewFailVc275) addMsg(AgentPrompt.reviewerNotVerifiedNote() + indepNoteVc275, "meta", turn = true)
                                 else if (unsVc249FiltVc282.isNotEmpty()) {
                                     // vc250: double-pass — jawaban yang tampil (dan tersimpan di riwayat) hanya berisi klaim yang lolos; klaim gagal diganti penanda, bukan dihapus diam-diam.
@@ -10851,7 +10454,7 @@ class MainActivity : Activity() {
                 // JANGAN memalsukan jawaban.
                 val stillRefusalVc252 = AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 1 && AgentPrompt.isRefusalAnswer(visible)
                 addAnswerBubble(visible, askPair == null && claimWarningVc228 != null) // vc232 S3
-                if (stillRefusalVc252) addMsg("Mode Bebas aktif, tapi DeepSeek tetap menolak topik ini.", "meta", turn = true)
+                if (stillRefusalVc252) addMsg("Mode Bebas aktif, tapi model tetap menolak topik ini.", "meta", turn = true)
                 emitPhase("report")
                 if (askPair != null) addMsg("❓ Agen menunggu pilihanmu — ketuk salah satu opsi di pesannya, atau ketik jawaban bebas.", "meta", turn = true)
                 else if (turnStoppedReason != null) {
@@ -10965,7 +10568,7 @@ class MainActivity : Activity() {
         // vc282: parser lapisan API internal — strict dulu (hanya pagar
         // json kanonik), repair/lenient kemudian. Hasil sama dengan
         // extractToolCalls untuk kasus normal; perbaikan dicatat ke ledger.
-        val parsedVc282 = ApiToolLayer.parseWithRepair(resp)
+        val parsedVc282 = AgentPrompt.parseWithRepair(resp)
         val multiVc229 = parsedVc282.calls
         if (parsedVc282.repaired && multiVc229.isNotEmpty()) {
             try { DecisionLedger.add(this, "1-1", "parse_repair", "Tool call diperbaiki lapisan API vc282 (strict gagal, repair/lenient dipakai — detail strict: " + (parsedVc282.strictError ?: "-") + ") lalu dieksekusi.") } catch (e: Exception) {}
@@ -11281,7 +10884,7 @@ class MainActivity : Activity() {
             invalidNames.clear()
             TurnMetrics.recordStep(tool, false, prootCutOf(validationVc272), argsHash(args), true)
             // F5b: penolakan validasi = hasil tool call itu (role:tool di
-            // engine openai; teks lama persis di deepseek).
+            // engine openai; teks lama persis di dialek teks).
             sendToolResultVc5b("Hasil tool $tool" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + " DITOLAK SISTEM:\n$validationVc272\n\nPERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: keluarkan ULANG blok json tool '$tool' yang sama, kali ini dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas. DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.", tool, callId, null, 0, validationVc272, "PERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: panggil ULANG tool '$tool' lewat function calling dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas. DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.")
             return
         }
@@ -11383,7 +10986,7 @@ class MainActivity : Activity() {
                 // kelanjutannya sendiri + markResolved (tidak ganda).
                 val panelReq = ToolGate.describe(tool, args, this@MainActivity)
                 val panelSummary = (if (panelReq.preview.isNotBlank()) panelReq.preview else tool).take(140)
-                val panelId = ApprovalPanelStore.register(this, "", turnSessionId, "DeepSeek", tool,
+                val panelId = ApprovalPanelStore.register(this, "", turnSessionId, "Models API", tool,
                     panelSummary, if (tool == "create_skill") panelReq.explanation + "\n" + Tools.skillUpdateDiff(this, args).take(400) else panelReq.explanation, argsFull = args.toString()) { approved ->
                     if (approved) execToolAndContinue(tool, args, callId)
                     else { addMsg("⏹️ $tool tidak dijalankan (ditolak user).", "meta", turn = true); sendContinuation("User MENOLAK aksi tool $tool. Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.") } // vc232 S9 tahap 1
@@ -11397,7 +11000,7 @@ class MainActivity : Activity() {
                     val reqF = ToolGate.describe(tool, args, this@MainActivity)
                     val pinNeededF = ToolGate.needsPin(tool, pinHash.isNotBlank(), args, this@MainActivity)
                     val shownF = ApprovalFloat.show(applicationContext, "Izinkan aksi?",
-                        "DeepSeek ingin menjalankan: $tool\n" + ToolGate.label(reqF.risk) + (if (reqF.preview.isNotBlank()) "\nPratinjau: ${reqF.preview}" else "") + "\n" + reqF.explanation + (if (reqF.affected.isNotEmpty()) "\nSasaran: ${reqF.affected.joinToString(", ")}" else "") + "\nArgumen: $args" + (if (tool == "create_skill") "\n\nDIFF vs skill aktif lama:\n" + Tools.skillUpdateDiff(this, args) else ""),
+                        "Agen ingin menjalankan: $tool\n" + ToolGate.label(reqF.risk) + (if (reqF.preview.isNotBlank()) "\nPratinjau: ${reqF.preview}" else "") + "\n" + reqF.explanation + (if (reqF.affected.isNotEmpty()) "\nSasaran: ${reqF.affected.joinToString(", ")}" else "") + "\nArgumen: $args" + (if (tool == "create_skill") "\n\nDIFF vs skill aktif lama:\n" + Tools.skillUpdateDiff(this, args) else ""),
                         "Izinkan", "Tolak", pinNeededF,
                         // vc304 B2: float bisa diketuk SESUDAH user pindah sesi —
                         // persetujuan hanya berlaku di sesi pemilik; bila sesi
@@ -11430,7 +11033,7 @@ class MainActivity : Activity() {
                 val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(4)) }
                 val req = ToolGate.describe(tool, args, this@MainActivity)
                 val skillDiffVc228 = if (tool == "create_skill") Tools.skillUpdateDiff(this, args) else ""
-                box.addView(TextView(this).apply { text = "DeepSeek ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + (if (req.affected.isNotEmpty()) "\nSasaran: ${req.affected.joinToString(", ")}" else "") + "\nArgumen: $args" + (if (skillDiffVc228.isNotBlank()) "\n\nDIFF vs skill aktif lama:\n" + skillDiffVc228 else ""); setTextColor(TEXT) })
+                box.addView(TextView(this).apply { text = "Agen ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + (if (req.affected.isNotEmpty()) "\nSasaran: ${req.affected.joinToString(", ")}" else "") + "\nArgumen: $args" + (if (skillDiffVc228.isNotBlank()) "\n\nDIFF vs skill aktif lama:\n" + skillDiffVc228 else ""); setTextColor(TEXT) })
                 var pinField: EditText? = null
                 if (ToolGate.needsPin(tool, pinHash.isNotBlank(), args, this@MainActivity)) {
                     pinField = EditText(this).apply {
@@ -11630,7 +11233,6 @@ class MainActivity : Activity() {
     private var malformedRetry = 0  // v4.18.3: pantulan panggilan tool rusak per pesan user
     private var gateRetryVc249 = 0  // vc249: gate bukti sudah dipakai sekali giliran ini
     private var refusalRetryVc251 = 0  // vc251: retry refusal Mode Bebas sudah dipakai sekali giliran ini
-    private var turnSlotVc249 = -1  // vc249: slot browser giliran ini (-1 = WebView / tanpa slot)
     private var pendingAskVc229: JSONObject? = null  // vc229 R-05(e): ask se-respons dengan tool — dirender setelah tool dieksekusi.
     private var bgSecondConfirmShownVc229 = false  // vc229 R-04(g): guard dialog konfirmasi kedua sekali tampil.
 
@@ -12025,17 +11627,9 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Tunggu preview kamera siap dulu.", Toast.LENGTH_SHORT).show()
             return
         }
-        if (apiClient == null) {
-            addBubble("⚠️ Mode live butuh tab Web yang sudah login — buka tab Web dan login DeepSeek dulu, lalu mulai lagi.", false)
-            return
-        }
-        val apiOn = try {
-            getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false)
-        } catch (e: Exception) {
-            false
-        }
-        if (!apiOn) {
-            addBubble("⚠️ Mode live butuh API Internal aktif — nyalakan di Setup (Mode Chat: API Internal) dulu, lalu mulai lagi.", false)
+        // Fase 6 K1: live kamera memakai vision Models API.
+        if (AgentEngines.current(this) != "openai") {
+            addBubble("⚠️ Mode live butuh Models API — engine saat ini lokal. Atur provider dulu di Setup > 73.", false)
             return
         }
         val (pct, charging) = cameraBattery()
@@ -12115,8 +11709,7 @@ class MainActivity : Activity() {
         // F4b: engine openai = vision Models API. askWithFiles BLOKIR,
         // jadi dipanggil di Thread sendiri — analyzeLiveFrame jalan di
         // UI thread (camLiveTick); blok sukses/gagal lama dipertahankan
-        // persis, hanya dipindah ke runOnUiThread. Engine deepseek =
-        // blok lama persis di bawah (safe-call apiClient?).
+        // persis, hanya dipindah ke runOnUiThread.
         if (AgentEngines.current(this@MainActivity) == "openai") {
             Thread {
                 try {
@@ -12148,37 +11741,8 @@ class MainActivity : Activity() {
             }.start()
             return
         }
-        try {
-            apiClient?.uploadFileAndAsk(bytes, "live-frame.jpg", "image/jpeg", prompt, thinking, { answer ->
-                runOnUiThread {
-                    camAnalyzing = false
-                    camFail = 0
-                    camLastOkVc230 = n
-                    camLastDesc = answer.take(1000)
-                    addBubble("🎥 Live #$n [$time]: $answer", false)
-                    try {
-                        GraphDb.get(this).getOrCreateEpisode(currentSessionId.toString(), "observasi", "Kamera live frame #$n" + (if (file != null) " (file: ${file.name})" else "") + ": " + answer.take(800), "camera-live")
-                    } catch (e: Exception) {
-                    }
-                    val (pct, charging) = cameraBattery()
-                    if (pct in 0..19 && !charging) stopLive("baterai di bawah 20% dan tidak dicas")
-                }
-            }, { err ->
-                runOnUiThread {
-                    camAnalyzing = false
-                    if (err.contains("masih ada jawaban")) return@runOnUiThread
-                    camFail += 1
-                    try { GraphDb.get(this).getOrCreateEpisode(currentSessionId.toString(), "observasi", "Kamera live frame #$n: GAGAL — $err, tidak teramati", "camera-live") } catch (e2: Exception) {}
-                    addBubble("⚠️ Frame live #$n gagal: $err", false)
-                    if (camFail >= 3) stopLive("3 frame gagal berturut-turut")
-                }
-            }, { })
-        } catch (e: Exception) {
-            camAnalyzing = false
-            camFail += 1
-            try { GraphDb.get(this).getOrCreateEpisode(currentSessionId.toString(), "observasi", "Kamera live frame #$n: GAGAL — ${e.message}, tidak teramati", "camera-live") } catch (e2: Exception) {}
-            addBubble("⚠️ Frame live #$n gagal: ${e.message}", false)
-        }
+        // Fase 6 K1: engine lokal — tidak ada jalur vision; frame dilewati.
+        camAnalyzing = false
     }
 
     private fun handleCameraCommand(text: String): Boolean {
@@ -12210,7 +11774,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Analisa foto: kecilkan -> base64 -> lampirkan ke chat Web -> tanya DeepSeek. */
+    /** Analisa foto: kecilkan -> kirim sebagai lampiran vision ke Models API. */
     // vc304 B2: param `turn = true` = dipanggil sebagai tool giliran
     // (execToolAndContinue) — baris aktivitas + bubble-nya di-gate ke sesi
     // pemilik. Jalur lampiran user (handleAttachment/fallback) memakai
@@ -12253,17 +11817,13 @@ class MainActivity : Activity() {
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
                 val b64 = android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP)
-                // v4.10.3: foto lewat API INTERNAL (perintah user 2026-10-23 10:02)
-                // — berkas diunggah lalu dibaca di SESI SERVER YANG SAMA. Jalur Web
-                // lama membuka sesi chat baru sendiri ("Penjelasan Gambar Aplikasi");
-                // kini jalur Web hanya cadangan bila API gagal.
+                // v4.10.3: foto lewat vision Models API (perintah user
+                // 2026-10-23 10:02) — berkas dikirim sebagai lampiran
+                // gambar ke provider. Engine lokal = gagal jujur (Fase 6
+                // K1, tidak ada jalur Web lagi).
                 // F4b: engine dibaca SEKALI; openai = vision Models API
-                // (sinkron, di Thread ini); deepseek = blok lama persis.
+                // (sinkron, di Thread ini).
                 val enginePhotoVcF4b = try { AgentEngines.current(this@MainActivity) } catch (e: Exception) { "" }
-                val useApi = try {
-                    enginePhotoVcF4b == "deepseek" &&
-                        getSharedPreferences("harness", MODE_PRIVATE).getBoolean("apiMode", false)
-                } catch (e: Exception) { false }
                 if (enginePhotoVcF4b == "openai") {
                     try {
                         val answer = LlmEngineChat.askWithFiles(this@MainActivity, listOf(VisionFile(jpegBytes, "harness-photo.jpg", "image/jpeg")), question, LlmCallKind.INTERACTIVE, wantThinkPhoto)
@@ -12311,41 +11871,20 @@ class MainActivity : Activity() {
                             sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
                         }
                     }
-                } else if (useApi) {
-                    // B13: klien DeepSeek bisa belum ada (startup openai +
-                    // alih engine saat jalan) — jatuh ke jalur Web yang
-                    // gagal jujur bila klien tetap tidak ada.
-                    val dsClientPhoto = apiClient ?: if (ensureDsClients()) apiClient else null
-                    if (dsClientPhoto == null) {
-                        runOnUiThread { webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn) }
-                    } else dsClientPhoto.uploadFileAndAsk(jpegBytes, "harness-photo.jpg", "image/jpeg", question, wantThinkPhoto, { answer ->
-                        runOnUiThread {
-                            endStreamBubble()
-                            showTab("Chat")
-                            renderPendingAskVc229()
-                            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
-                            photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, true)
-                            photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: " + ActivityTitle.resultTail(answer, 600)
-                            // VC303-P2-15 (CX-12): simpan jawaban ke ResultStore seperti
-                            // tool lain — baris WorkNotes analyze_photo kini punya R-id
-                            // (bukan [-]) + total char; args sudah memuat path foto
-                            // (formatLine memakai path bila ada).
-                            val ridPhotoVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", answer) } catch (e: Exception) { "" }
-                            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, answer.take(120), evidence = answer.take(600), args = args.toString().take(4000), resultId = ridPhotoVc303, totalChars = answer.length))
-                            sendContinuation("Hasil tool analyze_photo (via API internal, sesi yang sama):\n" + answer + "\n\nSampaikan hasil analisa ini ke user dan lanjutkan tugasmu.")
-                        }
-                    }, { err ->
-                        runOnUiThread {
-                            addBubble("⚠️ Foto via API internal gagal — jatuh ke jalur Web. ($err)", false, turn = turn)
-                            photoRowVc254.status = "jalur API gagal — mencoba jalur Web…"
-                            webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn)
-                        }
-                    }, { note ->
-                        // v4.10.7: penanda sesi (♻️) tampil juga di giliran foto.
-                        if (note.startsWith("♻️")) runOnUiThread { addBubble(note, false, turn = turn) }
-                    })
                 } else {
-                    runOnUiThread { webAnalyzePhoto(b64, question, photoRowVc254, t0PhotoVc254, args, turn) }
+                    // Fase 6 K1: engine lokal — vision Models API tidak
+                    // tersedia; tidak ada jalur Web lagi.
+                    val errLocal = "engine lokal — vision tidak tersedia (atur provider Models API di Setup > 73)"
+                    runOnUiThread {
+                        addBubble("⚠️ Analisa foto gagal: $errLocal", false, turn = turn)
+                        renderPendingAskVc229()
+                        val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
+                        photoRowVc254.status = ActivityTitle.statusText(msPhotoVc254, false)
+                        photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — $errLocal"
+                        turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — $errLocal", args = args.toString().take(4000)))
+                        try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — $errLocal, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
+                        sendContinuation("Hasil tool analyze_photo: GAGAL — $errLocal. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                    }
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -12360,55 +11899,6 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
-    }
-
-    /** v4.10.3: jalur Web lama untuk analyze_photo (lampiran via tab Web) —
-     *  kini hanya cadangan bila jalur API internal gagal. */
-    // vc254: baris + t0 + args foto diteruskan dari analyzePhotoAndContinue
-    // agar titik akhir jalur Web juga memperbarui baris yang sama.
-    private fun webAnalyzePhoto(b64: String, question: String, photoRowVc254: ActivityRowHandle?, t0PhotoVc254: Long, photoArgsVc254: JSONObject, turn: Boolean = false) {
-        // B13: jalur Web butuh DsAgent — gagal jujur bila belum ada
-        // (cermin blok gagal di bawah, supaya foto tidak diam-diam hilang).
-        val webAgent = agent ?: if (ensureDsClients()) agent else null
-        if (webAgent == null) {
-            val errDs = "engine DeepSeek belum siap (otak = Models API)"
-            endStreamBubble()
-            showTab("Chat")
-            addBubble("⚠️ Analisa foto gagal: $errDs", false, turn = turn)
-            renderPendingAskVc229()
-            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
-            photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, false)
-            photoRowVc254?.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", photoArgsVc254) + "\nHasil: GAGAL — $errDs"
-            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — $errDs", args = photoArgsVc254.toString().take(4000)))
-            try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — $errDs, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-            sendContinuation("Hasil tool analyze_photo: GAGAL — $errDs. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
-            return
-        }
-        showTab("Web")
-        webAgent.analyzeImage(b64, question, { resp ->
-            endStreamBubble()
-            showTab("Chat")
-            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
-            photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, true)
-            photoRowVc254?.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", photoArgsVc254) + "\nHasil: Foto dianalisis — hasilnya ada di jawaban agen berikut."
-            // VC303-P2-15 (CX-12): jalur Web juga menyimpan jawaban ke
-            // ResultStore (resp = jawaban agen atas foto) supaya baris
-            // WorkNotes punya R-id + evidence, seperti jalur API.
-            val ridPhotoWebVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", resp) } catch (e: Exception) { "" }
-            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, "Foto dianalisis", evidence = resp.take(600), args = photoArgsVc254.toString().take(4000), resultId = ridPhotoWebVc303, totalChars = resp.length))
-            handleAgentResponse(resp)
-        }, { err ->
-            endStreamBubble()
-            showTab("Chat")
-            addBubble("⚠️ Analisa foto gagal: $err", false, turn = turn)
-            renderPendingAskVc229()
-            val msPhotoVc254 = System.currentTimeMillis() - t0PhotoVc254
-            photoRowVc254?.status = ActivityTitle.statusText(msPhotoVc254, false)
-            photoRowVc254?.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", photoArgsVc254) + "\nHasil: GAGAL — $err"
-            turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — $err", args = photoArgsVc254.toString().take(4000)))
-            try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — $err, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-            sendContinuation("Hasil tool analyze_photo: GAGAL — $err. Beri tahu user dengan jujur dan tawarkan alternatif (mis. user lampirkan manual di tab Web). Tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
-        })
     }
 
     // v4.14.0 P1: StuckDetector — panggilan tool dengan HASIL IDENTIK
@@ -12910,7 +12400,7 @@ class MainActivity : Activity() {
                 val disp = RedactSecrets.redact(oc.result)
                 val cap = AgentPrompt.BATCH_RESULT_CAP_VC273
                 val capped = if (disp.length > cap) disp.take(cap) + "…(dipotong, sisa " + (disp.length - cap) + " char" + (if ((oc.resultId ?: "").isNotBlank()) ", pakai get_result[" + oc.resultId + "] untuk sisanya" else "") + ")…" else disp
-                sb.append("\nHasil tool ${oc.tool} " + ApiToolLayer.statusTag(ApiToolLayer.classifyResult(oc.result)) + " [HASIL TOOL ${oc.callId}]" + (if (oc.resultId != null) " [id=${oc.resultId}, total ${oc.resultTotal} char]" else "") + ":\n$capped\n")
+                sb.append("\nHasil tool ${oc.tool} " + WorkLog.statusTag(WorkLog.classifyResult(oc.result)) + " [HASIL TOOL ${oc.callId}]" + (if (oc.resultId != null) " [id=${oc.resultId}, total ${oc.resultTotal} char]" else "") + ":\n$capped\n")
                 if (oc.kind == "rejected") sb.append("PERINTAH SISTEM: keluarkan ULANG blok json tool '${oc.tool}' dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas.\n")
                 if (oc.kind == "failed") sb.append("WAJIB: coba strategi atau tool LAIN untuk tujuan yang sama — jangan ulangi panggilan yang persis sama.\n")
                 if (oc.prereqFailed) sb.append("ERROR PRASYARAT: call ini bergantung pada hasil call sebelumnya yang gagal atau belum selesai — prasyarat belum selesai, kirim ulang setelah prasyarat selesai.\n")
@@ -12933,7 +12423,7 @@ class MainActivity : Activity() {
                 val steerTxt = consumeSteer()
                 val steerSuffixVc5b = if (steerTxt != null) "\n\n[ARAHAN SISIPAN USER — user mengirim arahan ini SAAT kamu sedang bekerja; prioritaskan arahan terbaru ini]:\n$steerTxt" else ""
                 // F5b: engine openai native → hasil batch sebagai pesan
-                // role:tool (satu per call); deepseek → teks gabungan lama.
+                // role:tool (satu per call); dialek teks → teks gabungan lama.
                 if (AgentEngines.current(this) == "openai" && openaiNativeActiveVc5b()) {
                     sendBatchResultsVc5b(outcomes, leftover, steerSuffixVc5b)
                     return@runOnUiThread
@@ -12986,7 +12476,7 @@ class MainActivity : Activity() {
         val result = outcomeVc282.result
         val resultId = outcomeVc282.resultId
         val resultTotal = outcomeVc282.resultTotal
-        val ok = ApiToolLayer.classifyResult(result) == ApiToolLayer.ToolStatus.OK
+        val ok = WorkLog.classifyResult(result) == WorkLog.ToolStatus.OK
         val kind = when {
             result.startsWith("Tool tidak dikenal") -> "unknown"
             outcomeVc282.timedOut -> "failed"
@@ -13023,14 +12513,14 @@ class MainActivity : Activity() {
                     // eksekutor dalamnya sudah memberi timeout_sec + 30.
                     // maxOf menjaga keduanya konsisten; tool lain tetap
                     // 120 dtk karena kedua tabel sama untuk mereka.
-                    val toVc282 = maxOf(ApiToolLayer.batchTimeoutSec(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject()), toolTimeoutSecVc278(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject()))
+                    val toVc282 = maxOf(WorkLog.batchTimeoutSec(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject()), toolTimeoutSecVc278(pairs[idx].first.optString("tool"), pairs[idx].first.optJSONObject("args") ?: JSONObject()))
                     f.get(toVc282.toLong(), java.util.concurrent.TimeUnit.SECONDS)
                 } catch (e: java.util.concurrent.TimeoutException) {
                     val obj = pairs[idx].first
                     val tool = obj.optString("tool")
                     val args = obj.optJSONObject("args") ?: JSONObject()
                     try { f.cancel(true) } catch (e2: Exception) {}
-                    val toVc282 = maxOf(ApiToolLayer.batchTimeoutSec(tool, args), toolTimeoutSecVc278(tool, args))
+                    val toVc282 = maxOf(WorkLog.batchTimeoutSec(tool, args), toolTimeoutSecVc278(tool, args))
                     BatchOutcomeVc273(tool, args, pairs[idx].second, "ERROR: tool " + tool + " melewati batas " + toVc282 + " dtk — dibatalkan. Giliran tidak menunggu lagi; eksekusi di latar mungkin masih berjalan sampai batas internalnya. Jangan kirim ulang perintah yang sama persis — pakai pola background + file hasil bila memang butuh lama, atau pecah tugasnya. Putuskan: lanjut dengan cara lain, atau berhenti dan beri tahu user.", null, 0, false, "failed", "", false, 0)
                 } catch (e: Exception) {
                     val obj = pairs[idx].first
@@ -13063,7 +12553,7 @@ class MainActivity : Activity() {
         // vc282: pembatalan timeout BUKAN putaran — tidak dihitung
         // StuckDetector (prinsip O18 jalur tunggal). Teks peringatan
         // sistem dikumpulkan sebagai bukti reviewer (prioritas 6).
-        val stuck = if (oc.prereqFailed) "" else stuckSuffix(oc.tool, oc.args, oc.result, countIdent = !isUnknown, skipStuckVc278 = ApiToolLayer.isTimeoutResult(oc.result))
+        val stuck = if (oc.prereqFailed) "" else stuckSuffix(oc.tool, oc.args, oc.result, countIdent = !isUnknown, skipStuckVc278 = WorkLog.isTimeoutResult(oc.result))
         if (stuck.isNotBlank()) turnSystemNotesVc282.add(stuck)
         if (stuck.contains("🛑")) turnStuckBlocked = true
         // VC303-P3-19 (LP-5a): kunci giliran = pola ini disimpan lintas giliran.
@@ -13156,7 +12646,7 @@ class MainActivity : Activity() {
             // sendiri menyuruh panggil lagi bila belum selesai).
             // Frasa "melewati batas ... dtk" dipertahankan agar hasil
             // ini tetap dikenali sebagai TIMEOUT oleh
-            // ApiToolLayer.classifyResult (StuckDetector tetap
+            // WorkLog.classifyResult (StuckDetector tetap
             // melewatinya seperti timeout lain). Tool lain tetap memakai
             // pesan lama yang melarang kirim ulang perintah yang sama.
             val timeoutMsgVc284 = if (tool == "delegate_wait") {
@@ -13232,17 +12722,17 @@ class MainActivity : Activity() {
                 val sid = if (args.has("session_id")) args.optLong("session_id", -1) else args.optLong("id", -1)
                 renderPendingAskVc229()
                 when {
-                    sid <= 0 -> sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: delete_session butuh session_id (angka, lihat list sesi di UI chat). Sesi aktif TIDAK bisa dihapus dari tool. Tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa tidak ada sesi yang dihapus karena session_id tidak diberikan.", "delete_session", callId, null, 0, "ERROR: delete_session butuh session_id (angka, lihat list sesi di UI chat). Sesi aktif TIDAK bisa dihapus dari tool. Tidak ada yang dihapus.", "Beritahu user secara singkat bahwa tidak ada sesi yang dihapus karena session_id tidak diberikan.", deepseekHasToolResult = false)
-                    sid == currentSessionId -> sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: delete_session DITOLAK: sesi #$sid adalah sesi aktif — hapus dari UI chat (pindah sesi dulu, lalu hapus sesi ini), bukan dari tool. Tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa sesi aktif tidak bisa dihapus dari tool dan tidak ada yang dihapus.", "delete_session", callId, null, 0, "ERROR: delete_session DITOLAK: sesi #$sid adalah sesi aktif — hapus dari UI chat (pindah sesi dulu, lalu hapus sesi ini), bukan dari tool. Tidak ada yang dihapus.", "Beritahu user secara singkat bahwa sesi aktif tidak bisa dihapus dari tool dan tidak ada yang dihapus.", deepseekHasToolResult = false)
+                    sid <= 0 -> sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: delete_session butuh session_id (angka, lihat list sesi di UI chat). Sesi aktif TIDAK bisa dihapus dari tool. Tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa tidak ada sesi yang dihapus karena session_id tidak diberikan.", "delete_session", callId, null, 0, "ERROR: delete_session butuh session_id (angka, lihat list sesi di UI chat). Sesi aktif TIDAK bisa dihapus dari tool. Tidak ada yang dihapus.", "Beritahu user secara singkat bahwa tidak ada sesi yang dihapus karena session_id tidak diberikan.", legacyHasToolResult = false)
+                    sid == currentSessionId -> sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: delete_session DITOLAK: sesi #$sid adalah sesi aktif — hapus dari UI chat (pindah sesi dulu, lalu hapus sesi ini), bukan dari tool. Tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa sesi aktif tidak bisa dihapus dari tool dan tidak ada yang dihapus.", "delete_session", callId, null, 0, "ERROR: delete_session DITOLAK: sesi #$sid adalah sesi aktif — hapus dari UI chat (pindah sesi dulu, lalu hapus sesi ini), bukan dari tool. Tidak ada yang dihapus.", "Beritahu user secara singkat bahwa sesi aktif tidak bisa dihapus dari tool dan tidak ada yang dihapus.", legacyHasToolResult = false)
                     else -> {
                         val mdb = MemoryDb.get(this)
                         val title = mdb.sessionTitle(sid)
                         val exists = try { mdb.sessions().any { it.id == sid } } catch (e: Exception) { false }
                         if (!exists) {
-                            sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: sesi #$sid tidak ditemukan — tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa sesi yang diminta tidak ada.", "delete_session", callId, null, 0, "ERROR: sesi #$sid tidak ditemukan — tidak ada yang dihapus.", "Beritahu user secara singkat bahwa sesi yang diminta tidak ada.", deepseekHasToolResult = false)
+                            sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nERROR: sesi #$sid tidak ditemukan — tidak ada yang dihapus.\n\nBeritahu user secara singkat bahwa sesi yang diminta tidak ada.", "delete_session", callId, null, 0, "ERROR: sesi #$sid tidak ditemukan — tidak ada yang dihapus.", "Beritahu user secara singkat bahwa sesi yang diminta tidak ada.", legacyHasToolResult = false)
                         } else {
                             mdb.deleteSession(sid)
-                            sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nSesi #$sid (\"$title\") TERHAPUS permanen beserta seluruh isi percakapannya. Sesi aktif tidak berubah.\n\nBeritahu user secara singkat bahwa sesi \"$title\" sudah dihapus sesuai permintaannya.", "delete_session", callId, null, 0, "Sesi #$sid (\"$title\") TERHAPUS permanen beserta seluruh isi percakapannya. Sesi aktif tidak berubah.", "Beritahu user secara singkat bahwa sesi \"$title\" sudah dihapus sesuai permintaannya.", deepseekHasToolResult = false)
+                            sendToolResultVc5b("Hasil tool delete_session" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + ":\nSesi #$sid (\"$title\") TERHAPUS permanen beserta seluruh isi percakapannya. Sesi aktif tidak berubah.\n\nBeritahu user secara singkat bahwa sesi \"$title\" sudah dihapus sesuai permintaannya.", "delete_session", callId, null, 0, "Sesi #$sid (\"$title\") TERHAPUS permanen beserta seluruh isi percakapannya. Sesi aktif tidak berubah.", "Beritahu user secara singkat bahwa sesi \"$title\" sudah dihapus sesuai permintaannya.", legacyHasToolResult = false)
                         }
                     }
                 }
@@ -13323,7 +12813,7 @@ class MainActivity : Activity() {
                     invalidNames.clear()
                     TurnMetrics.recordStep(tool, false, prootCutOf(result), argsHash(args), isAutoRetry)
                     // F5b: penolakan argumen = hasil tool call itu (role:tool
-                    // di openai; teks lama persis di deepseek).
+                    // di openai; teks lama persis di dialek teks).
                     sendToolResultVc5b("Hasil tool $tool" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + (if (resultId != null) " [id=$resultId, total $resultTotal char]" else "") + " DITOLAK SISTEM:\n$displayResult\n\nPERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: keluarkan ULANG blok json tool '$tool' yang sama, kali ini dengan argumen TERISI LENGKAP dari perintah user terakhir (task/command/title sesuai tool-nya). DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.", tool, callId, resultId, resultTotal, displayResult, "PERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: panggil ULANG tool '$tool' lewat function calling dengan argumen TERISI LENGKAP dari perintah user terakhir (task/command/title sesuai tool-nya). DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.")
                 // VC303-P1-5 (LP-8 + residual LP-10): JANGAN auto-retry
                 // penolakan deterministik — hasil yang diawali nama tool +
@@ -13340,8 +12830,8 @@ class MainActivity : Activity() {
                     invalidNames.clear()
                     TurnMetrics.recordStep(tool, false, prootCutOf(result), argsHash(args), isAutoRetry)
                     // F5b: hasil gagal = hasil tool call itu (role:tool di
-                    // openai; teks lama persis di deepseek — termasuk kasus
-                    // subroomBounce yang di deepseek hanya mengirim teks
+                    // openai; teks lama persis di dialek teks — termasuk kasus
+                    // subroomBounce yang di dialek teks hanya mengirim teks
                     // pantulan tanpa hasil; di openai hasilnya ikut
                     // terkirim sebagai role:tool + pantulan jadi instruksi).
                     if (subroomBounceVc229) sendToolResultVc5b(subroomBounceTextVc229, tool, callId, resultId, resultTotal, displayResult, subroomBounceTextVc229) else sendToolResultVc5b("Hasil tool $tool" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + (if (resultId != null) " [id=$resultId, total $resultTotal char]" else "") + " GAGAL:\n$displayResult\n\nWAJIB: coba strategi atau tool LAIN untuk tujuan yang sama — jangan ulangi panggilan yang persis sama. Bila memang tidak ada jalan lain, jelaskan ke user dengan jujur.", tool, callId, resultId, resultTotal, displayResult, "WAJIB: coba strategi atau tool LAIN untuk tujuan yang sama — jangan ulangi panggilan yang persis sama. Bila memang tidak ada jalan lain, jelaskan ke user dengan jujur.")
@@ -13383,7 +12873,7 @@ class MainActivity : Activity() {
                         val steerTxt = consumeSteer()
                         val steerSuffixVc5b = if (steerTxt != null) "\n\n[ARAHAN SISIPAN USER — user mengirim arahan ini SAAT kamu sedang bekerja; prioritaskan arahan terbaru ini]:\n$steerTxt" else ""
                         // F5b: hasil sukses = hasil tool call itu (role:tool
-                        // di openai; teks lama persis di deepseek).
+                        // di openai; teks lama persis di dialek teks).
                         if (subroomBounceVc229) sendToolResultVc5b(subroomBounceTextVc229, tool, callId, resultId, resultTotal, displayResult, subroomBounceTextVc229 + invalidSuffix + stuck) else sendToolResultVc5b(("Hasil tool $tool" + (if (callId.isNotBlank()) " [HASIL TOOL $callId]" else "") + (if (resultId != null) " [id=$resultId, total $resultTotal char]" else "") + ":\n$displayResult\n\nLanjutkan untuk user: bila butuh tool lain keluarkan blok json lagi, bila selesai jawab final tanpa blok json." + steerSuffixVc5b) + invalidSuffix + stuck, tool, callId, resultId, resultTotal, displayResult, "Lanjutkan untuk user: bila butuh tool lain panggil lagi lewat function calling, bila selesai jawab final tanpa tool call." + steerSuffixVc5b + invalidSuffix + stuck)
                     }
                 }
@@ -14460,7 +13950,7 @@ internal fun showLlmProviderDialog() {
     // simpan-aktifkan, dan hapus.
     // - Label default TIDAK LAGI "DeepSeek (API Internal / Web)" untuk id
     //   "openai" (label awal = label preset, atau "OpenAI").
-    // - Tombol "Pakai DeepSeek Web" DIHAPUS (K1).
+    // - Tombol pakai-web lama DIHAPUS (K1).
     // - Key TIDAK PERNAH tampil: field selalu kosong saat dibuka; kosong =
     //   pakai key tersimpan lama. Key juga tidak pernah masuk log/pesan.
     var listDlg: AlertDialog? = null
@@ -14506,10 +13996,10 @@ internal fun showLlmProviderDialog() {
                         AgentEngines.setCurrent(ctx, "openai")
                         Toast.makeText(ctx, "Provider '${p.id}' dihapus. Provider aktif kini '${next.label}'.", Toast.LENGTH_LONG).show()
                     } else {
-                        // Registry/store jatuh ke deepseek internal (fallback
-                        // registry Fase 0) — TAPI engine tetap openai, jadi
+                        // Registry/store jatuh ke "" (belum ada provider
+                        // aktif, K1 Fase 6) — engine tetap openai, jadi
                         // chat memberi pesan "Otak belum diatur" yang jujur.
-                        LlmProviderStore.setActive(ctx, LlmProviders.ID_DEEPSEEK)
+                        LlmProviderStore.setActive(ctx, "")
                         AgentEngines.setCurrent(ctx, "openai")
                         Toast.makeText(ctx, "Provider '${p.id}' dihapus. Belum ada provider aktif — atur provider di Setup > 73.", Toast.LENGTH_LONG).show()
                     }
@@ -15021,19 +14511,10 @@ internal fun showApiTokenDialog() {
                 val ok = layerOk && sendOk != false
                 verdict("Cek 6 (lapisan + titik-kirim)", ok, "persona subset=${sys.contains(persona)} total=$total naive(sum+persona)=$naive != total (naive SALAH by design); titik-kirim: $sendNote (sama persis = lanjutan; lebih besar = gap awal terdokumentasi; lebih kecil = GAGAL, kemungkinan kirim senyap internal menyela)")
             } catch (e: Exception) { verdict("Cek 6 (lapisan + titik-kirim)", false, "exception: ${e.message}") }
-            // ---------- Cek 7: failover nonaktif ----------
-            try {
-                val prefs = getSharedPreferences("harness", MODE_PRIVATE)
-                val slotBefore = AccountPool.activeSlot(this@MainActivity)
-                val keysBefore = prefs.all.keys.filter { it.startsWith("dsSrvSessId_") || it.startsWith("dsDead_") }.toSet()
-                val filled = AccountPool.filledSlots(this@MainActivity)
-                val ret = AccountPool.failover(this@MainActivity)
-                val slotAfter = AccountPool.activeSlot(this@MainActivity)
-                val keysAfter = prefs.all.keys.filter { it.startsWith("dsSrvSessId_") || it.startsWith("dsDead_") }.toSet()
-                val ok = !AccountPool.FAILOVER_ENABLED && !ret && slotAfter == slotBefore && keysAfter == keysBefore
-                val filledNote = if (filled.any { it != slotBefore }) "slot lain terisi: $filled" else "slot lain kosong di perangkat ini — gate tetap false sebelum membaca slot (AccountPool:81), hasil valid; kondisi slot-terisi tak dapat dipenuhi tanpa menulis token palsu (ditolak)"
-                verdict("Cek 7 (failover nonaktif)", ok, "FAILOVER_ENABLED=false, failover()=$ret, slot $slotBefore->$slotAfter tak berubah, kunci tak bertambah; $filledNote; non-cakupan jujur: adopsi lintas-sidik tidak diuji runtime di sini (ditutup harness H1 + audit kode)")
-            } catch (e: Exception) { verdict("Cek 7 (failover nonaktif)", false, "exception: ${e.message}") }
+            // ---------- Cek 7: failover nonaktif (DIHAPUS Fase 6 K1) ----------
+            // Mekanisme failover slot lama sudah tidak ada —
+            // tidak ada lagi failover antar-akun yang perlu diuji.
+            verdict("Cek 7 (failover nonaktif)", true, "SKIP: failover slot DeepSeek dihapus (K1) — tidak ada lagi mekanisme failover antar-akun")
             // ---------- Cek 8 (vc263): StuckWatch + brief sesi + alokasi ID notif ----------
             try {
                 val wVc263 = AgentPrompt.StuckWatch()
@@ -15341,7 +14822,7 @@ internal fun showApiTokenDialog() {
         activityResumed = true
         // vc309 Worker A — terapkan ulang bar di onResume: mode "sistem"
         // (night mode OS berubah saat app di latar) + kembali dari activity
-        // lain (SlotBrowser). Listener inset tidak dipasang ulang (tetap
+        // lain. Listener inset tidak dipasang ulang (tetap
         // hidup dari onCreate).
         try { SystemBarsVc309.applySystemBars(window, isDarkTheme()) } catch (e: Exception) {}
         try { showBgSecondConfirmVc229() } catch (e: Exception) {}
@@ -15350,7 +14831,7 @@ internal fun showApiTokenDialog() {
         try {
             val drained = MemoryDb.drainPrompts(this)
             for (p in drained) if (autoQueue.size < 5) autoQueue.addLast(p)
-            if (autoQueue.isNotEmpty() && agent?.busy != true && !internalTurn) consumeAutoQueue()
+            if (autoQueue.isNotEmpty() && !turnRunningVc308()) consumeAutoQueue()
         } catch (e: Exception) {}
         // vc308 Worker C (BUG 4): ganti tema yang sempat ditunda — terapkan
         // bila giliran sudah selesai (pengaman bila endUserTurn terlewat
@@ -15368,8 +14849,7 @@ internal fun showApiTokenDialog() {
     }
 
     override fun onStop() {
-        // vc313 §3.5: flush cookie saat app berhenti (jangan duplikasi
-        // flush setupWebView login DeepSeek — ini flush tambahan browser).
+        // vc313 §3.5: flush cookie WebView browser agen saat app berhenti.
         try { CookieManager.getInstance().flush() } catch (e: Exception) {}
         super.onStop()
     }
@@ -16016,7 +15496,7 @@ internal fun showApiTokenDialog() {
 
     // v4.48.9.21 (vc187): room automation (Solo / Multi). Paralel TANPA
     // running guard: pesan user langsung masuk, tidak pernah ditahan.
-    // Multi: tiap agen jalan independen lewat SlotClient sendiri (pola lane
+    // Multi: tiap agen jalan independen lewat helper Models API (pola lane
     // TeamRun, tanpa kunci round); typing per-agen; round cap 1 balasan
     // per agen per pemicu; Mandor koordinator bagi tugas + papan tugas.
     private fun showAutomationRoom(roomId: String, initialSub: String, initialSessionId: String? = null) {
@@ -16323,9 +15803,8 @@ internal fun showApiTokenDialog() {
                         val tasks = Automation.sessionTasks(curSess)
                         val t2 = tasks.optJSONObject(i) ?: return@thSmallBtn
                         val criteria = t2.optString("criteria").ifBlank { "Tugas tuntas bila: " + t2.optString("text") }
-                        // F2b B5: engine-branch DULU — di engine openai
-                        // apiClient memang null by design (lazy B13), jadi
-                        // cek apiClient tidak boleh mendahului branch.
+                        // F2b B5: engine-branch DULU — engine openai lewat
+                        // helper; engine lokal ditandai SEBAGIAN.
                         val engineVerifyVcF2b = AgentEngines.current(this)
                         val recentVerifyVcF2b = StringBuilder()
                         val msgsVerifyVcF2b = Automation.loadMessages(this, room.optString("id"))
@@ -16375,40 +15854,11 @@ internal fun showApiTokenDialog() {
                                         Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — verifikasi gagal: $err", curSess.optString("id")); renderBoard()
                                     } })
                             }
-                        } else if (apiClient == null) {
-                            Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi dilewati — engine belum siap.")
-                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — engine belum siap: " + t2.optString("text"), curSess.optString("id")); renderBoard()
                         } else {
-                            verifying.add(i); renderBoard()
-                            try {
-                                apiClient?.chat(promptVerifyVcF2b, false, false, { _: String -> },
-                                    { answer, _ -> runOnUiThread {
-                                        verifying.remove(i)
-                                        val st = when {
-                                            answer.contains("TERVERIFIKASI") -> "TERVERIFIKASI"
-                                            answer.contains("GAGAL") -> "GAGAL"
-                                            else -> "SEBAGIAN"
-                                        }
-                                        val note = answer.substringAfter("BUKTI:", "").trim().take(200).ifBlank { answer.take(200) }
-                                        if (st == "GAGAL") {
-                                            Automation.setSessionTaskVerifyOnly(this, room, curSess, i, st, note)
-                                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "GAGAL — $note", curSess.optString("id")); renderBoard()
-                                        } else {
-                                            Automation.setSessionTaskVerified(this, room, curSess, i, st, note)
-                                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "$st — $note", curSess.optString("id")); renderBoard()
-                                        }
-                                    } },
-                                    { err -> runOnUiThread {
-                                        verifying.remove(i)
-                                        Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi gagal: $err")
-                                        Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — verifikasi gagal: $err", curSess.optString("id")); renderBoard()
-                                    } })
-                            } catch (e: Exception) {
-                                verifying.remove(i)
-                                Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi gagal: ${e.message}")
-                                Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — verifikasi gagal: ${e.message}", curSess.optString("id"))
-                                renderBoard()
-                            }
+                            // Fase 6 K1: engine lokal — tidak ada Models API
+                            // untuk verifikasi; tandai SEBAGIAN dengan jujur.
+                            Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi dilewati — engine lokal.")
+                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — engine lokal: " + t2.optString("text"), curSess.optString("id")); renderBoard()
                         }
                     })
                 }
@@ -16439,7 +15889,7 @@ internal fun showApiTokenDialog() {
                 val d = div.optJSONObject(i) ?: continue
                 val st = d.optString("status")
                 val icon = if (st == "selesai") "✓" else if (st == "gagal") "✗" else "⏳"
-                divBoardBox.addView(tv("• [" + icon + "] " + d.optString("sub").take(60) + " (pekerja slot " + d.optInt("worker", 0) + "): " + d.optString("result").take(80), 12f, th.text))
+                divBoardBox.addView(tv("• [" + icon + "] " + d.optString("sub").take(60) + " (pekerja " + d.optInt("worker", 0) + "): " + d.optString("result").take(80), 12f, th.text))
             }
         }
 
@@ -16712,7 +16162,7 @@ internal fun showApiTokenDialog() {
                 try {
                     AlertDialog.Builder(this)
                         .setTitle("Izinkan buat sub-room?")
-                        .setMessage("DeepSeek ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + "\nArgumen: $args")
+                        .setMessage("Agen ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + "\nArgumen: $args")
                         .setPositiveButton("Izinkan") { _, _ -> runApproved() }
                         .setNegativeButton("Tolak") { _, _ ->
                             Automation.appendMessage(this, roomNow.optString("id"), roomSub, "sistem", "⏸ Tool $tool ditolak user — sub-room tidak dibuat.", effSess)
@@ -16755,7 +16205,7 @@ internal fun showApiTokenDialog() {
                 try {
                     AlertDialog.Builder(this)
                         .setTitle("Izinkan tool di room?")
-                        .setMessage("DeepSeek ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + "\nArgumen lengkap (" + args.toString().length + " char): $args")
+                        .setMessage("Agen ingin menjalankan: $tool\n" + ToolGate.label(req.risk) + (if (req.preview.isNotBlank()) "\nPratinjau: ${req.preview}" else "") + "\n" + req.explanation + "\nArgumen lengkap (" + args.toString().length + " char): $args")
                         .setPositiveButton("Izinkan") { _, _ -> runApproved() }
                         .setNegativeButton("Tolak") { _, _ ->
                             Automation.appendMessage(this, roomNow.optString("id"), roomSub, "sistem", "⏸ Tool $tool ditolak user — tidak dieksekusi di room.", effSess)
@@ -16772,7 +16222,7 @@ internal fun showApiTokenDialog() {
             if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) show() else runOnUiThread { show() }
         }
         fun handleRoomReply(roomSub: String, agentName: String, answerRaw: String, sessId: String = "") {
-            val answer = DsSafetyStrip.strip(answerRaw)
+            val answer = AgentPrompt.stripSafetyTags(answerRaw)
             val effSess = if (sessId.isNotBlank()) sessId else curSess.optString("id")
             // vc262 N-M10: kill switch F1 menjangkau room.
             if (getSharedPreferences("harness", MODE_PRIVATE).getBoolean("f1Off", false)) {
@@ -16952,8 +16402,8 @@ internal fun showApiTokenDialog() {
                     var correctedRoomVc262 = ""
                     try {
                         // F2b B4: engine dibaca SEKALI — openai lewat
-                        // LlmEngineChat (Models API, reviewer independen,
-                        // tanpa slot Browser 5); deepseek tetap jalur lama.
+                        // LlmEngineChat (Models API, reviewer independen);
+                        // engine lokal = reviewer dilewati (else di bawah).
                         // vc262 N-M11: pesan user terakhir di sub-room ini masuk bukti (dihitung sekali di atas sebagai userRoomVc266).
                         val engineRoomVc249 = AgentEngines.current(ctxRoomVc249)
                         val userRoomVc262 = userRoomVc266
@@ -16995,38 +16445,13 @@ internal fun showApiTokenDialog() {
                                     } catch (e: Exception) { reviewFailRoomVc275 = true }
                                     // openai = reviewer independen (stateless,
                                     // tanpa sesi server bersama giliran agen).
-                                    indepRoomVc275 = if (LlmEngineChat.reviewerIndependent(engineRoomVc249)) "" else " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
+                                    indepRoomVc275 = ""
                                     reviewerDoneRoomVc249 = true
                                 }
                             } else {
-                                // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
-                                // — tanpa fallback ke slot lain.
-                                val rSlotRoomVc249 = try { AccountPool.reviewerSlot(ctxRoomVc249) } catch (e: Exception) { null }
-                                val rAuthRoomVc249 = if (rSlotRoomVc249 != null) try { AccountPool.slotAuth(ctxRoomVc249, rSlotRoomVc249) } catch (e: Exception) { null } else null
-                                if (rSlotRoomVc249 == null || rAuthRoomVc249 == null) {
-                                    noteRoomVc249 = ReviewerVc298.SKIP_NOTE
-                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak jalan: slot Browser 5 tidak login)"
-                                } else if (Governor.overCapReviewer(ctxRoomVc249)) {
-                                    // vc277 O16(b): kuota reviewer habis — reviewer
-                                    // dilewati dengan penanda, bukan diam-diam lolos.
-                                    noteRoomVc249 = Governor.reviewerOverCapText(ctxRoomVc249) + " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
-                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — kuota reviewer habis)"
-                                } else {
-                                    val rClientRoomVc275 = SlotClient(ctxRoomVc249, rSlotRoomVc249, rAuthRoomVc249.first, rAuthRoomVc249.second)
-                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi".
-                                    try {
-                                        val (raw1RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
-                                        val (u1RoomVc275, c1RoomVc275) = AgentPrompt.parseZeroCtxReview(raw1RoomVc275)
-                                        if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
-                                            val (raw2RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.reviewerRetryPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
-                                            val (u2RoomVc275, c2RoomVc275) = AgentPrompt.parseZeroCtxReview(raw2RoomVc275)
-                                            if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
-                                        }
-                                    } catch (e: Exception) { reviewFailRoomVc275 = true }
-                                    // vc275 O11(a): slot giliran agen room tidak dilacak terpisah — reviewer memakai Browser 5; karena tidak bisa dibuktikan berbeda dari akun giliran agen, verdict dilabeli tidak independen.
-                                    indepRoomVc275 = " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
-                                    reviewerDoneRoomVc249 = true
-                                }
+                                // Fase 6 K1: engine lokal — reviewer butuh Models API.
+                                noteRoomVc249 = "⚠️ Reviewer dilewati — engine lokal (atur provider Models API di Setup > 73)."
+                                if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak jalan: engine lokal)"
                             }
                             if (reviewerDoneRoomVc249) {
                                 // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
@@ -17274,7 +16699,7 @@ internal fun showApiTokenDialog() {
         }
 
         fun healDiagnose(agentName: String, err: String, sessId: String = "") {
-            val msg = "🛑 Diagnosis self-healing: $agentName gagal setelah percobaan ulang + fallback. Penyebab: $err. Saran: periksa login slot / jaringan, lalu kirim ulang pesan atau hentikan automation bila sudah tidak diperlukan."
+            val msg = "🛑 Diagnosis self-healing: $agentName gagal setelah percobaan ulang + fallback. Penyebab: $err. Saran: periksa provider / jaringan, lalu kirim ulang pesan atau hentikan automation bila sudah tidak diperlukan."
             val effSess = if (sessId.isNotBlank()) sessId else curSess.optString("id")
             Automation.logAction(this, room.optString("id"), agentName, "diagnosis self-healing", err.take(200), effSess)
             Automation.appendMessage(this, room.optString("id"), sub, "sistem", msg, effSess)
@@ -17283,9 +16708,8 @@ internal fun showApiTokenDialog() {
         }
 
         fun fallbackSolo(ag: Agents.Profile, prompt: String, err: String, sessId: String = "") {
-            val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
-            // (tanpa slot); deepseek tetap jalur lama (slot pertama login).
+            val think = try { thinkingVariantVc230() == "on" } catch (e: Exception) { false }
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API.
             val engineFbVcF3a = AgentEngines.current(applicationContext)
             if (engineFbVcF3a == "openai") {
                 Automation.logAction(this, room.optString("id"), ag.name, "self-healing fallback", "Models API menggantikan engine utama", sessId)
@@ -17300,22 +16724,8 @@ internal fun showApiTokenDialog() {
                 }.start()
                 return
             }
-            val slots = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { null }
-            val slot = slots?.firstOrNull()
-            if (slot == null) { healDiagnose(ag.name, err, sessId); return }
-            val auth = try { AccountPool.slotAuth(applicationContext, slot) } catch (e: Exception) { null }
-            if (auth == null) { healDiagnose(ag.name, err, sessId); return }
-            Automation.logAction(this, room.optString("id"), ag.name, "self-healing fallback", "slot $slot menggantikan engine utama", sessId)
-            typingAdd(ag.name)
-            Thread {
-                try {
-                    val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                    val (answer, _) = client.chatSync(prompt, think, false)
-                    runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) }
-                } catch (e: Exception) {
-                    runOnUiThread { typingRemove(ag.name); healDiagnose(ag.name, e.message ?: "error") }
-                }
-            }.start()
+            // Fase 6 K1: engine lokal — tidak ada slot fallback; diagnosis.
+            healDiagnose(ag.name, err, sessId); return
         }
 
         fun healSolo(ag: Agents.Profile, prompt: String, err: String, attempt: Int, sessId: String = "") {
@@ -17324,11 +16734,10 @@ internal fun showApiTokenDialog() {
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing percobaan $attempt", "gagal: " + err.take(120), sessId)
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
             if (attempt > 3) { fallbackSolo(ag, prompt, err, sessId); return }
-            val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
+            val think = try { thinkingVariantVc230() == "on" } catch (e: Exception) { false }
             val retryPrompt = prompt + "\n\n(Percobaan ulang self-healing ke-$attempt — sebelumnya gagal: $err. Coba pendekatan yang BERBEDA secara mendasar, bukan variasi kecil.)"
             // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
-            // (sinkron di thread latar — healSolo jalan di UI thread);
-            // deepseek tetap jalur lama (apiClient async).
+            // (sinkron di thread latar — healSolo jalan di UI thread).
             val engineHealVcF3a = AgentEngines.current(applicationContext)
             if (engineHealVcF3a == "openai") {
                 typingAdd(ag.name)
@@ -17342,26 +16751,18 @@ internal fun showApiTokenDialog() {
                 }.start()
                 return
             }
-            if (apiClient == null) { healDiagnose(ag.name, err, sessId); return }
-            typingAdd(ag.name)
-            try {
-                apiClient?.chat(retryPrompt, think, false, { _: String -> },
-                    { answer, _ -> runOnUiThread { typingRemove(ag.name); healCounts.remove(key); handleRoomReply(sub, ag.name, answer, sessId) } },
-                    { err2 -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err2, attempt + 1, sessId) } })
-            } catch (e: Exception) { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", attempt + 1, sessId) }
+            // Fase 6 K1: engine lokal — tidak ada jalur retry; diagnosis.
+            healDiagnose(ag.name, err, sessId); return
         }
 
-        fun healMulti(ag: Agents.Profile, slot: Int, auth: Pair<String, String>, prompt: String, err: String, attempt: Int, usedSlots: Set<Int>, sessId: String = "") {
+        fun healMulti(ag: Agents.Profile, prompt: String, err: String, attempt: Int, sessId: String = "") {
             val key = ag.id + "|" + err.take(80)
             val cnt = (healCounts[key] ?: 0) + 1; healCounts[key] = cnt
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing percobaan $attempt", "gagal: " + err.take(120), sessId)
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
-            // (tanpa slot); deepseek tetap jalur lama (SlotClient slot agen).
-            val engineHealMultiVcF3a = AgentEngines.current(applicationContext)
+            // Fase 6 K1: self-healing multi lewat helper Models API saja.
             if (attempt > 3) {
-                if (engineHealMultiVcF3a == "openai") {
-                    typingAdd(ag.name)
+                typingAdd(ag.name)
                     Thread {
                         try {
                             val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM)
@@ -17372,78 +16773,40 @@ internal fun showApiTokenDialog() {
                         }
                     }.start()
                     return
-                }
-                var fb: Triple<Agents.Profile, Int, Pair<String, String>>? = null
-                val others = Agents.all(this).filter { (it.id == "asisten" || it.id == "mandor" || it.id == "mentor" || it.id == "agen4") && it.id != ag.id }
-                for (o in others) {
-                    val bound = try { GroupChat.boundSlotFor(applicationContext, o.id) } catch (e: Exception) { null }
-                    val fbSlot = if (bound != null && !usedSlots.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !usedSlots.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
-                    if (fbSlot != null) {
-                        val fbAuth = try { AccountPool.slotAuth(applicationContext, fbSlot) } catch (e: Exception) { null }
-                        if (fbAuth != null) { fb = Triple(o, fbSlot, fbAuth); break }
-                    }
-                }
-                if (fb == null) { healDiagnose(ag.name, err, sessId); return }
-                val (fbAg, fbSlot, fbAuth) = fb
-                Automation.logAction(this, room.optString("id"), fbAg.name, "self-healing fallback", "menggantikan " + ag.name, sessId)
-                typingAdd(fbAg.name)
-                Thread {
-                    try {
-                        val client = SlotClient(applicationContext, fbSlot, fbAuth.first, fbAuth.second)
-                        val (answer, _) = client.chatSync(prompt, false, false)
-                        healCounts.remove(key)
-                        runOnUiThread { typingRemove(fbAg.name); handleRoomReply("multi", fbAg.name, answer, sessId) }
-                    } catch (e: Exception) {
-                        runOnUiThread { typingRemove(fbAg.name); healDiagnose(fbAg.name, e.message ?: "error", sessId) }
-                    }
-                }.start()
-                return
             }
             typingAdd(ag.name)
             Thread {
                 try {
                     val varied = prompt + "\n\n(Percobaan ulang self-healing ke-$attempt — sebelumnya gagal: $err. Coba pendekatan yang BERBEDA secara mendasar, bukan variasi kecil.)"
-                    val answer = if (engineHealMultiVcF3a == "openai") {
-                        LlmEngineChat.chatSyncForEngine(applicationContext, varied, LlmCallKind.ROOM)
-                    } else {
-                        val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                        client.chatSync(varied, false, false).first
-                    }
+                    val answer = LlmEngineChat.chatSyncForEngine(applicationContext, varied, LlmCallKind.ROOM)
                     healCounts.remove(key)
                     runOnUiThread { typingRemove(ag.name); handleRoomReply("multi", ag.name, answer, sessId) }
                 } catch (e: Exception) {
-                    runOnUiThread { typingRemove(ag.name); healMulti(ag, slot, auth, prompt, e.message ?: "error", attempt + 1, usedSlots, sessId) }
+                    runOnUiThread { typingRemove(ag.name); healMulti(ag, prompt, e.message ?: "error", attempt + 1, sessId) }
                 }
             }.start()
         }
 
         fun dispatchSolo(ag: Agents.Profile, prompt: String, sessId: String = "", userText: String = "") {
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
-            // (sinkron di thread latar — dispatchSolo jalan di UI thread);
-            // deepseek tetap jalur lama (apiClient async).
+            // Fase 6 K1: solo room lewat helper Models API saja (sinkron di
+            // thread latar — dispatchSolo jalan di UI thread).
             val engineSoloVcF3a = AgentEngines.current(applicationContext)
-            if (engineSoloVcF3a != "openai" && apiClient == null) { appendSystem("Solo: engine belum siap — buka tab Web / chat 1-1 dulu."); return }
+            if (engineSoloVcF3a != "openai") { appendSystem("Solo butuh Models API — engine saat ini lokal. Atur provider dulu di Setup > 73."); return }
             typingAdd(ag.name)
             try {
                 val variantSoloVc230 = thinkingVariantVc230()
-                val thinkBase = variantSoloVc230 == "r1"
+                val thinkBase = variantSoloVc230 == "on"
                 val think = thinkBase || (variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText))
                 if (!thinkBase && variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing: thinking otomatis karena tugas sulit (Solo, Setup = Otomatis). Perbedaan jalur vc230: 1-1 ikut Setup; Solo ikut Setup yang sama; grup/tim selalu tanpa thinking; latar ikut varian Setup.")
-                if (variantSoloVc230 == "v3" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing Solo: tugas sulit terdeteksi, tapi Setup = V3 — auto-thinking TIDAK diaktifkan tanpa persetujuan eksplisit.")
-                if (engineSoloVcF3a == "openai") {
-                    Thread {
-                        try {
-                            val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM, thinking = think)
-                            runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) }
-                        } catch (e: Exception) {
-                            runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", 1, sessId) }
-                        }
-                    }.start()
-                } else {
-                    apiClient?.chat(prompt, think, false, { _: String -> },
-                        { answer, _ -> runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) } },
-                        { err -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err, 1, sessId) } })
-                }
+                if (variantSoloVc230 == "off" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing Solo: tugas sulit terdeteksi, tapi Setup = Standar — auto-thinking TIDAK diaktifkan tanpa persetujuan eksplisit.")
+                Thread {
+                    try {
+                        val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM, thinking = think)
+                        runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) }
+                    } catch (e: Exception) {
+                        runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", 1, sessId) }
+                    }
+                }.start()
             } catch (e: Exception) {
                 typingRemove(ag.name)
                 healSolo(ag, prompt, e.message ?: "error", 1, sessId)
@@ -17455,48 +16818,28 @@ internal fun showApiTokenDialog() {
             val agents = if (memberIds.isNotEmpty()) Agents.all(this).filter { memberIds.contains(it.id) }.ifEmpty { Agents.all(this).filter { builtinIds.contains(it.id) } } else Agents.all(this).filter { builtinIds.contains(it.id) }
             val mentioned = agents.filter { text.contains("@" + it.name, ignoreCase = true) }
             val targets = if (mentioned.isNotEmpty()) mentioned else agents
-            val used = HashSet<Int>()
-            // F3 koordinator: di engine openai agen jalan tanpa slot (helper
-            // stateless) — slot/auth dummy, tidak pernah dipakai jalur openai.
-            val engineMultiJobsVcF3 = AgentEngines.current(applicationContext)
-            val jobs = ArrayList<Triple<Agents.Profile, Int, Pair<String, String>>>()
-            val notes = ArrayList<String>()
-            for (ag in targets) {
-                if (engineMultiJobsVcF3 == "openai") { jobs.add(Triple(ag, 0, Pair("", ""))); continue }
-                val bound = try { GroupChat.boundSlotFor(applicationContext, ag.id) } catch (e: Exception) { null }
-                val slot = if (bound != null && !used.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !used.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
-                if (slot == null) { notes.add("💤 ${ag.name} istirahat — slot belum diatur."); continue }
-                used.add(slot)
-                val auth = try { AccountPool.slotAuth(applicationContext, slot) } catch (e: Exception) { null }
-                if (auth == null) { notes.add("💤 ${ag.name} istirahat — slot belum login."); continue }
-                jobs.add(Triple(ag, slot, auth))
-            }
+            // Fase 6 K1: multi room butuh Models API — engine lokal tidak
+            // punya jalur LLM room.
+            if (AgentEngines.current(applicationContext) != "openai") { appendSystem("Room multi butuh Models API — engine saat ini lokal. Atur provider dulu di Setup > 73."); return }
+            val jobs = ArrayList<Agents.Profile>(targets)
             val prompts = HashMap<String, String>()
-            for ((ag, _, _) in jobs) prompts[ag.id] = buildRoomPrompt(ag, text, true, Automation.sessionById(room, sessId), preRanked)
+            for (ag in jobs) prompts[ag.id] = buildRoomPrompt(ag, text, true, Automation.sessionById(room, sessId), preRanked)
             Automation.appendMessage(this, room.optString("id"), sub, "user", text, sessId)
             renderMessages(); scrollBottom()
-            for (n in notes) appendSystem(n)
-            if (jobs.isEmpty()) { appendSystem("Tidak ada agen dengan slot aktif di room multi."); return }
+            if (jobs.isEmpty()) { appendSystem("Tidak ada agen aktif di room multi."); return }
             val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
-            // deepseek tetap SlotClient lama (sesi slot giliran agen).
-            val engineMultiVcF3a = AgentEngines.current(applicationContext)
-            for ((ag, slot, auth) in jobs) {
+            // Fase 6 K1: tiap agen jalan lewat helper Models API (paralel).
+            for (ag in jobs) {
                 Thread {
                     runOnUiThread { typingAdd(ag.name) }
                     try {
-                        val answer = if (engineMultiVcF3a == "openai") {
-                            LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: text, LlmCallKind.ROOM)
-                        } else {
-                            val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                            client.chatSync(prompts[ag.id] ?: text, false, false).first
-                        }
+                        val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: text, LlmCallKind.ROOM)
                         val (visible, toolObj) = AgentPrompt.extractToolCall(answer)
                         if (!(visible.trim() == "LEWATI" && toolObj == null)) {
                             runOnUiThread { handleRoomReply("multi", ag.name, answer, sessId) }
                         }
                     } catch (e: Exception) {
-                        runOnUiThread { healMulti(ag, slot, auth, prompts[ag.id] ?: text, e.message ?: "error", 1, used, sessId) }
+                        runOnUiThread { healMulti(ag, prompts[ag.id] ?: text, e.message ?: "error", 1, sessId) }
                     } finally {
                         runOnUiThread { typingRemove(ag.name) }
                         if (doneCount.incrementAndGet() == jobs.size) runOnUiThread { appendSystemSess(sessId, "✅ Putaran selesai (${jobs.size} agen)."); renderMessages(); scrollBottom() }
@@ -17523,41 +16866,15 @@ internal fun showApiTokenDialog() {
             val sess = Automation.sessionById(room, sessId) ?: org.json.JSONObject()
             val primaryId = sess.optString("primaryAgent", "").ifBlank { "mandor" }
             val primary = Agents.all(this).firstOrNull { it.id == primaryId } ?: Agents.all(this).firstOrNull { it.id == "mandor" } ?: Agents.active(this)
-            // F3 koordinator: di engine openai sintesis juri tidak butuh slot
-            // utama (helper stateless) — gerbang slot hanya untuk deepseek.
-            val engineSynthPrimVcF3 = AgentEngines.current(applicationContext)
-            val filled = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { emptyList<Int>() }
-            val prefSlot = sess.optInt("primarySlot", 0)
-            var pSlot: Int? = null
-            if (prefSlot in filled) pSlot = prefSlot
-            if (pSlot == null) { val bound = try { GroupChat.boundSlotFor(applicationContext, primary.id) } catch (e: Exception) { null }; if (bound != null && bound in filled) pSlot = bound }
-            if (pSlot == null) pSlot = filled.firstOrNull()
-            if (pSlot == null && engineSynthPrimVcF3 != "openai") {
-                runOnUiThread { appendSystemSess(sessId, "⚖️ Parlemen: tidak ada slot utama login — sintesis juri dilewati; jawaban per slot tetap tampil di atas."); renderMessages(); scrollBottom() }
-                return
-            }
-            if (pSlot == null) pSlot = 0
-            val pAuth = try { if (engineSynthPrimVcF3 == "openai") Pair("", "") else AccountPool.slotAuth(applicationContext, pSlot) } catch (e: Exception) { null }
-            if (pAuth == null) {
-                runOnUiThread { appendSystemSess(sessId, "⚖️ Parlemen: slot utama belum login — sintesis juri dilewati; jawaban per slot tetap tampil di atas."); renderMessages(); scrollBottom() }
-                return
-            }
+            // Fase 6 K1: sintesis juri lewat helper Models API (stateless).
             runOnUiThread { typingAdd(primary.name) }
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
-            // deepseek tetap SlotClient lama (slot utama sesi).
-            val engineSynthVcF3a = AgentEngines.current(applicationContext)
             try {
                 val labeled = StringBuilder()
-                for ((slot, v) in answered) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): ").append(v.third.take(20000)).append("\n\n")
-                for ((slot, v) in lewati) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): LEWATI (menilai tidak relevan).\n")
-                for ((slot, v) in gagal) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): tidak menjawab (gagal/timeout: ").append(v.third.take(200)).append(").\n")
-                val synthPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), juri parlemen room multi. Pertanyaan debat: " + question + "\n\nJawaban per slot:\n" + labeled.toString() + "\nTugas: sintesis SATU putusan untuk user. Mulai pesan persis dengan baris PARLEMEN — <putusan ringkas>. Lalu: alasan per kubu bila ada perbedaan; perbedaan pendapat antar slot dicatat JUJUR (jangan dipaksa konsensus bila slot-slot berbeda); daftar slot LEWATI/gagal di akhir. Jangan tambah bagian lain."
-                val synth = if (engineSynthVcF3a == "openai") {
-                    LlmEngineChat.chatSyncForEngine(applicationContext, synthPrompt, LlmCallKind.ROOM)
-                } else {
-                    val synthClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
-                    synthClient.chatSync(synthPrompt, false, false).first
-                }
+                for ((slot, v) in answered) labeled.append("Agen ").append(slot).append(" (").append(v.first).append("): ").append(v.third.take(20000)).append("\n\n")
+                for ((slot, v) in lewati) labeled.append("Agen ").append(slot).append(" (").append(v.first).append("): LEWATI (menilai tidak relevan).\n")
+                for ((slot, v) in gagal) labeled.append("Agen ").append(slot).append(" (").append(v.first).append("): tidak menjawab (gagal/timeout: ").append(v.third.take(200)).append(").\n")
+                val synthPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), juri parlemen room multi. Pertanyaan debat: " + question + "\n\nJawaban per agen:\n" + labeled.toString() + "\nTugas: sintesis SATU putusan untuk user. Mulai pesan persis dengan baris PARLEMEN — <putusan ringkas>. Lalu: alasan per kubu bila ada perbedaan; perbedaan pendapat antar agen dicatat JUJUR (jangan dipaksa konsensus bila agen-agen berbeda); daftar agen LEWATI/gagal di akhir. Jangan tambah bagian lain."
+                val synth = LlmEngineChat.chatSyncForEngine(applicationContext, synthPrompt, LlmCallKind.ROOM)
                 val (synthVis, _) = AgentPrompt.extractToolCall(synth)
                 val synthBody = (if (synthVis.isNotBlank()) synthVis else synth).trim()
                 val synthFirst = synthBody.lineSequence().firstOrNull()?.trim() ?: ""
@@ -17570,7 +16887,7 @@ internal fun showApiTokenDialog() {
                     renderMessages(); scrollBottom()
                 }
             } catch (e: Exception) {
-                runOnUiThread { appendSystemSess(sessId, "⚠️ Parlemen: sintesis juri gagal (${e.message ?: "error"}) — jawaban per slot tetap tampil di atas."); renderMessages(); scrollBottom() }
+                runOnUiThread { appendSystemSess(sessId, "⚠️ Parlemen: sintesis juri gagal (${e.message ?: "error"}) — jawaban per agen tetap tampil di atas."); renderMessages(); scrollBottom() }
             } finally {
                 runOnUiThread { typingRemove(primary.name) }
             }
@@ -17579,60 +16896,43 @@ internal fun showApiTokenDialog() {
         // vc203 T1 Parlemen Agen: debat eksplisit 1 putaran. HANYA lewat
         // trigger DEBAT: di sendRoomMessageInner (alur multi normal TIDAK
         // berubah). Seleksi agen = sama seperti dispatchMulti KECUALI filter
-        // @mention SENGAJA diabaikan (debat = seluruh slot room, bukan 1
-        // agen yang disebut). 5 slot paralel (thinking=false, jalur sama
-        // seperti dispatchMulti) → jawaban per slot dirender seperti biasa,
+        // @mention SENGAJA diabaikan (debat = seluruh agen room, bukan 1
+        // agen yang disebut). 5 agen paralel (thinking=false, jalur sama
+        // seperti dispatchMulti) → jawaban per agen dirender seperti biasa,
         // LEWATI tidak dirender tapi dicatat, gagal dicatat TANPA retry
         // (sintesis TIDAK PERNAH memblokir) → sintesis juri 1 panggilan.
         fun dispatchDebate(origText: String, question: String, sessId: String = "", memberIds: List<String> = emptyList(), preRanked: List<Fact>? = null) {
             val builtinIds = setOf("asisten", "mandor", "mentor", "agen4")
             val agents = if (memberIds.isNotEmpty()) Agents.all(this).filter { memberIds.contains(it.id) }.ifEmpty { Agents.all(this).filter { builtinIds.contains(it.id) } } else Agents.all(this).filter { builtinIds.contains(it.id) }
-            val used = HashSet<Int>()
-            // F3 koordinator: di engine openai agen jalan tanpa slot (helper
-            // stateless) — slot/auth dummy, tidak pernah dipakai jalur openai.
-            val engineDebateJobsVcF3 = AgentEngines.current(applicationContext)
-            val jobs = ArrayList<Triple<Agents.Profile, Int, Pair<String, String>>>()
-            val notes = ArrayList<String>()
-            for (ag in agents) {
-                if (engineDebateJobsVcF3 == "openai") { jobs.add(Triple(ag, 0, Pair("", ""))); continue }
-                val bound = try { GroupChat.boundSlotFor(applicationContext, ag.id) } catch (e: Exception) { null }
-                val slot = if (bound != null && !used.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !used.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
-                if (slot == null) { notes.add("💤 ${ag.name} istirahat — slot belum diatur."); continue }
-                used.add(slot)
-                val auth = try { AccountPool.slotAuth(applicationContext, slot) } catch (e: Exception) { null }
-                if (auth == null) { notes.add("💤 ${ag.name} istirahat — slot belum login."); continue }
-                jobs.add(Triple(ag, slot, auth))
-            }
+            // Fase 6 K1: debat parlemen butuh Models API.
+            if (AgentEngines.current(applicationContext) != "openai") { appendSystem("Debat parlemen butuh Models API — engine saat ini lokal. Atur provider dulu di Setup > 73."); return }
+            val jobs = ArrayList<Agents.Profile>(agents)
             val prompts = HashMap<String, String>()
-            for ((ag, _, _) in jobs) prompts[ag.id] = buildRoomPrompt(ag, question, true, Automation.sessionById(room, sessId), preRanked)
+            for (ag in jobs) prompts[ag.id] = buildRoomPrompt(ag, question, true, Automation.sessionById(room, sessId), preRanked)
             Automation.appendMessage(this, room.optString("id"), sub, "user", origText, sessId)
             renderMessages(); scrollBottom()
-            for (n in notes) appendSystem(n)
-            if (jobs.isEmpty()) { appendSystem("Tidak ada agen dengan slot aktif di room multi."); return }
+            if (jobs.isEmpty()) { appendSystem("Tidak ada agen aktif di room multi."); return }
             val results = java.util.Collections.synchronizedMap(HashMap<Int, Triple<String, String, String>>())
             val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
-            // deepseek tetap SlotClient lama (sesi slot giliran agen).
-            val engineDebateVcF3a = AgentEngines.current(applicationContext)
-            for ((ag, slot, auth) in jobs) {
+            // Fase 6 K1: tiap agen debat jalan lewat helper Models API
+            // (paralel). Kunci results = nomor urut agen (1..N) — dulu slot
+            // browser; semua job openai memakai slot dummy 0 sehingga
+            // jawaban saling menimpa (bug Fase 5, diperbaiki di sini).
+            for ((idx, ag) in jobs.withIndex()) {
+                val jobNo = idx + 1
                 Thread {
                     runOnUiThread { typingAdd(ag.name) }
                     try {
-                        val answer = if (engineDebateVcF3a == "openai") {
-                            LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: question, LlmCallKind.ROOM)
-                        } else {
-                            val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                            client.chatSync(prompts[ag.id] ?: question, false, false).first
-                        }
+                        val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: question, LlmCallKind.ROOM)
                         val (visible, toolObj) = AgentPrompt.extractToolCall(answer)
                         if (visible.trim() == "LEWATI" && toolObj == null) {
-                            results[slot] = Triple(ag.name, "LEWATI", "")
+                            results[jobNo] = Triple(ag.name, "LEWATI", "")
                         } else {
-                            results[slot] = Triple(ag.name, "jawab", answer)
+                            results[jobNo] = Triple(ag.name, "jawab", answer)
                             runOnUiThread { handleRoomReply("multi", ag.name, answer, sessId) }
                         }
                     } catch (e: Exception) {
-                        results[slot] = Triple(ag.name, "gagal", e.message ?: "error")
+                        results[jobNo] = Triple(ag.name, "gagal", e.message ?: "error")
                     } finally {
                         runOnUiThread { typingRemove(ag.name) }
                         if (doneCount.incrementAndGet() == jobs.size) {
@@ -17644,33 +16944,28 @@ internal fun showApiTokenDialog() {
         }
 
         // v4.48.9.26 (vc192): mode koordinator per sesi multi. Agen utama
-        // terima tugas -> bagi ke pekerja (slot) -> pekerja paralel (satu
-        // ronde tool SAFE per pekerja, failover maks 2 alih) -> agen utama
-        // sintesis + LAPORAN AKHIR. Papan live di prefs coordDiv_.
+        // terima tugas -> bagi ke pekerja (indeks pekerja 1..N) -> pekerja
+        // paralel (satu ronde tool SAFE per pekerja, failover maks 2 alih)
+        // -> agen utama sintesis + LAPORAN AKHIR. Papan live di prefs coordDiv_.
         fun dispatchCoordinator(text: String, sessId: String) {
-            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
-            // deepseek tetap jalur lama (SlotClient slot utama/pekerja).
+            // Fase 6 K1: koordinator lewat helper Models API saja; pekerja
+            // = indeks 1..N (bukan slot browser).
             val engineCoordVcF3a = AgentEngines.current(applicationContext)
+            if (engineCoordVcF3a != "openai") { appendSystemSess(sessId, "Koordinator butuh Models API — engine saat ini lokal. Atur provider dulu di Setup > 73."); runOnUiThread { renderMessages(); scrollBottom() }; return }
             val sess = Automation.sessionById(room, sessId) ?: return
             val roomNow = Automation.roomById(this, roomId) ?: room
             val primaryId = sess.optString("primaryAgent", "").ifBlank { "mandor" }
             val primary = Agents.all(this).firstOrNull { it.id == primaryId } ?: Agents.all(this).firstOrNull { it.id == "mandor" } ?: Agents.active(this)
-            val filled = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { emptyList() }
-            val prefSlot = sess.optInt("primarySlot", 0)
-            var primarySlot: Int? = null
-            if (prefSlot in filled) primarySlot = prefSlot
-            if (primarySlot == null) {
-                val bound = try { GroupChat.boundSlotFor(applicationContext, primary.id) } catch (e: Exception) { null }
-                if (bound != null && bound in filled) primarySlot = bound
+            // workerSlots sesi kini berisi indeks pekerja 1..N (dulu nomor
+            // slot browser); sesi lama tanpa field ini default 2 pekerja.
+            val ws = sess.optJSONArray("workerSlots")
+            val workers = ArrayList<Int>()
+            if (ws != null) {
+                for (i in 0 until ws.length()) { val w = ws.optInt(i); if (w >= 1 && !workers.contains(w)) workers.add(w) }
+            } else {
+                workers.add(1); workers.add(2)
             }
-            if (primarySlot == null) primarySlot = filled.firstOrNull()
-            if (primarySlot == null) { appendSystemSess(sessId, "Koordinator: tidak ada slot login — tidak bisa membagi tugas."); runOnUiThread { renderMessages(); scrollBottom() }; return }
-            val pSlot = primarySlot
-            val wanted = ArrayList<Int>()
-            val ws = sess.optJSONArray("workerSlots") ?: org.json.JSONArray()
-            for (i in 0 until ws.length()) { val w = ws.optInt(i); if (w in filled && w != pSlot && !wanted.contains(w)) wanted.add(w) }
-            val workers = if (wanted.isNotEmpty()) wanted else filled.filter { it != pSlot }
-            if (workers.isEmpty()) { appendSystemSess(sessId, "Koordinator: tidak ada pekerja — perlu minimal 2 slot login (1 utama + 1 pekerja)."); runOnUiThread { renderMessages(); scrollBottom() }; return }
+            if (workers.isEmpty()) { appendSystemSess(sessId, "Koordinator: tidak ada pekerja — pilih minimal 1 pekerja di pengaturan sesi."); runOnUiThread { renderMessages(); scrollBottom() }; return }
             Automation.appendMessage(this, room.optString("id"), sub, "user", text, sessId)
             renderMessages(); scrollBottom()
             typingAdd(primary.name)
@@ -17692,11 +16987,10 @@ internal fun showApiTokenDialog() {
                     bVc244.toString()
                 } catch (e: Exception) { "" }
                 try {
-                    val pAuth = AccountPool.slotAuth(applicationContext, pSlot) ?: throw Exception("slot utama belum login")
                     val sessTasks = Automation.sessionTasks(sess)
                     val taskLines = StringBuilder()
                     for (i in 0 until sessTasks.length()) { val t = sessTasks.optJSONObject(i) ?: continue; taskLines.append("- [").append(t.optString("status")).append("] ").append(t.optString("text")).append("\n") }
-                    val divPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), koordinator sesi automation \"" + sess.optString("title") + "\". Tugas user: " + text + "\nPapan tugas sesi:\n" + taskLines.toString() + "Bagi tugas ini menjadi sub-tugas untuk " + workers.size + " pekerja (slot " + workers.joinToString(", ") + "). Jawab HANYA dengan baris-baris berbentuk: SUBTUGAS 1: <isi sub-tugas>. Maksimal " + workers.size + " sub-tugas. Jangan teks lain."
+                    val divPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), koordinator sesi automation \"" + sess.optString("title") + "\". Tugas user: " + text + "\nPapan tugas sesi:\n" + taskLines.toString() + "Bagi tugas ini menjadi sub-tugas untuk " + workers.size + " pekerja (pekerja " + workers.joinToString(", ") + "). Jawab HANYA dengan baris-baris berbentuk: SUBTUGAS 1: <isi sub-tugas>. Maksimal " + workers.size + " sub-tugas. Jangan teks lain."
                     // vc240 M17: koordinator memakai blok graph ber-scope
                     // room (memoryCandidates + memoryBlock, sama seperti
                     // buildRoomPrompt) — sebelumnya tidak punya blok graph
@@ -17708,12 +17002,7 @@ internal fun showApiTokenDialog() {
                         if (blkVc240.isNotBlank()) divPrompt + "\nKonteks graph room:\n" + blkVc240 else divPrompt
                     } catch (e: Exception) { divPrompt }
                     val divPromptVc244 = if (memCtxVc244.isNotBlank()) divPromptVc240 + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else divPromptVc240
-                    val divAnswer = if (engineCoordVcF3a == "openai") {
-                        LlmEngineChat.chatSyncForEngine(applicationContext, divPromptVc244, LlmCallKind.ROOM)
-                    } else {
-                        val pClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
-                        pClient.chatSync(divPromptVc244, false, false).first
-                    }
+                    val divAnswer = LlmEngineChat.chatSyncForEngine(applicationContext, divPromptVc244, LlmCallKind.ROOM)
                     for (line in divAnswer.lines()) {
                         val lt = line.trim()
                         if (lt.startsWith("SUBTUGAS", true) && lt.contains(":")) subs.add(lt.substringAfter(":").trim())
@@ -17747,29 +17036,18 @@ internal fun showApiTokenDialog() {
                     val subText = di.optString("sub")
                     Thread {
                         val tried = HashSet<Int>()
-                        var attemptSlot = di.optInt("worker", 0)
+                        var attemptWorker = di.optInt("worker", 0)
                         var finalText: String? = null
                         var lastErr = ""
                         var attempts = 0
                         while (attempts < 3 && finalText == null) {
                             attempts++
-                            tried.add(attemptSlot)
+                            tried.add(attemptWorker)
                             try {
-                                val auth = AccountPool.slotAuth(applicationContext, attemptSlot) ?: throw Exception("slot $attemptSlot belum login")
-                                // F3a B6: satu panggilan LLM pekerja — openai
-                                // lewat helper Models API; deepseek tetap
-                                // SlotClient lama (sesi slot pekerja).
-                                val askWorkerVcF3a: (String) -> String = if (engineCoordVcF3a == "openai") {
+                                // Fase 6 K1: satu panggilan LLM pekerja — lewat helper Models API.
+                                val askWorkerVcF3a: (String) -> String =
                                     { p -> LlmEngineChat.chatSyncForEngine(applicationContext, p, LlmCallKind.ROOM) }
-                                } else {
-                                    val client = SlotClient(applicationContext, attemptSlot, auth.first, auth.second)
-                                    // JANGAN lambda mentah sebagai ekspresi terakhir blok — Kotlin
-                                    // membacanya sebagai trailing lambda dari pemanggilan SlotClient
-                                    // di baris atas (ronde 1 CI merah). Bungkus ke val dulu.
-                                    val workerFn: (String) -> String = { p -> client.chatSync(p, false, false).first }
-                                    workerFn
-                                }
-                                val wPrompt = "Kamu Pekerja sub-agen (slot " + attemptSlot + ") dalam Room Automation sesi \"" + sess.optString("title") + "\". Kerjakan BAGIAN tugas berikut saja: " + subText + ". Konteks room: " + roomNow.optString("task") + ". Bila tugas ini menghasilkan file/laporan dan user tidak memberi arahan lokasi output, tulis ke " + Automation.outputDirFor(this, roomNow, sess) + ". Jawab ringkas + bukti."
+                                val wPrompt = "Kamu Pekerja sub-agen (pekerja " + attemptWorker + ") dalam Room Automation sesi \"" + sess.optString("title") + "\". Kerjakan BAGIAN tugas berikut saja: " + subText + ". Konteks room: " + roomNow.optString("task") + ". Bila tugas ini menghasilkan file/laporan dan user tidak memberi arahan lokasi output, tulis ke " + Automation.outputDirFor(this, roomNow, sess) + ". Jawab ringkas + bukti."
                                 val wPromptVc244 = if (memCtxVc244.isNotBlank()) wPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else wPrompt
                                 val ans1 = askWorkerVcF3a(wPromptVc244)
                                 val (vis1, tool1) = AgentPrompt.extractToolCall(ans1)
@@ -17796,9 +17074,9 @@ internal fun showApiTokenDialog() {
                                 if (finalText.isNullOrBlank()) throw Exception("jawaban pekerja kosong")
                             } catch (e: Exception) {
                                 lastErr = e.message ?: "error"
-                                val next = filled.firstOrNull { it != pSlot && !tried.contains(it) }
+                                val next = workers.firstOrNull { !tried.contains(it) }
                                 if (next == null) break
-                                attemptSlot = next
+                                attemptWorker = next
                             }
                         }
                         val d2 = div.optJSONObject(i)
@@ -17810,11 +17088,10 @@ internal fun showApiTokenDialog() {
                         if (doneCount.incrementAndGet() == total) {
                             Thread {
                                 try {
-                                    val pAuth2 = AccountPool.slotAuth(applicationContext, pSlot) ?: throw Exception("slot utama belum login")
                                     val results = StringBuilder()
                                     for (j in 0 until div.length()) {
                                         val dj = div.optJSONObject(j) ?: continue
-                                        results.append("- SUBTUGAS ").append(j + 1).append(" (pekerja slot ").append(dj.optInt("worker", 0)).append(", ").append(dj.optString("status")).append("): ").append(dj.optString("result")).append("\n")
+                                        results.append("- SUBTUGAS ").append(j + 1).append(" (pekerja ").append(dj.optInt("worker", 0)).append(", ").append(dj.optString("status")).append("): ").append(dj.optString("result")).append("\n")
                                     }
                                     val synthPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), koordinator sesi automation \"" + sess.optString("title") + "\". Rangkum hasil pekerja menjadi LAPORAN AKHIR untuk user dengan struktur berikut (urut dari atas ke bawah, tanpa bagian tambahan):\n" +
                                         "LAPORAN AKHIR — <judul tugas> <emoji status: ✅ bila semua pekerja selesai, ⚠️ bila sebagian gagal, ❌ bila semua gagal>\n" +
@@ -17825,12 +17102,7 @@ internal fun showApiTokenDialog() {
                                         "➡️ Langkah lanjut: saran + satu pertanyaan penutup untuk user\n" +
                                         "Tabel pipa BOLEH dipakai bila memang membantu (mis. ringkasan per pekerja) — chat kini menampilkan tabel sebagai view tabel; jaga tetap ringkas (maks ~20 baris) dan jangan pakai tabel untuk teks narasi. Hasil pekerja:\n" + results.toString()
                                     val synthPromptVc244 = if (memCtxVc244.isNotBlank()) synthPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else synthPrompt
-                                    val synth = if (engineCoordVcF3a == "openai") {
-                                        LlmEngineChat.chatSyncForEngine(applicationContext, synthPromptVc244, LlmCallKind.ROOM)
-                                    } else {
-                                        val synthClient = SlotClient(applicationContext, pSlot, pAuth2.first, pAuth2.second)
-                                        synthClient.chatSync(synthPromptVc244, false, false).first
-                                    }
+                                    val synth = LlmEngineChat.chatSyncForEngine(applicationContext, synthPromptVc244, LlmCallKind.ROOM)
                                     val (synthVis, _) = AgentPrompt.extractToolCall(synth)
                                     val idx = Automation.rebuildSessionIndex(roomNow, sess)
                                     val synthBody = (if (synthVis.isNotBlank()) synthVis else synth).trim()
@@ -17870,19 +17142,9 @@ internal fun showApiTokenDialog() {
                 val numbered = StringBuilder()
                 for (i in cands.indices) numbered.append(i).append(". ").append(cands[i].factText).append("\n")
                 val prompt = "Urutkan fakta berikut dari paling relevan ke paling tidak relevan dengan pesan user. Kembalikan JSON SATU BARIS saja: {\"order\":[0,1,2]}. Hanya JSON, tanpa teks lain.\n\nPESAN USER:\n" + text + "\n\nFAKTA:\n" + numbered.toString()
-                // F3b B7: engine dibaca SEKALI — openai lewat helper
-                // (kind GRAPH, timeout 45 dtk seperti latch lama); gagal/
-                // kosong -> null (fallback FTS, perilaku lama). Deepseek
-                // tetap blok lama persis (latch + bgMode).
-                val ansRaw: String? = if (AgentEngines.current(this) == "openai") {
-                    try { LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH, timeoutMs = 45_000) } catch (e: Exception) { return null }
-                } else {
-                    val latch = java.util.concurrent.CountDownLatch(1)
-                    val out = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                    apiClient?.chat(prompt, false, false, { _: String -> }, { t, _ -> out.set(t); latch.countDown() }, { _ -> latch.countDown() }, bgMode = true)
-                    latch.await(45, java.util.concurrent.TimeUnit.SECONDS)
-                    out.get()
-                }
+                // Fase 6 K1: rerank lewat helper Models API (kind GRAPH,
+                // timeout 45 dtk); gagal/kosong -> null (fallback FTS).
+                val ansRaw: String? = try { LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH, timeoutMs = 45_000) } catch (e: Exception) { return null }
                 val ans = ansRaw ?: return null
                 val start = ans.indexOf("{"); val end = ans.lastIndexOf("}")
                 if (start < 0 || end <= start) return null
@@ -17941,9 +17203,8 @@ internal fun showApiTokenDialog() {
             if (sessArchivedNow()) return
             val roomNowR = try { Automation.roomById(this, room.optString("id")) ?: room } catch (e: Exception) { room }
             val rerankOn = roomNowR.optBoolean("rerank", false)
-            // F3b B7: gerbang engine-aware — engine openai tidak punya
-            // apiClient (B13 lazy); rerank tetap jalan lewat helper.
-            if (rerankOn && (AgentEngines.current(this) == "openai" || apiClient != null)) {
+            // Fase 6 K1: rerank hanya bila engine Models API aktif.
+            if (rerankOn && AgentEngines.current(this) == "openai") {
                 Thread {
                     var ranked: List<Fact>? = null
                     try {
@@ -17973,27 +17234,18 @@ internal fun showApiTokenDialog() {
                 detCands = det.candBatch
                 appendSystem("🧠 Konsolidasi selesai: " + det.nodes + " node baru, " + det.edges + " edge baru, " + det.skipped + " dilewati (sudah diproses).")
             } catch (e: Exception) { appendSystem("Konsolidasi gagal: ${e.message}") }
-            // F3b B7: engine dibaca SEKALI untuk seluruh konsolidasi.
-            // Pengirim LLM graph bersama (relations/verifier/adjudikasi):
-            // openai lewat helper sinkron kind GRAPH di Thread latar;
-            // deepseek tetap apiClient?.chat lama persis (tanpa bgMode —
-            // panggilan lama di sini memang tidak memakai bgMode).
-            // onOk/onErr dipanggil dari Thread latar (openai) atau thread
-            // callback DeepSeek; lambda pemanggil sudah runOnUiThread.
+            // Fase 6 K1: pengirim LLM graph bersama (relations/verifier/
+            // adjudikasi) lewat helper sinkron kind GRAPH di Thread latar;
+            // onOk/onErr dipanggil dari Thread latar; lambda pemanggil
+            // sudah runOnUiThread.
             val engineF3b = AgentEngines.current(this)
             fun chatGraphF3b(prompt: String, onOk: (String) -> Unit, onErr: (String) -> Unit) {
-                if (engineF3b == "openai") {
-                    Thread {
-                        try { onOk(LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH)) }
-                        catch (e: Exception) { onErr(e.message ?: "error") }
-                    }.start()
-                } else {
-                    apiClient?.chat(prompt, false, false, { _: String -> },
-                        { t, _ -> onOk(t) },
-                        { e -> onErr(e) })
-                }
+                Thread {
+                    try { onOk(LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH)) }
+                    catch (e: Exception) { onErr(e.message ?: "error") }
+                }.start()
             }
-            if (engineF3b == "openai" || apiClient != null) {
+            if (engineF3b == "openai") {
                 val newTail = ArrayList<String>()
                 for (i in skippedMsgs until msgs.length()) {
                     val m = msgs.optJSONObject(i) ?: continue
@@ -18288,22 +17540,20 @@ internal fun showApiTokenDialog() {
                 primBtns[ag.id] = b
                 primBox.addView(b)
             }
-            val filledSlots = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { emptyList() }
+            // Fase 6 K1: pekerja koordinator = indeks 1..4 (bukan slot
+            // browser); sesi lama: nomor slot lama dipakai apa adanya
+            // sebagai indeks (jumlah pekerja tetap).
             val workerSet = HashSet<Int>()
-            if (isEdit) { val ww = editSess!!.optJSONArray("workerSlots") ?: org.json.JSONArray(); for (i in 0 until ww.length()) workerSet.add(ww.optInt(i)) } else { for (s in filledSlots) workerSet.add(s) }
+            if (isEdit) { val ww = editSess!!.optJSONArray("workerSlots") ?: org.json.JSONArray(); for (i in 0 until ww.length()) workerSet.add(ww.optInt(i)) } else { for (s in 1..4) workerSet.add(s) }
             val workerBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            if (filledSlots.isEmpty()) {
-                workerBox.addView(tv("Belum ada slot login — pekerja diisi otomatis saat slot tersedia.", 12f, th2.dim))
-            } else {
-                for (s in filledSlots) {
-                    val b = thBtn("Browser " + s, workerSet.contains(s)) {}
-                    b.setOnClickListener { if (workerSet.contains(s)) workerSet.remove(s) else workerSet.add(s); b.background = rounded(if (workerSet.contains(s)) ACCENT else th2.tileBg, 12); b.setTextColor(if (workerSet.contains(s)) android.graphics.Color.WHITE else th2.text) }
-                    workerBox.addView(b)
-                }
+            for (s in 1..4) {
+                val b = thBtn("Pekerja " + s, workerSet.contains(s)) {}
+                b.setOnClickListener { if (workerSet.contains(s)) workerSet.remove(s) else workerSet.add(s); b.background = rounded(if (workerSet.contains(s)) ACCENT else th2.tileBg, 12); b.setTextColor(if (workerSet.contains(s)) android.graphics.Color.WHITE else th2.text) }
+                workerBox.addView(b)
             }
             val divLabel = tv("MODE PEMBAGIAN (multi)", 12f, th2.dim, true)
             val primLabel = tv("AGEN UTAMA (koordinator)", 12f, th2.dim, true)
-            val workerLabel = tv("SLOT PEKERJA (koordinator)", 12f, th2.dim, true)
+            val workerLabel = tv("PEKERJA (koordinator)", 12f, th2.dim, true)
             val modeNote = tv("Mode: " + (if (mode == "multi") "Multi-Agen" else "Solo"), 12f, th2.dim)
             val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val bModeSolo = thBtn("Solo", mode == "solo") {}
@@ -18593,8 +17843,8 @@ internal fun showApiTokenDialog() {
         // vc246 GELOMBANG 5 (RM-m2): tombol Konsolidasi dinonaktifkan
         // bila engine belum siap (dulu hanya pesan "engine belum siap"
         // setelah diketuk).
-        konsolBtn.isEnabled = apiClient != null
-        konsolBtn.setOnClickListener { if (apiClient == null && AgentEngines.current(this) != "openai") { Toast.makeText(this, "Engine belum siap — konsolidasi belum bisa jalan.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
+        konsolBtn.isEnabled = AgentEngines.current(this) == "openai"
+        konsolBtn.setOnClickListener { if (AgentEngines.current(this) != "openai") { Toast.makeText(this, "Engine belum siap — konsolidasi butuh Models API.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
         petaBtn.setOnClickListener { showRoomMapDialog() }
 
         var dlgHolder: android.app.AlertDialog? = null
@@ -18965,13 +18215,6 @@ internal fun showApiTokenDialog() {
             try { moveTaskToBack(true) } catch (e: Exception) {}
             return
         }
-        // vc176: aksi agen butuh WebView+agen (kini deferred) — bangun dulu.
-        try {
-            val needAgent = !intent.getStringExtra("AUTO_PROMPT").isNullOrBlank() ||
-                !intent.getStringExtra("VOICE_QUERY").isNullOrBlank() ||
-                intent.getBooleanExtra("AUTO_VOICE", false)
-            if (needAgent) ensureWeb()
-        } catch (e: Exception) {}
         try {
             val autoPrompt = intent.getStringExtra("AUTO_PROMPT")
             if (!autoPrompt.isNullOrBlank()) {
@@ -19012,8 +18255,8 @@ internal fun showApiTokenDialog() {
     override fun onBackPressed() {
         if (isArtifactPanelOpen()) { closeArtifactPanel(); return }
         if (chatDrawerRoot?.visibility == View.VISIBLE) { setChatDrawer(false); return }
-        if (webView.canGoBack() && containers["Web"]?.visibility == View.VISIBLE &&
-            containers["Chat"]?.visibility != View.VISIBLE) webView.goBack()
+        if (bActiveWv()?.canGoBack() == true && containers["Web"]?.visibility == View.VISIBLE &&
+            containers["Chat"]?.visibility != View.VISIBLE) bActiveWv()?.goBack()
         else {
             val now = System.currentTimeMillis()
             if (now - lastBackExitMs < 2000) {
@@ -19041,7 +18284,7 @@ internal fun showApiTokenDialog() {
 // - Pemetaan nama tool -> tone: eksplisit dari ToolRegistry.kt; nama
 //   yang tidak terdaftar -> NEUTRAL (terdokumentasi, bukan ditebak).
 // - Token/biaya TIDAK PERNAH dikarang: TurnMetrics hanya mencatat char
-//   prompt (bukan token), DsApiClient hanya mencatat token KUMULATIF
+//   prompt (bukan token), klien Models API hanya mencatat token KUMULATIF
 //   per sesi (tokInSess/tokOutSess, bukan per giliran), dan tidak ada
 //   data biaya/Rp di mana pun — formatFootnote menerima token/biaya
 //   nullable dan menghilangkannya bila null.

@@ -8,9 +8,9 @@ import java.util.concurrent.TimeUnit
 
 /** v4.8.0 — TIM AGEN (pola ruang kerja, meniru cara Operator membagi kerja ke
  *  banyak ruang chat): orkestrator (agen utama di chat) memanggil tool
- *  run_team; tiap sub-tugas jalan PARALEL di "ruang" sendiri — klien
- *  DeepSeek sendiri, slot akun pool sendiri, profil agen sendiri. Status
- *  tiap ruang ditulis ke papan misi (prefs teamBoard) untuk Command Center.
+ *  run_team; tiap sub-tugas jalan PARALEL di "ruang" sendiri — helper
+ *  Models API, profil agen sendiri. Status tiap ruang ditulis ke papan
+ *  misi (prefs teamBoard) untuk Command Center.
  *  Setelah semua ruang selesai: satu putaran VERIFIKASI SILANG oleh profil
  *  pemeriksa (Mentor) atas hasil gabungan. Tool BERISIKO di dalam ruang
  *  TIDAK dieksekusi — gerbang persetujuan tetap satu pintu di alur utama. */
@@ -42,24 +42,18 @@ object TeamRun {
 
     fun run(ctx: Context, goal: String, lanes: List<Lane>): String {
         if (lanes.isEmpty()) return "run_team: daftar tugas kosong."
-        if (lanes.size > 4) return "run_team: maks 4 ruang paralel (1 lane = 1 slot)."
+        if (lanes.size > 4) return "run_team: maks 4 ruang paralel."
         val app = ctx.applicationContext
         // vc262 N-M10: kill switch F1 kini menjangkau lane tim — cek di
         // pintu masuk run(), sebelum kuota/baterai/lane jalan.
         if (prefs(app).getBoolean("f1Off", false)) return "run_team DIBATALKAN: kill switch F1 dimatikan user — aktifkan lagi F1 lewat Profil > Kill Switch F1, lalu kirim ulang tugas tim."
-        // vc262 XL-Kuota: penolakan tim memakai hitungan tim terpisah.
-        // F3 koordinator: gate kuota engine-aware (K4) — openai: counter
-        // per-provider bucket team; deepseek: counter legacy refusalTeam.
-        // Provider belum siap → jangan tolak di sini, helper menolak jujur
-        // saat lane jalan.
-        if (AgentEngines.current(app) == "openai") {
-            try {
-                val provTeamVcF3 = LlmEngineChat.resolveProvider(app)
-                Governor.refusalModels(app, provTeamVcF3, Governor.MODELS_BUCKET_TEAM)?.let { return "run_team ditunda — $it" }
-            } catch (e: Exception) { /* provider belum siap — lanjut */ }
-        } else {
-            Governor.refusalTeam(app)?.let { return "run_team ditunda — $it" }
-        }
+        // vc262 XL-Kuota + F3 koordinator: gate kuota engine-aware (K4) —
+        // counter per-provider bucket team. Provider belum siap → jangan
+        // tolak di sini, helper menolak jujur saat lane jalan.
+        try {
+            val provTeamVcF3 = LlmEngineChat.resolveProvider(app)
+            Governor.refusalModels(app, provTeamVcF3, Governor.MODELS_BUCKET_TEAM)?.let { return "run_team ditunda — $it" }
+        } catch (e: Exception) { /* provider belum siap — lanjut */ }
         try {
             val bi = app.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
             val lvl = bi?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
@@ -68,20 +62,9 @@ object TeamRun {
             val charging = st == android.os.BatteryManager.BATTERY_STATUS_CHARGING || st == android.os.BatteryManager.BATTERY_STATUS_FULL
             if (lvl in 0..19 && !charging) return "run_team ditunda: baterai ${lvl * 100 / maxOf(scale, 1)}% & tidak mengisi — tim paralel boros daya. Isi daya dulu, atau kerjakan dengan satu agen saja."
         } catch (e: Exception) {}
-        // v4.46.0 F3: 1 lane = 1 slot. Slot 0 = otomatis (slot login pertama
-        // yang belum dipakai lane lain); slot tetap yang kosong / sudah
-        // dipakai = -1 (lane gagal jelas, tanpa meminjam sesi akun lain).
-        val filled = try { AccountPool.filledSlots(app) } catch (e: Exception) { emptyList() }
-        val used = HashSet<Int>()
-        val eff = lanes.map { lane ->
-            val s = when {
-                lane.slot in 1..5 && filled.contains(lane.slot) && !used.contains(lane.slot) -> lane.slot
-                lane.slot == 0 -> filled.firstOrNull { !used.contains(it) } ?: -1
-                else -> -1
-            }
-            if (s > 0) used.add(s)
-            lane.copy(slot = s)
-        }
+        // K1 (Fase 6): lane jalan tanpa slot — field Lane.slot hanya
+        // diteruskan apa adanya (argumen tool + papan misi), bukan gerbang.
+        val eff = lanes
         val results = arrayOfNulls<String>(eff.size)
         // VC303-P2-11 (CX-5): R-id tiap tool per lane — dikumpulkan
         // runLane, ditulis ke teamBoard + disisipkan ke string hasil
@@ -103,7 +86,7 @@ object TeamRun {
         val sb = StringBuilder()
         sb.append("HASIL TIM (").append(eff.size).append(" ruang paralel, status papan: ").append(honestBoardStatus(done)).append(") — tujuan: ").append(goal).append("\n")
         eff.forEachIndexed { i, l ->
-            sb.append("\n— Ruang ").append(l.agentName).append(" (slot ").append(if (l.slot < 0) "tanpa slot" else "Browser " + l.slot).append("): ").append(done[i].take(8000)).append("\n")
+            sb.append("\n— Ruang ").append(l.agentName).append(": ").append(done[i].take(8000)).append("\n")
             // VC303-P2-11 (CX-5): daftar R-id lane disisipkan di sini —
             // string hasil run_team ini yang masuk SATU baris WorkNotes
             // 1-1, jadi R-id tiap tool lane tetap bisa ditelusur.
@@ -118,17 +101,8 @@ object TeamRun {
     // — R-id dikumpulkan dari BatchToolVc274 outcomes (recordOutcome) +
     // jalur tunggal (Tools.lastResultId sesudah execute).
     private fun runLane(app: Context, lane: Lane): Pair<String, List<String>> {
-        // F3c (B9): engine dibaca SEKALI per lane — openai → helper Models
-        // API (tanpa slot, tanpa makeClient); deepseek → blok lama persis.
-        // Guard slot<0 hanya berlaku deepseek: openai tidak butuh akun
-        // Browser login, lane slot -1 tetap jalan via helper.
-        val engineTeamVcF3c = AgentEngines.current(app)
-        if (engineTeamVcF3c != "openai" && lane.slot < 0) return "Ruang ${lane.agentName}: tidak ada akun login untuk lane ini (slot yang diminta kosong, atau semua slot login sudah dipakai lane lain) — buka Browser di Setup, login, lalu ulangi." to emptyList()
-        val api: SlotClient? = if (engineTeamVcF3c == "openai") {
-            null
-        } else {
-            makeClient(app, lane.slot) ?: return "Ruang ${lane.agentName}: Browser ${lane.slot} belum login — buka Browser ${lane.slot} di Setup, login, lalu ulangi." to emptyList()
-        }
+        // K1 (Fase 6): lane jalan via helper Models API (tanpa slot,
+        // tanpa klien) — guard slot<0 sudah tidak ada.
         val laneRidsVc303 = ArrayList<String>()
         val role = when (lane.agentId.lowercase()) {
             "mandor" -> "Kamu berperan sebagai Mandor — eksekutor lapangan: kerjakan tugas secara konkret langkah demi langkah, pakai tool yang perlu, laporkan hasil apa adanya termasuk kegagalan."
@@ -238,13 +212,12 @@ object TeamRun {
             // vc262 N-M10: F1 dicek tiap putaran lane — lane berhenti dalam
             // 1 langkah berikutnya bila user mematikan kill switch.
             if (prefs(app).getBoolean("f1Off", false)) { finalText = "Ruang ${lane.agentName} dihentikan: kill switch F1 dimatikan user."; break }
-            // F3c (B9): openai → helper sinkron kind TEAM (Governor +
-            // TurnMetrics otomatis di helper, jawaban kosong = error);
-            // deepseek → chatSync lokal lama. Throw helper (provider belum
-            // siap/kuota) → pesan gagal lane yang sudah ada di bawah.
+            // F3c (B9): helper sinkron kind TEAM (Governor + TurnMetrics
+            // otomatis di helper, jawaban kosong = error). Throw helper
+            // (provider belum siap/kuota) → pesan gagal lane yang sudah
+            // ada di bawah.
             val resp = try {
-                if (engineTeamVcF3c == "openai") LlmEngineChat.chatSyncForEngine(app, prompt, LlmCallKind.TEAM)
-                else chatSync(app, api!!, prompt)
+                LlmEngineChat.chatSyncForEngine(app, prompt, LlmCallKind.TEAM)
             } catch (e: Exception) { finalText = "Ruang ${lane.agentName} berhenti: ${e.message}"; "" }
             if (finalText != null) break
             val multiTeamVc249 = AgentPrompt.extractToolCalls(resp)
@@ -333,94 +306,47 @@ object TeamRun {
             prompt = rebuildPrompt(app, lane, transcript)
         }
         var outTeamVc249 = finalText ?: "Ruang ${lane.agentName}: tanpa hasil."
-        // vc249: reviewer konteks-nol tim — hanya klaim + bukti (sub-tugas, jejak tool lane, fakta PIN); reviewer WAJIB slot Browser 5
-        // (vc298) — bila lane ini memakai slot 5, verdict dilabeli tidak independen (reviewerIndependenceNote di bawah).
+        // vc249: reviewer konteks-nol tim — hanya klaim + bukti (sub-tugas, jejak tool lane, fakta PIN); reviewer lewat helper Models API
+        // (Fase 6 K1: tanpa slot — reviewer stateless, independen).
         if (modelFinalVc249 && (AgentPrompt.hasFactualClaim(outTeamVc249) || usedToolsVc249.isNotEmpty())) {
             try {
                 val claimsTeamVc249 = AgentPrompt.splitClaims(outTeamVc249)
                 if (claimsTeamVc249.isNotEmpty()) {
-                    // F2c: engine dibaca SEKALI — openai → reviewer lewat helper Models API (tanpa slot Browser 5, tanpa SlotClient); deepseek → jalur lama di bawah, persis seperti sekarang.
-                    val engineTeamVcF2c = AgentEngines.current(app)
-                    if (engineTeamVcF2c == "openai") {
-                        // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
-                        val providerTeamVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
-                        val refusalTeamVcF2c = providerTeamVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
-                        if (refusalTeamVcF2c != null) {
-                            outTeamVc249 = refusalTeamVcF2c + "\n\n" + outTeamVc249
-                        } else {
-                            val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                            // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
-                            // terstruktur (didahulukan — bukan transcript mentah
-                            // yang terpotong dari kepala) + jawaban akhir lane
-                            // + FAKTA PIN. Format jejak sama seperti 1-1
-                            // ("- <tool> [ok|gagal] <hasil>") supaya aturan
-                            // JEJAK TOOL vc257 di prompt reviewer menyala.
-                            val traceTeamVc298 = toolTraceVc298.toString()
-                            val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
-                            // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
-                            var unsTeam: List<Int> = emptyList()
-                            var concTeam = false
-                            var reviewFailTeamVc275 = false
-                            try {
-                                val rawTeam = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
-                                val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
-                                if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
-                                    val rawTeam2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
-                                    val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
-                                    if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
-                                }
-                            } catch (e: Exception) { reviewFailTeamVc275 = true }
-                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                            val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
-                            // F2c: reviewer Models API independen dari giliran lane (reviewerIndependent(engine) == true) — tanpa label "tidak independen", sehingga cabang "verdict diterima + indep" di bawah tidak menyala.
-                            val indepTeamVc275 = ""
-                            if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepTeamVc275 + "\n\n" + outTeamVc249
-                            else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + indepTeamVc275 + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
-                            else if (indepTeamVc275.isNotBlank()) outTeamVc249 = "🔍 Reviewer konteks-nol: verdict diterima" + indepTeamVc275 + ".\n\n" + outTeamVc249
-                        }
+                    // F2c (K1, Fase 6): reviewer lewat helper Models API —
+                    // tanpa slot. Reviewer stateless (independen).
+                    // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
+                    val providerTeamVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
+                    val refusalTeamVcF2c = providerTeamVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
+                    if (refusalTeamVcF2c != null) {
+                        outTeamVc249 = refusalTeamVcF2c + "\n\n" + outTeamVc249
                     } else {
-                        // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5 —
-                        // tanpa fallback ke slot lain.
-                        val rSlotTeam = try { AccountPool.reviewerSlot(app) } catch (e: Exception) { null }
-                        val rAuthTeam = if (rSlotTeam != null) try { AccountPool.slotAuth(app, rSlotTeam) } catch (e: Exception) { null } else null
-                        if (rSlotTeam == null || rAuthTeam == null) {
-                            outTeamVc249 = ReviewerVc298.SKIP_NOTE + "\n\n" + outTeamVc249
-                        } else if (Governor.overCapReviewer(app)) {
-                            // vc277 O16(b): kuota reviewer habis — reviewer
-                            // dilewati dengan penanda, bukan diam-diam lolos.
-                            outTeamVc249 = Governor.reviewerOverCapText(app) + "\n\n" + outTeamVc249
-                        } else {
-                            val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                            // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
-                            // terstruktur (didahulukan — bukan transcript mentah
-                            // yang terpotong dari kepala) + jawaban akhir lane
-                            // + FAKTA PIN. Format jejak sama seperti 1-1
-                            // ("- <tool> [ok|gagal] <hasil>") supaya aturan
-                            // JEJAK TOOL vc257 di prompt reviewer menyala.
-                            val traceTeamVc298 = toolTraceVc298.toString()
-                            val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
-                            val rClientTeam = SlotClient(app, rSlotTeam, rAuthTeam.first, rAuthTeam.second)
-                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
-                            var unsTeam: List<Int> = emptyList()
-                            var concTeam = false
-                            var reviewFailTeamVc275 = false
-                            try {
-                                val (rawTeam, _) = rClientTeam.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
-                                val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
-                                if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
-                                    val (rawTeam2Vc275, _) = rClientTeam.chatSync(AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
-                                    val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
-                                    if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
-                                }
-                            } catch (e: Exception) { reviewFailTeamVc275 = true }
-                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                            val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
-                            // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
-                            val indepTeamVc275 = AgentPrompt.reviewerIndependenceNote(lane.slot, rSlotTeam)
-                            if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepTeamVc275 + "\n\n" + outTeamVc249
-                            else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + indepTeamVc275 + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
-                            else if (indepTeamVc275.isNotBlank()) outTeamVc249 = "🔍 Reviewer konteks-nol: verdict diterima" + indepTeamVc275 + ".\n\n" + outTeamVc249
-                        }
+                        val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
+                        // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
+                        // terstruktur (didahulukan — bukan transcript mentah
+                        // yang terpotong dari kepala) + jawaban akhir lane
+                        // + FAKTA PIN. Format jejak sama seperti 1-1
+                        // ("- <tool> [ok|gagal] <hasil>") supaya aturan
+                        // JEJAK TOOL vc257 di prompt reviewer menyala.
+                        val traceTeamVc298 = toolTraceVc298.toString()
+                        val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
+                        // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
+                        var unsTeam: List<Int> = emptyList()
+                        var concTeam = false
+                        var reviewFailTeamVc275 = false
+                        try {
+                            val rawTeam = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
+                            val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
+                            if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
+                                val rawTeam2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
+                                val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
+                                if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
+                            }
+                        } catch (e: Exception) { reviewFailTeamVc275 = true }
+                        // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
+                        val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
+                        // F2c: reviewer Models API independen dari giliran lane — tanpa label "tidak independen".
+                        if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + outTeamVc249
+                        else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
                     }
                 }
             } catch (e: Exception) {
@@ -441,46 +367,17 @@ object TeamRun {
     }
 
     private fun verify(app: Context, goal: String, lanes: List<Lane>, results: List<String>): String {
-        // F3c (B9): engine dibaca SEKALI — openai → helper Models API
-        // (kind TEAM, tanpa makeClient); deepseek → makeClient lama.
-        val engineVerifyVcF3c = AgentEngines.current(app)
-        val api: SlotClient? = if (engineVerifyVcF3c == "openai") {
-            null
-        } else {
-            makeClient(app, 0) ?: return "Verifikasi tidak jalan (tidak ada browser login) — hasil ruang belum diperiksa silang."
-        }
+        // F3c (B9, K1): verifikasi silang via helper Models API (kind TEAM).
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
         sb.append(memoryBlockForTask(app, goal))
         sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
         sb.append("\n\n[MODE TIM — VERIFIKASI SILANG] Kamu Mentor, pemeriksa independen yang TIDAK ikut mengerjakan. Tujuan tim: ").append(goal).append("\nHasil tiap ruang:\n")
         lanes.forEachIndexed { i, l -> sb.append("— ").append(l.agentName).append(": ").append(results[i].take(4000)).append("\n") }
         sb.append("\nNilai dengan tegas & singkat TANPA tool: mana yang konsisten, mana yang bertentangan atau belum terbukti, apa yang masih kurang untuk tujuan tim.")
-        // F3c (B9): openai → helper kind TEAM; deepseek → chatSync lokal
-        // lama. Pesan gagal yang sudah ada dipakai ulang.
+        // F3c (B9): helper kind TEAM. Pesan gagal yang sudah ada dipakai ulang.
         return try {
-            if (engineVerifyVcF3c == "openai") LlmEngineChat.chatSyncForEngine(app, sb.toString(), LlmCallKind.TEAM).take(8000)
-            else chatSync(app, api!!, sb.toString()).take(8000)
+            LlmEngineChat.chatSyncForEngine(app, sb.toString(), LlmCallKind.TEAM).take(8000)
         } catch (e: Exception) { "Verifikasi gagal: ${e.message}" }
-    }
-
-    /** v4.46.0 F3: klien slot TANPA WebView latar. Slot 0 = otomatis (slot
-     *  login pertama); 1–4 = slot tetap; null bila slot kosong.
-     *  F3c (B9): TETAP — hanya dipakai cabang deepseek (lane + verifikasi). */
-    private fun makeClient(app: Context, slot: Int): SlotClient? {
-        val s = if (slot in 1..5) slot else try { AccountPool.filledSlots(app).firstOrNull() } catch (e: Exception) { null } ?: return null
-        val auth = try { AccountPool.slotAuth(app, s) } catch (e: Exception) { null } ?: return null
-        return SlotClient(app, s, auth.first, auth.second)
-    }
-
-    private fun chatSync(app: Context, api: SlotClient, prompt: String): String {
-        // vc262 XL-Kuota: tiap giliran lane bump hitungan TIM (bukan interaktif).
-        // vc277 O16(a): bump berbobot ukuran prompt yang dikirim.
-        // F3c (B9): bumpTeam TETAP — fungsi ini sesudah migrasi hanya
-        // dipakai cabang deepseek (lane + verifikasi); helper Models API
-        // (openai) memakai counter terpisah via Governor.bumpModels(bucket
-        // team), jadi tidak ada double-count.
-        try { Governor.bumpTeam(app, Governor.weightFor(prompt.length)) } catch (e: Exception) {}
-        return api.chatSync(prompt, false, false).first
     }
 
     // vc246 GELOMBANG 5 (AG-M4): papan tim dibaca Monitor (lihat

@@ -43,10 +43,8 @@ import com.senzwh.deepharness.MainActivity.BrowserNetworkEntryVc313
 
     internal fun MainActivity.setBrowserMode(browser: Boolean) {
         try {
-            // vc181: baris ubin Web SELALU terlihat -- ia memuat saklar modenya
-            // sendiri; menyembunyikannya di mode browser menghilangkan jalan
-            // kembali ke login (dulu segRow yang selalu terlihat).
-            if (webViewReady()) webView.visibility = if (browser) View.GONE else View.VISIBLE
+            // Fase 6 K1: WebView login lama dihapus — hanya kotak
+            // browser agen (bTabs) yang di-toggle.
             browserBox?.visibility = if (browser) View.VISIBLE else View.GONE
         } catch (e: Exception) {}
     }

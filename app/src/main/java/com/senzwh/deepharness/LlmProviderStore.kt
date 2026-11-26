@@ -310,11 +310,13 @@ object LlmProviderStore {
 
     fun setActive(ctx: Context, id: String) {
         val trimmed = id.trim()
-        val resolved = if (trimmed.isNotBlank() && LlmProviders.find(trimmed) != null) trimmed else LlmProviders.ID_DEEPSEEK
+        // K1 (Fase 6): id tak dikenal → "" (belum ada provider aktif),
+        // BUKAN fallback ke provider bawaan.
+        val resolved = if (trimmed.isNotBlank() && LlmProviders.find(trimmed) != null) trimmed else ""
         ctx.getSharedPreferences(KEY_PREF, Context.MODE_PRIVATE).edit().putString(KEY_PREFS_ACTIVE, resolved).apply()
     }
 
     fun activeId(ctx: Context): String =
         ctx.getSharedPreferences(KEY_PREF, Context.MODE_PRIVATE).getString(KEY_PREFS_ACTIVE, null)
-            ?: LlmProviders.ID_DEEPSEEK
+            ?: ""
 }

@@ -4,7 +4,7 @@ import org.json.JSONObject
 
 /**
  * Browser agen (T4b, brief migrasi §12): WebView khusus yang bisa dikemudi
- * agen lewat tool browser_* — TERPISAH dari WebView login DeepSeek, tapi
+ * agen lewat tool browser_* — TERPISAH dari WebView login lama, tapi
  * berbagi CookieManager yang sama (login situs ikut terbawa).
  *
  * Objek ini cuma registry: implementasi UI (yang memegang WebView) dipasang

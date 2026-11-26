@@ -56,8 +56,10 @@ import org.json.JSONObject
  */
 enum class LlmCallKind { INTERACTIVE, BACKGROUND, REVIEWER, TEAM, ROOM, GRAPH }
 
-/** Hasil routing engine → jalur LLM (murni, untuk tes regresi D1/D2). */
-enum class LlmRoute { MODELS_API, DEEPSEEK_WEB, LOCAL_OFFLINE }
+/** Hasil routing engine → jalur LLM (murni, untuk tes regresi D1/D2).
+ *  K1 (Fase 6): hanya MODELS_API (engine openai) dan LOCAL_OFFLINE
+ *  (engine local) — tidak ada lagi jalur web. */
+enum class LlmRoute { MODELS_API, LOCAL_OFFLINE }
 
 /** State setup provider first-run (§5.7). */
 enum class ProviderSetupState { NO_PROVIDER, CONFIGURED, SKIPPED }
@@ -76,30 +78,39 @@ object LlmEngineChat {
 
     // ---- Fungsi pure (bisa diuji JVM) ----
 
-    /** "openai" → false, "deepseek" → true (D1: openai tidak menyentuh WebView). */
-    fun requiresWebView(engine: String): Boolean = when (engine) {
-        "openai", "local" -> false
-        else -> true
-    }
+    /** K1 (Fase 6): TIDAK ADA engine yang menyentuh WebView lagi —
+     *  selalu false (D1: semua jalur LLM lewat Models API / offline). */
+    fun requiresWebView(engine: String): Boolean = false
 
-    /**
-     * Fase 2 — reviewer independen? Engine openai = panggilan stateless
-     * independen (tanpa sesi server bersama giliran agen). Engine deepseek
-     * = reviewer memakai slot/sesi DeepSeek yang sama → tidak independen.
-     * Murni, untuk gate + label di semua situs reviewer (B3/B4/B5/B8/B9/B10
-     * + loopInnerVc263 BgBrain).
-     */
-    fun reviewerIndependent(engine: String): Boolean = engine == "openai"
 
     /**
      * Routing engine → jalur. Engine openai → helper Models API untuk
-     * SEMUA kind (tidak ada kind yang jatuh ke DeepSeek).
+     * SEMUA kind. Engine local → LOCAL_OFFLINE. Nilai lain (legacy/tak
+     * dikenal) → MODELS_API: satu-satunya mesin online sesudah K1.
      */
     fun routeFor(engine: String, kind: LlmCallKind): LlmRoute = when (engine) {
-        "openai" -> LlmRoute.MODELS_API
         "local" -> LlmRoute.LOCAL_OFFLINE
-        else -> LlmRoute.DEEPSEEK_WEB
+        else -> LlmRoute.MODELS_API
     }
+
+    /** Anggaran [RIWAYAT] prompt awal dari jumlah pesan user sesi ini
+     *  sebelum giliran ini. Murni, tanpa Context — bisa diuji di JVM.
+     *  Sesi pendek/normal: (60, 60000) persis seperti vc230; sesi
+     *  panjang (>=40 pesan): (30, 30000) — hemat 30.000 char per panggilan.
+     *  (Dulu TurnMetrics.historyBudgetVc321 — pindah ke sini K1 Fase 6,
+     *  karena TurnMetrics tidak lagi mengenal sesi server.) */
+    fun historyBudget(priorMsgCount: Int): Pair<Int, Int> =
+        if (priorMsgCount >= HISTORY_LONG_THRESHOLD) Pair(HISTORY_LONG_N, HISTORY_LONG_CHARS)
+        else Pair(HISTORY_NORMAL_N, HISTORY_NORMAL_CHARS)
+
+    /** Ambang sesi panjang: jumlah pesan user sesi ini SEBELUM giliran ini. */
+    const val HISTORY_LONG_THRESHOLD = 40
+    /** Anggaran riwayat awal sesi panjang (vs normal 60 pesan/60.000 char). */
+    const val HISTORY_LONG_N = 30
+    const val HISTORY_LONG_CHARS = 30000
+    /** Anggaran riwayat awal sesi normal/pendek — TIDAK berubah dari vc230. */
+    const val HISTORY_NORMAL_N = 60
+    const val HISTORY_NORMAL_CHARS = 60000
 
     /** Kind → bucket Governor (§3.2): ROOM/GRAPH masuk bucket bg. */
     fun bucketFor(kind: LlmCallKind): String = when (kind) {
@@ -132,8 +143,7 @@ object LlmEngineChat {
 
     /**
      * thinking diteruskan ke client HANYA bila record provider
-     * mengizinkan (thinkingParam terisi, §2.5). Pref DeepSeek
-     * dsModelVariant TIDAK dipakai di jalur openai.
+     * mengizinkan (thinkingParam terisi, §2.5).
      */
     fun thinkingAllowed(provider: LlmProvider, thinking: Boolean): Boolean =
         thinking && provider.thinkingParam.isNotBlank()
@@ -222,8 +232,7 @@ object LlmEngineChat {
                     "Mode offline lokal — hanya reminder/fakta/buka-app, tanpa LLM."
                 )
                 else -> throw IllegalStateException(
-                    "Otak DeepSeek (web/API internal) tidak lagi dipakai helper ini — " +
-                        "atur provider Models API di Setup > 73. Provider LLM."
+                    "Engine '$engine' tidak dikenal — atur provider Models API di Setup > 73. Provider LLM."
                 )
             }
         }

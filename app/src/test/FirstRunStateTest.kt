@@ -31,8 +31,8 @@ fun main() {
         LlmEngineChat.setupState(false, false) == ProviderSetupState.NO_PROVIDER)
     checkFirst("needsProviderSetup null → true",
         LlmEngineChat.needsProviderSetup(null))
-    checkFirst("needsProviderSetup deepseek bawaan → true",
-        LlmEngineChat.needsProviderSetup(LlmProviders.find(LlmProviders.ID_DEEPSEEK)!!))
+    checkFirst("needsProviderSetup preset deepseek-platform tanpa key → true",
+        LlmEngineChat.needsProviderSetup(LlmProviders.preset("deepseek-platform")))
     checkFirst("needsProviderSetup custom tanpa key → true",
         LlmEngineChat.needsProviderSetup(unconfiguredProvider("nokey")))
     checkFirst("needsProviderSetup custom configured → false",

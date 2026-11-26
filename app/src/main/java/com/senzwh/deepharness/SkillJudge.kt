@@ -9,18 +9,18 @@ import org.json.JSONObject
  * skill-judge claude-code-templates) + validator 500 baris + evaluasi
  * trigger deskripsi. Yang diadopsi POLA + rubrik + workflow-nya,
  * diterjemahkan ke tool Harness — bukan impor mentah, bukan script
- * Python Claude (tidak ada `claude -p` di HP; otak = DeepSeek web,
+ * Python Claude (tidak ada `claude -p` di HP; otak = Models API,
  * eksekusi test prompt via run_team / room yang sudah ada).
  *
  * CARA KERJA (jujur soal batasnya):
  * - Penilaian ini HEURISTIK DETERMINISTIK atas teks skill (pola kata
  *   kunci + struktur), BUKAN penilaian LLM. Dimensi yang butuh
  *   pertimbangan ahli (D2 pola pikir, D6 kalibrasi kebebasan, D7 pola
- *   desain) hanya diukur lewat sinyal proksi — agen (DeepSeek web)
+ *   desain) hanya diukur lewat sinyal proksi — agen (Models API)
  *   tetap penilai utama untuk ketiganya saat membaca draf, dan laporan
  *   judge selalu menyebut mana skor yang heuristik.
  * - D1 Knowledge Delta adalah dimensi inti ("Good Skill = Expert-only
- *   Knowledge - What DeepSeek Already Knows"). D1 <= 6 = DITOLAK
+ *   Knowledge - What the Model Already Knows"). D1 <= 6 = DITOLAK
  *   (vc299 N6-m2: ambang naik 5 -> 6 — contoh audit 4 penanda expert
  *   murah + 4 redundan = 6 kini DITOLAK): draf menjelaskan hal dasar
  *   yang sudah diketahui model / tutorial generik — tampilkan alasannya,
@@ -248,7 +248,7 @@ object SkillJudge {
         val verdict = when { d1v <= D1_REJECT_MAX -> "DITOLAK"; total < PASS_TOTAL -> "PERBAIKI"; else -> "LULUS" }
         val reasons = ArrayList<String>()
         if (d1v <= D1_REJECT_MAX) {
-            reasons.add("D1 Knowledge Delta $d1v/20 — draf menjelaskan hal dasar yang sudah diketahui DeepSeek (penanda redundan: " +
+            reasons.add("D1 Knowledge Delta $d1v/20 — draf menjelaskan hal dasar yang sudah diketahui model (penanda redundan: " +
                 distinctHits(instruction, REDUNDANT_PATTERNS).joinToString(", ").ifBlank { "—" } +
                 ") dan minim ilmu khas ahli (penanda expert: " +
                 distinctHits(instruction, EXPERT_PATTERNS).joinToString(", ").ifBlank { "tidak ada" } + ")")

@@ -25,7 +25,6 @@ object Connectors {
     )
 
     val DEFS: List<Def> = listOf(
-        Def("deepseek", "DeepSeek", "🐳", "Otak agen — sesi login DeepSeek (Web / API Internal).", emptySet(), canToggle = false),
         Def("termux", "Termux", "⌨️", "Terminal Linux di HP + jembatan Operator & MCP.", setOf("ask_operator", "check_operator", "sync_memory", "mcp_call", "mcp_setup")),
         Def("opencode", "Koordinator OpenCode", "🧭", "Delegasi tugas berat ke agen OpenCode di Termux.", setOf("delegate_session", "delegate_task", "delegate_status", "delegate_wait", "delegate_result", "chain_tasks", "coord_rule")),
         Def("gmail", "Gmail", "✉️", "Baca & kirim email via IMAP/SMTP (App Password Google).", setOf("gmail_unread", "gmail_search", "gmail_send")),
@@ -61,9 +60,8 @@ object Connectors {
         try { ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED } catch (e: Exception) { false }
 
     /** Status jujur satu konektor: "ok" | "perm" | "no". */
-    fun status(ctx: Context, id: String, dsLogin: Boolean): String = try {
+    fun status(ctx: Context, id: String): String = try {
         when (id) {
-            "deepseek" -> if (dsLogin) "ok" else "perm"
             "termux" -> when {
                 !pkgInstalled(ctx, "com.termux") -> "no"
                 perm(ctx, "com.termux.permission.RUN_COMMAND") -> "ok"
@@ -92,12 +90,12 @@ object Connectors {
         }
     } catch (e: Exception) { "perm" }
 
-    fun statusJson(ctx: Context, dsLogin: Boolean): JSONArray {
+    fun statusJson(ctx: Context): JSONArray {
         val arr = JSONArray()
         for (d in DEFS) {
             val o = JSONObject()
             o.put("id", d.id); o.put("name", d.name); o.put("icon", d.icon); o.put("desc", d.desc)
-            o.put("status", status(ctx, d.id, dsLogin))
+            o.put("status", status(ctx, d.id))
             o.put("enabled", enabled(ctx, d.id))
             o.put("canToggle", d.canToggle)
             arr.put(o)

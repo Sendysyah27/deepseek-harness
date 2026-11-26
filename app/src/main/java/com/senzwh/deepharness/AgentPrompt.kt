@@ -142,19 +142,10 @@ object AgentPrompt {
 
     // vc249: prompt reviewer konteks-nol — HANYA klaim + bukti, tanpa
     // riwayat penuh. Reviewer diminta menilai tiap klaim terhadap bukti.
-    // vc262 N-M12: sejak vc262 panggilan reviewer dikirim ke SESI SERVER
-    // SEGAR yang ephemeral (SlotClient freshEphemeral / DsApiClient
-    // forceFresh) — sesi tersimpan giliran agen tidak dipakai ulang dan
-    // tidak ditimpa. Klaim "konteks-nol" kini benar di level sesi juga.
-    // vc298 BAGIAN 1 (1A): rezim ephemeral DICABUT untuk reviewer
-    // SlotClient — sesi segar tiap review menumpuk puluhan chat di
-    // Browser 1 sampai akunnya kena SUSPEND (12 Nov 2026). Reviewer kini
-    // WAJIB slot Browser 5 + sesi server TETAP reviewer (SlotClient
-    // reviewer=true, kunci dsSlotSrvReviewer_<slot>_<harnessNo>) yang
-    // dipakai ulang antar review; sesi giliran agen tetap tidak dipakai
-    // dan tidak ditimpa. Prompt tetap self-contained (klaim + bukti
-    // lengkap tiap panggilan), jadi "konteks-nol" tetap benar di level
-    // isi — sesi tetap hanya wadah, bukan riwayat.
+    // Prompt self-contained (klaim + bukti lengkap tiap panggilan) dan
+    // dikirim lewat Models API sebagai percakapan mandiri — riwayat
+    // giliran agen tidak dipakai dan tidak ditimpa, jadi "konteks-nol"
+    // benar di level isi.
     fun zeroCtxReviewPrompt(claims: List<String>, evidence: String): String {
         val sb = StringBuilder()
         sb.append("REVIEWER KONTEKS-NOL (vc249) — kamu pemeriksa, bukan pelaku. Kamu TIDAK diberi riwayat percakapan, hanya daftar klaim dan bukti di bawah. Nilai HANYA klaim-klaim ini terhadap bukti ini; abaikan konteks lain apa pun.\n")
@@ -191,15 +182,6 @@ object AgentPrompt {
     // biasa (hanya baris verdict, tanpa penjelasan tambahan).
     fun reviewerRetryPrompt(claims: List<String>, evidence: String): String {
         return REVIEWER_STRICT_RETRY_INSTRUCTION + zeroCtxReviewPrompt(claims, evidence)
-    }
-
-    // vc275 O11(a): "" bila reviewer memakai slot berbeda dari giliran
-    // agen; bila sama, label jujur bahwa verdict tidak independen.
-    // agentSlot -1 = giliran tanpa slot (WebView) — selalu dianggap
-    // berbeda dari slot reviewer mana pun.
-    fun reviewerIndependenceNote(agentSlot: Int?, reviewerSlot: Int?): String {
-        if (agentSlot == null || reviewerSlot == null) return ""
-        return if (reviewerSlot != agentSlot) "" else " (reviewer tidak independen — hanya 1 slot login, reviewer memakai akun yang sama dengan giliran agen)"
     }
 
     // vc275 O11(b): penanda jawaban yang verdict reviewer-nya tetap tidak
@@ -1056,10 +1038,10 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
     // kepala katalog dan daftar tool, supaya model membaca kontrak
     // kanonik yang sama di semua lane (satu format blok JSON tool-call).
     // (Fase 5a) Teks LAMA dipertahankan verbatim di
-    // API_LAYER_NOTE_TEXT_VC282 (hanya varian teks/deepseek yang
+    // API_LAYER_NOTE_TEXT_VC282 (hanya varian teks yang
     // memakainya) supaya toolCatalogText byte-identik; nama
     // API_LAYER_NOTE_VC282 kini memegang teks BARU §2.4 (native).
-    private const val API_LAYER_NOTE_TEXT_VC282 = "LAPISAN API INTERNAL (vc282) — otak web ini dibungkus antarmuka internal yang kompatibel-OpenAI: chat completions + tools menghasilkan tool_calls terstruktur, app mengeksekusi, lalu mengembalikan pesan hasil berstatus (tool message) dan mengulang loop sampai jawaban final. Format tool-call kanonik: satu blok json {\"tool\": nama, \"args\": {...}, \"id\": \"tc-<n>\"}. Hasil tool selalu membawa status ok/failed/timeout + id pengikatnya. BATAS JUJUR: ini BUKAN function calling native server-side — web chat hanya mengembalikan teks; tidak ada constrained decoding, tidak ada tool_choice deterministik, tidak ada finish_reason. Pseudo tool_choice di sini hanya instruksi + validasi client-side.\n"
+    private const val API_LAYER_NOTE_TEXT_VC282 = "LAPISAN API INTERNAL (vc282) — otak ini dibungkus antarmuka internal yang kompatibel-OpenAI: chat completions + tools menghasilkan tool_calls terstruktur, app mengeksekusi, lalu mengembalikan pesan hasil berstatus (tool message) dan mengulang loop sampai jawaban final. Format tool-call kanonik: satu blok json {\"tool\": nama, \"args\": {...}, \"id\": \"tc-<n>\"}. Hasil tool selalu membawa status ok/failed/timeout + id pengikatnya. BATAS JUJUR: ini BUKAN function calling native server-side — chat teks hanya mengembalikan teks; tidak ada constrained decoding, tidak ada tool_choice deterministik, tidak ada finish_reason. Pseudo tool_choice di sini hanya instruksi + validasi client-side.\n"
 
     // §2.4 (Fase 5a): catatan lapisan API untuk function calling
     // native — dipakai toolCatalogNative. Teks persis dari plan.
@@ -1074,7 +1056,7 @@ BERTANYA DENGAN PILIHAN (ask): bila langkahmu mentok pada KEPUTUSAN user — amb
 PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memanggil sampai 4 tool sekaligus (maks 4 per respons; lebih dari itu, panggil 4 pertama lalu kirim sisanya di giliran berikutnya setelah hasil pertama kembali). Hanya gabungkan call yang INDEPENDEN — yaitu call yang tidak butuh hasil call lain di respons yang sama. Bila call kedua butuh hasil call pertama (mis. membaca hasil call pertama, memakai id hasil, atau memakai file yang baru ditulis call pertama), JANGAN gabungkan: panggil call pertama dulu, tunggu hasilnya, baru panggil call kedua di giliran berikutnya. Call baca (mis. list_files, read_file, get_battery) yang independen boleh digabung; call tulis/efek (mis. write_file, run_terminal, remember_fact) dijalankan app secara berurutan sesuai urutanmu dan berhenti di call tulis pertama yang gagal.
 """
 
-    /** Katalog teks (varian lama) — dipakai engine deepseek selama
+    /** Katalog teks (varian lama) — dipakai dialek teks selama
      *  transisi + pemanggil katalog penuh (list_tools, vc250).
      *  `toolCatalog(ctx)` dipertahankan sebagai alias ini supaya
      *  pemanggil lama tidak berubah. */
@@ -1270,13 +1252,13 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
     /** vc316 IXL — jangkar lanjutan DELTA (dipakai MainActivity
      *  .sendContinuation): pengingat ringkas bahwa konteks giliran ini
      *  (system prompt, katalog, memori, riwayat) SUDAH diterima model
-     *  di pesan sebelumnya DALAM SESI SERVER YANG SAMA, jadi lanjutan
+     *  di pesan-pesan sebelumnya dalam percakapan ini, jadi lanjutan
      *  tidak perlu mengirim ulang semuanya. Jangkar ini sengaja membawa
      *  format tool-call + perintah user + jalan keluar list_tools,
-     *  supaya lanjutan tetap bisa memanggil tool walau server ternyata
-     *  tidak menyimpan konteks antar POST (kasus terburuk: model cukup
-     *  memanggil list_tools {} sekali untuk katalog lengkap). Murni,
-     *  tanpa Context — bisa diuji di JVM. Perintah user dicap 500 char. */
+     *  supaya lanjutan tetap bisa memanggil tool walau riwayat ternyata
+     *  tidak terbawa (kasus terburuk: model cukup memanggil list_tools
+     *  {} sekali untuk katalog lengkap). Murni, tanpa Context — bisa
+     *  diuji di JVM. Perintah user dicap 500 char. */
     fun continuationAnchorVc316(userCommand: String): String {
         rustAgentValue(JSONObject().put("op", "continuationAnchor").put("command", userCommand))?.let { return it }
         return continuationAnchorVc316Kotlin(userCommand)
@@ -1285,20 +1267,20 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
     /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
     private fun continuationAnchorVc316Kotlin(userCommand: String): String {
         val cmd = userCommand.trim().take(500)
-        return "[LANJUTAN SISTEM — vc316 delta: JANGAN minta konteks diulang. System prompt, katalog tool, memori, dan riwayat giliran ini SUDAH kamu terima di pesan sebelumnya DALAM SESI SERVER YANG SAMA — semuanya masih berlaku. Perintah user giliran ini: \"$cmd\". Lanjutkan dari situ memakai JEJAK + HASIL TOOL di bawah. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]"
+        return "[LANJUTAN SISTEM — vc316 delta: JANGAN minta konteks diulang. System prompt, katalog tool, memori, dan riwayat giliran ini SUDAH kamu terima di pesan sebelumnya di pesan-pesan sebelumnya dalam percakapan ini — semuanya masih berlaku. Perintah user giliran ini: \"$cmd\". Lanjutkan dari situ memakai JEJAK + HASIL TOOL di bawah. Format tool-call tetap: ```json {\"tool\":\"<nama>\",\"args\":{...},\"id\":\"tc-<n>\"}``` — bila butuh tool yang tidak ada di katalog ringkasmu, panggil list_tools {} dulu untuk katalog lengkap.]"
     }
 
-    /** vc322 SESI — prompt delta giliran 1-1: jangkar vc316 + perintah
+    /** vc322 — prompt delta giliran 1-1: jangkar vc316 + perintah
      *  user verbatim + work-notes segar (cap 5.000). Murni, tanpa
-     *  Context — bisa diuji di JVM. Dikirim HANYA ke wadah server yang
-     *  sudah primed (TurnMetrics.shouldSendDeltaVc322); wadah baru /
-     *  reset / pengganti selalu menerima prompt PENUH. System prompt,
-     *  katalog, memori, dan riwayat TIDAK diulang — semuanya sudah ada
-     *  di sesi server yang sama dari prompt penuh giliran pertama
-     *  (mekanisme yang sama seperti lanjutan tool vc316). Work-notes
-     *  dibawa segar karena isinya ("jangan ulangi") bisa berubah antar
-     *  giliran; digest TIDAK dibawa (ringkasan giliran lalu sudah ada
-     *  verbatim di sesi server). */
+     *  Context — bisa diuji di JVM. Dikirim HANYA bila percakapan ini
+     *  sudah membawa prompt penuh di pesan-pesan sebelumnya
+     *  (LlmEngineChat.historyBudget); percakapan baru / reset selalu
+     *  menerima prompt PENUH. System prompt, katalog, memori, dan
+     *  riwayat TIDAK diulang — semuanya sudah ada di riwayat pesan
+     *  dari prompt penuh giliran pertama (mekanisme yang sama seperti
+     *  lanjutan tool vc316). Work-notes dibawa segar karena isinya
+     *  ("jangan ulangi") bisa berubah antar giliran; digest TIDAK
+     *  dibawa (ringkasan giliran lalu sudah ada verbatim di riwayat). */
     fun deltaTurnPromptVc322(userCommand: String, workNotes: String): String {
         val sb = StringBuilder()
         sb.append(continuationAnchorVc316(userCommand))
@@ -1315,7 +1297,7 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
      *  note simpanan + "]\n\n"). Null bila giliran ini bukan auto-save.
      *  Blok dicap 2000 char supaya delta auto-save tetap kecil (note
      *  panjang dipotong + penanda sisa — isi penuh tetap ada di prompt
-     *  penuh yang dikirim bila wadah belum primed). Pemotongan memakai
+     *  penuh yang dikirim bila percakapan belum membawa prompt penuh).
      *  penanda akhir blok PERTAMA "]\n\n" — baris note sendiri memakai
      *  "[STATUS: ...]" + "\n" (tanpa "]\n\n"), jadi tidak terpotong
      *  di tengah butir. Murni, tanpa Context — bisa diuji di JVM. */
@@ -1340,15 +1322,14 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
         return base + "\n\n" + autoSaveBlock
     }
 
-    // ---- vc330 SESI (fix bocor sesi: verifikasi + ekstraksi delta +
+    // ---- vc330 (fix boros konteks: verifikasi + ekstraksi delta +
     // katup pengaman; bukti live user 17 Nov 09:07, vc329) ----
     // AKAR: giliran VERIFIKASI DIRI + TUGAS LATAR (ekstraksi) mengirim
     // prompt PENUH tanpa deltaPrompt — verifikasi membawa ulang ctxHist
     // 20.000 char, ekstraksi membawa ulang hist 40 pesan / 40.000 char.
-    // Begitu accum + prompt penuh > DEFAULT_CAP 200.000, guard vc321
-    // menembak -> clearServerSession + createServerSession = wadah BARU
-    // (notifikasi "sesi browser 2 membuat wadah baru") padahal sesi
-    // Harness tetap "Utama". Fix vc327 H3 hanya mencakup auto-save.
+    // Begitu akumulasi + prompt penuh > cap riwayat (historyBudget),
+    // guard memotong riwayat — konteks giliran lalu hilang padahal
+    // sesi Harness tetap "Utama". Fix vc327 H3 hanya mencakup auto-save.
     // Jendela ekstraksi vc330 = 13 pesan (10 sejak ekstraksi terakhir +
     // overlap 3, komentar vc241 O7 — kode lama memakai 40/40.000,
     // padahal niatnya 13); cap char 8.000 (tipikal 13 pesan jauh di
@@ -1358,53 +1339,36 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
     /** Cap char jendela riwayat ekstraksi vc330 (≪ 40.000 lama). */
     const val EXTRACT_WINDOW_CHARS_VC330 = 8000
 
-    /** Sentinel yang dikembalikan klien bila giliran verifikasi
-     *  DILEWATI katup vc330 (wadah penuh — tanpa POST). MainActivity
-     *  WAJIB mengecek sentinel ini SEBELUM cleanVerdict: teks ini
-     *  TIDAK diawali "LULUS" dan TIDAK mengandung "koreksi", tapi
-     *  cleanVerdict akan mengembalikannya utuh sebagai "koreksi" bila
-     *  lolos ke sana (cabang else, panjang < 350). */
-    const val VERIFY_SKIPPED_VC330 = "VERIFIKASI-DILEWATI-VC330"
-
-    /** Respons netral katup vc330 untuk giliran senyap yang dilewati
-     *  (tanpa POST). "verify" -> sentinel verifikasi (MainActivity
-     *  menampilkannya sebagai "dilewati"); "extract" -> persis
-     *  "TIDAK ADA" (itu yang model sendiri jawab bila tak ada fakta
-     *  baru — cabang internalTurn lalu menutup giliran tanpa proposal).
-     *  Murni, tanpa Context — bisa diuji di JVM. */
-    fun silentSkippedResponseVc330(kind: String?): String =
-        if (kind == "extract") "TIDAK ADA" else VERIFY_SKIPPED_VC330
-
-    /** vc330 SESI — delta VERIFIKASI DIRI: jangkar vc316 + instruksi
+    /** vc330 — delta VERIFIKASI DIRI: jangkar vc316 + instruksi
      *  verifikasi yang sama seperti prompt penuh (aturan output ketat
      *  verbatim supaya cleanVerdict tetap bekerja) + JEJAK TOOL +
      *  WorldState + JAWABAN FINAL — TANPA pengiriman ulang ctxHist
-     *  (20.000 char). Riwayat SUDAH ada di konteks sesi server yang
-     *  sama, dinyatakan eksplisit supaya model tidak memintanya ulang.
+     *  (20.000 char). Riwayat SUDAH ada di riwayat pesan percakapan
+     *  ini, dinyatakan eksplisit supaya model tidak memintanya ulang.
      *  Prompt PENUH (argumen pertama sendToAgent) tetap teks lama
-     *  lengkap — fallback bila wadah belum primed. Murni, tanpa
-     *  Context — bisa diuji di JVM. */
+     *  lengkap — fallback bila percakapan belum membawa prompt penuh.
+     *  Murni, tanpa Context — bisa diuji di JVM. */
     fun deltaVerifyPromptVc330(userCommand: String, trailTxt: String, wsLine: String, finalAnswer: String): String {
         val sb = StringBuilder()
         sb.append(continuationAnchorVc316(userCommand))
-        sb.append("\n\n[VERIFIKASI DIRI — vc330 delta (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH di bawah ini. RIWAYAT percakapan SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: ").append(wsLine).append(" — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.]")
+        sb.append("\n\n[VERIFIKASI DIRI — vc330 delta (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH di bawah ini. RIWAYAT percakapan SUDAH ada di riwayat pesan percakapan ini — JANGAN minta dikirim ulang. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: ").append(wsLine).append(" — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.]")
         sb.append("\n\nJEJAK TOOL GILIRAN INI:\n").append(trailTxt)
         sb.append("\n\nJAWABAN FINAL YANG DIPERIKSA:\n").append(finalAnswer)
         return sb.toString()
     }
 
-    /** vc330 SESI — delta TUGAS LATAR (ekstraksi): jangkar vc316 +
+    /** vc330 — delta TUGAS LATAR (ekstraksi): jangkar vc316 +
      *  instruksi ekstraksi yang sama seperti prompt penuh + jendela
      *  RIWAYAT BARU sejak ekstraksi terakhir SAJA (13 pesan terakhir,
      *  cap 8.000 char — BUKAN 40 pesan / 40.000 char). Riwayat lebih
-     *  lama SUDAH ada di konteks sesi server yang sama. Prompt PENUH
+     *  lama SUDAH ada di riwayat pesan percakapan ini. Prompt PENUH
      *  (40/40.000) tetap dikirim sebagai argumen pertama sendToAgent —
-     *  fallback bila wadah belum primed. Murni, tanpa Context — bisa
-     *  diuji di JVM. */
+     *  fallback bila percakapan belum membawa prompt penuh. Murni,
+     *  tanpa Context — bisa diuji di JVM. */
     fun deltaExtractPromptVc330(userCommand: String, recentHist: String): String {
         val sb = StringBuilder()
         sb.append(continuationAnchorVc316(userCommand))
-        sb.append("\n\n[TUGAS LATAR — vc330 delta (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut jendela RIWAYAT BARU sejak ekstraksi terakhir (13 pesan terakhir; riwayat lebih lama SUDAH ada di konteks sesi server yang sama — JANGAN minta dikirim ulang). Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.]")
+        sb.append("\n\n[TUGAS LATAR — vc330 delta (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut jendela RIWAYAT BARU sejak ekstraksi terakhir (13 pesan terakhir; riwayat lebih lama SUDAH ada di riwayat pesan percakapan ini — JANGAN minta dikirim ulang). Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.]")
         sb.append("\n\nRIWAYAT BARU (13 pesan terakhir):\n").append(recentHist)
         return sb.toString()
     }
@@ -1591,15 +1555,14 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         return personaBlock.length + Behaviors.block(prefs.getString("behaviorPack", "asisten") ?: "asisten").length + bl.first + bl.second
     }
 
-    /** Ekstrak objek tool dari jawaban DeepSeek, format bebas:
+    /** Ekstrak objek tool dari jawaban model (dialek teks), format bebas:
      *  blok kode DOM ("json/Copy/Download" sudah dibersihkan di lapis JS),
      *  pagar ```json, atau JSON polos di tengah teks. Return (teksTampil, jsonTool?). */
     /** vc229 R-05(a): tool call HANYA diakui bila (1) di dalam blok pagar
      *  ```json ... ```, atau (2) JSON polos di posisi AKHIR respons (sesudahnya
      *  hanya spasi/baris pagar penutup). JSON "tool" di tengah prosa, kutipan,
-     *  atau contoh DIABAIKAN — tidak dieksekusi. Fallback DSML/tag dipertahankan
-     *  (bukan JSON prosa) untuk format natif model. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
+     *  atau contoh DIABAIKAN — tidak dieksekusi. Fallback tag dipertahankan
+     *  (bukan JSON prosa) untuk format tag model. */
     fun extractToolCall(text: String): Pair<String, JSONObject?> {
         val text = stripCtxLabels(text)
         val spans = findToolSpans(text)
@@ -1613,23 +1576,12 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
             // span JSON ikut dibersihkan dari teks tampil.
             return Pair(trimLongFencedBlocks(stripRawToolMarkupForDisplay(visible)), normalized)
         }
-        // v4.13.1: tidak ada JSON pagar — coba format DSML natif model.
-        val norm = normalizeDsmlDelimiters(text)
-        val dsml = extractDsmlCall(norm)
-        if (dsml != null) {
-            // vc316 Worker BR (a): dulu hanya tag DSML yang dihapus
-            // (<[^>]*DSML[^>]*>) sehingga isi parameter JSON ({"path":...})
-            // tetap bocor ke bubble chat. Kini blok DSML utuh (tag + isi)
-            // dibersihkan — tool call-nya sendiri tetap dieksekusi.
-            val cleaned = stripRawToolMarkupForDisplay(norm)
-            return Pair(trimLongFencedBlocks(cleaned), assignCallId(dsml))
-        }
         // v4.18.3: dialek tag <tool=nama>{json}.
         val tag = extractTagCall(text)
         if (tag != null) return Pair(trimLongFencedBlocks(stripRawToolMarkupForDisplay(tag.first)), assignCallId(tag.second))
-        // vc316 Worker BR (a): DSML yang GAGAL diparse (invoke rusak /
-        // terpotong / tanpa wrapper calls) dulu jatuh ke sini mentah-mentah
-        // dan tampil apa adanya di bubble chat. Bersihkan sebelum tampil.
+        // vc316 Worker BR (a): markup tool yang GAGAL diparse (invoke rusak /
+        // terpotong) dulu jatuh ke sini mentah-mentah dan tampil apa adanya
+        // di bubble chat. Bersihkan sebelum tampil.
         return Pair(stripRawToolMarkupForDisplay(text.trim()), null)
     }
 
@@ -1638,18 +1590,10 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
      *  respons, baca independen konkuren, tulis sekuensial); sejak vc274
      *  lane lain (latar/grup/tim/room) juga mengeksekusi batch lewat
      *  BatchToolVc274 dengan aturan yang sama. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
     fun extractToolCalls(text: String): List<JSONObject> {
         val text = stripCtxLabels(text)
         val spans = findToolSpans(text)
         if (spans.isNotEmpty()) return spans.map { it.third }
-        val norm = normalizeDsmlDelimiters(text)
-        // vc331: jalur DSML mengembalikan SEMUA invoke (maks 4, aturan
-        // batch vc273/vc274) — bukan hanya pertama. Bocoran POVA 5 memuat
-        // 4 invoke; jalur lama membuat 3 call hilang di lane room/tim/
-        // latar/grup. Tiap call dapat id tc-<n> sendiri.
-        val dsmls = extractDsmlCalls(norm)
-        if (dsmls.isNotEmpty()) return dsmls.mapIndexed { i, c -> assignCallId(c, i) }
         val tag = extractTagCall(text)
         if (tag != null) return listOf(assignCallId(tag.second))
         return emptyList()
@@ -1701,7 +1645,6 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
     @Volatile var lastRepairKind: String? = null
     @Volatile var lastParseErrorDetail: String? = null
 
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
     fun repairToolJson(raw: String): String? {
         var s = raw.trim()
         val first = s.indexOf('{')
@@ -1732,6 +1675,206 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         }
         val out = sb.toString()
         return try { JSONObject(out); out } catch (e: Exception) { null }
+    }
+
+    // ---- Parser tool-call dialek teks (pindahan dari ApiToolLayer.kt
+    // vc282, Fase 6 K1 — lapisan itu dibubarkan; parser ini melayani
+    // fallback teks provider Models API, BUKAN jalur web lama) ----
+    // Strict dulu; bila strict gagal (atau tidak ada pagar tool), jatuh
+    // ke lenient. repaired=true hanya bila ada call yang lolos lewat
+    // repair atau jalur lenient sesudah strict gagal.
+    data class ParseOutcome(val calls: List<JSONObject>, val repaired: Boolean, val strictError: String?)
+
+    private fun normalizeCall(obj: JSONObject): JSONObject? {
+        val toolName = obj.optString("tool").ifBlank { obj.optString("name") }
+        if (toolName.isBlank()) return null
+        var args = obj.optJSONObject("args") ?: obj.optJSONObject("arguments") ?: obj.optJSONObject("parameters")
+        if (args == null) {
+            args = JSONObject()
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (k != "tool" && k != "name" && k != "id") try { args.put(k, obj.get(k)) } catch (e: Exception) {}
+            }
+        }
+        val out = JSONObject().put("tool", toolName).put("args", args)
+        if (obj.has("id")) try { out.put("id", obj.optString("id")) } catch (e: Exception) {}
+        return out
+    }
+
+    private fun assignIds(calls: List<JSONObject>): List<JSONObject> {
+        val used = HashSet<String>()
+        val out = ArrayList<JSONObject>()
+        for ((idx, c) in calls.withIndex()) {
+            val modelId = c.optString("id")
+            val id = if (modelId.matches(Regex("^tc-\\d+$")) && modelId !in used) modelId else "tc-" + (idx + 1)
+            used.add(id)
+            val copy = JSONObject(c.toString())
+            copy.put("id", id)
+            out.add(copy)
+        }
+        return out
+    }
+
+    // Strict: HANYA blok pagar ```json yang diakui; tiap blok yang memuat
+    // "tool" WAJIB ter-parse (langsung atau sesudah repair) dan membawa
+    // "args" berupa objek. Satu blok tool yang gagal = seluruh strict
+    // GAGAL (error menjelaskan bloknya) — pemanggil jatuh ke lenient.
+    fun parseStrict(text: String): ParseOutcome {
+        val fenceRe = Regex("```(?:json)?[ \t]*\n(.*?)\n?```", RegexOption.DOT_MATCHES_ALL)
+        val calls = ArrayList<JSONObject>()
+        var sawToolFence = false
+        var repairedAny = false
+        for (m in fenceRe.findAll(text)) {
+            val gtxt = m.groupValues[1]
+            if (!gtxt.contains("\"tool\"")) continue
+            sawToolFence = true
+            val braceIdx = gtxt.indexOf('{')
+            if (braceIdx < 0) return ParseOutcome(emptyList(), false, "blok json tool tanpa '{' (posisi ${m.range.first})")
+            var rawSub = gtxt.substring(braceIdx)
+            val end = balancedEnd(rawSub, 0)
+            if (end >= 0) rawSub = rawSub.substring(0, end)
+            var obj = try { JSONObject(rawSub) } catch (e: Exception) { null }
+            var repaired = false
+            if (obj == null) {
+                val rep = repairToolJson(rawSub)
+                obj = try { rep?.let { JSONObject(it) } } catch (e: Exception) { null }
+                repaired = obj != null
+            }
+            if (obj == null) return ParseOutcome(emptyList(), false, "blok json tool tidak bisa dibaca walau sesudah repair (posisi ${m.range.first})")
+            if (!obj.has("args") || obj.opt("args") !is JSONObject) {
+                return ParseOutcome(emptyList(), false, "blok json tool '" + obj.optString("tool") + "' tanpa objek args")
+            }
+            val norm = normalizeCall(obj) ?: return ParseOutcome(emptyList(), false, "blok json tool tanpa nama tool")
+            calls.add(norm)
+            if (repaired) repairedAny = true
+        }
+        if (!sawToolFence) return ParseOutcome(emptyList(), false, null)
+        if (calls.isEmpty()) return ParseOutcome(emptyList(), false, "blok json tool tidak menghasilkan call")
+        return ParseOutcome(assignIds(calls), repairedAny, null)
+    }
+
+    // Lenient (cermin aturan vc229 R-05): JSON polos HANYA di posisi AKHIR
+    // respons, atau dialek tag <tool=nama>{json}. JSON "tool" di tengah
+    // prosa/kutipan/contoh DIABAIKAN.
+    fun parseLenient(text: String): List<JSONObject> {
+        val stripped = text.replace(Regex("\\[(USER|HASIL TOOL|RIWAYAT|SISTEM|FAKTA PIN)[^\\]]*\\]"), "").trim()
+        var i = 0
+        while (i < stripped.length) {
+            if (stripped[i] != '{') { i++; continue }
+            val end = balancedEnd(stripped, i)
+            if (end < 0) {
+                val tail = stripped.substring(i)
+                val rep = repairToolJson(tail)
+                val repObj = try { rep?.let { JSONObject(it) } } catch (e: Exception) { null }
+                val repNorm = repObj?.let { normalizeCall(it) }
+                if (repNorm != null) return assignIds(listOf(repNorm))
+                break
+            }
+            val rawSub = stripped.substring(i, end)
+            var obj = try { JSONObject(rawSub) } catch (e: Exception) { null }
+            if (obj == null) {
+                val rep = repairToolJson(rawSub)
+                obj = try { rep?.let { JSONObject(it) } } catch (e: Exception) { null }
+            }
+            val norm = obj?.let { normalizeCall(it) }
+            if (norm != null) {
+                val rest = stripped.substring(end).trim()
+                val trailingOk = rest.isEmpty() || rest.lines().all { it.trim() in listOf("```", "```json", "json") }
+                if (trailingOk) return assignIds(listOf(norm))
+            }
+            i = end
+        }
+        val tagRe = Regex("<tool=([A-Za-z0-9_]+)>\\s*(\\{.*)", RegexOption.DOT_MATCHES_ALL)
+        val tm = tagRe.find(stripped)
+        if (tm != null) {
+            val body = tm.groupValues[2]
+            val end = balancedEnd(body, 0)
+            val sub = if (end >= 0) body.substring(0, end) else body
+            val obj = try { JSONObject(sub) } catch (e: Exception) { null }
+            if (obj != null) {
+                val out = JSONObject().put("tool", tm.groupValues[1]).put("args", obj)
+                return assignIds(listOf(out))
+            }
+        }
+        return emptyList()
+    }
+
+    fun parseWithRepair(text: String): ParseOutcome {
+        val strict = parseStrict(text)
+        if (strict.calls.isNotEmpty()) return strict
+        val lenient = parseLenient(text)
+        if (lenient.isNotEmpty()) return ParseOutcome(lenient, true, strict.strictError)
+        return ParseOutcome(emptyList(), false, strict.strictError)
+    }
+
+    // ---- Pseudo tool_choice (pindahan ApiToolLayer vc282 — instruksi +
+    // validasi client-side, BUKAN enforcement server-side) ----
+    // Heuristik pemicu tool wajib dari teks tugas user (deterministik,
+    // konservatif — hanya pola eksplisit "… dulu baru …"). Bukan
+    // klasifikasi umum: tugas tanpa kata "dulu" TIDAK pernah memaksa tool.
+    fun detectForcedTool(taskText: String): String? {
+        val low = taskText.lowercase()
+        if (!low.contains("dulu")) return null
+        if (low.contains("baca") && (low.contains("file") || low.contains("/sdcard") || low.contains(".txt") || low.contains(".md"))) return "read_file"
+        if (low.contains("baterai")) return "get_battery"
+        if (low.contains("penyimpanan") || low.contains("storage")) return "storage_info"
+        if (low.contains("daftar file") || low.contains("isi folder")) return "list_files"
+        return null
+    }
+
+    fun toolChoiceRepairText(tool: String): String {
+        return "SISTEM (pseudo tool_choice, vc282 — repair terarah 1x): tugas ini menuntut tool '" + tool + "' dipanggil dulu, tetapi jawabanmu tidak memanggilnya. Panggil '" + tool + "' SEKARANG dengan argumen lengkap dari perintah user (blok json saja), jangan menjawab final dulu."
+    }
+
+    // ---- Bukti reviewer (pindahan ApiToolLayer vc282) ----
+    // Klaim yang mengutip pesan sistem (peringatan StuckDetector, kunci
+    // giliran, cap langkah) TIDAK BOLEH dihapus filter [KLAIM DIHAPUS]:
+    // bukti reviewer boleh memakai pesan sistem. Kembalikan daftar
+    // unsupported SESUDAH mengeluarkan klaim yang didukung sistem.
+    // Aturan sempit: klaim harus mengandung frasa sistem yang khas DAN
+    // frasa itu memang ada di catatan sistem giliran ini, atau klaim
+    // berbagi >=3 kata isi (panjang >=5) dengan catatan sistem.
+    val SYSTEM_PHRASES = listOf("stuckdetector", "detektor putaran", "berputar", "cap langkah", "giliran dihentikan", "giliran dikunci")
+
+    fun dropSystemBackedClaims(claims: List<String>, unsupported: List<Int>, systemNotes: List<String>): List<Int> {
+        if (systemNotes.isEmpty()) return unsupported
+        val joined = systemNotes.joinToString("\n").lowercase()
+        val out = ArrayList<Int>()
+        for (idx in unsupported) {
+            val cl = claims.getOrNull(idx - 1) ?: continue
+            val lowCl = cl.lowercase()
+            val phraseBacked = SYSTEM_PHRASES.any { ph -> lowCl.contains(ph) && joined.contains(ph) }
+            if (phraseBacked) continue
+            val words = lowCl.split(Regex("[^a-z0-9]+")).filter { it.length >= 5 }.distinct()
+            val hits = words.count { joined.contains(it) }
+            if (words.size >= 3 && hits >= 3) continue
+            out.add(idx)
+        }
+        return out
+    }
+
+    // ---- Strip tag safety internal model (pindahan DsSafetyStrip.kt
+    // vc270, Fase 6 K1 — implementasi Kotlin saja, tanpa seam Rust) ----
+    // Hapus blok <ds_safety>...</ds_safety> (+ "Safety: safe" yang
+    // mengikutinya) dari teks jawaban model. Tag ini metadata internal
+    // model lama yang kadang bocor ke jawaban tampil; BUKAN refusal /
+    // blokir. Idempotent: stripSafetyTags(stripSafetyTags(x)) == x.
+    // Hanya pola TAG yang dihapus; sebutan tanpa kurung sudut tidak
+    // disentuh. Defensif — model Models API normal tidak mengirim tag ini.
+    private val SAFETY_BLOCK = Regex("""(?i)<ds_safety\b[^>]*>.*?</ds_safety>(\s*Safety:\s*\w+)?""", RegexOption.DOT_MATCHES_ALL)
+    private val SAFETY_CLOSE_STRAY = Regex("""(?i)</ds_safety>(\s*Safety:\s*\w+)?""")
+    private val SAFETY_OPEN_TAG = Regex("""(?i)<ds_safety\b[^>]*>""")
+    private val SAFETY_BLANK_RUN = Regex("\n{3,}")
+
+    fun stripSafetyTags(text: String): String {
+        var t = text
+        t = SAFETY_BLOCK.replace(t, "")
+        t = SAFETY_CLOSE_STRAY.replace(t, "")
+        val open = SAFETY_OPEN_TAG.find(t)
+        if (open != null) t = t.substring(0, open.range.first)
+        t = SAFETY_BLANK_RUN.replace(t, "\n\n")
+        return t.trim()
     }
 
     fun describeJsonDamage(raw: String): String {
@@ -1769,7 +1912,6 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
 
     /** Daftar (start, endEksklusif, toolTernormalisasi) yang diakui:
      *  dulu semua blok pagar, bila tidak ada baru JSON polos di akhir respons. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
     private fun findToolSpans(text: String): List<Triple<Int, Int, JSONObject>> {
         lastRepairKind = null
         lastParseErrorDetail = null
@@ -1877,7 +2019,7 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         return spans
     }
 
-    // Beri id pada satu objek tool call (jalur DSML/tag yang hanya
+    // Beri id pada satu objek tool call (jalur tag yang hanya
     // menghasilkan satu call): tc-1 bila model tidak menyertakan id valid.
     fun assignCallId(obj: JSONObject, index: Int = 0): JSONObject {
         val cur = obj.optString("id")
@@ -1890,7 +2032,6 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
      *  yang tidak terurai dianggap KOSONG supaya penjaga REQUIRED_ARGS
      *  di Tools yang menolaknya dengan umpan balik; turn tidak boleh
      *  mati gara-gara format ini. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
     fun extractTagCall(text: String): Pair<String, JSONObject>? {
         val m = Regex("""<tool=([A-Za-z0-9_]+)>""").find(text) ?: return null
         val name = m.groupValues[1]
@@ -1971,53 +2112,12 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         return null
     }
 
-    /** v4.13.1: penyelamat format DSML — model kadang mengeluarkan
-     * panggilan tool dalam markup natif DeepSeek
-     * (<｜｜DSML｜｜calls><｜｜DSML｜｜invoke name="...">
-     * <｜｜DSML｜｜parameter name="args" string="false">{json}</...>)
-     * alih-alih JSON pagar harness. Kembalikan bentuk yang sama dengan
-     * extractToolCall: {"tool": nama, "args": {...}}. Parameter "args"
-     * berisi objek JSON utuh; parameter lain dipetakan satu-satu
-     * (string="false" = nilai JSON mentah). */
-    /** v4.48.9.20 (Q2a): normalisasi eksplisit delimiter DSML yang rusak
-     *  (mojibake fullwidth) menjadi ASCII sebelum parse: ｜ (U+FF5C) -> |,
-     *  ＜ (U+FF1C) -> <, ＞ (U+FF1E) -> >. Input ASCII murni tidak berubah
-     *  (identitas), jadi tidak ada regresi untuk tool call normal.
-     *  vc331: diperluas ke SEMUA look-alike yang bisa dipakai model
-     *  (bukti POVA 5 17 Nov 23:37, vc330 — delimiter ber-spasi lolos
-     *  strip karena spasi/pipe mirip-ASCII): spasi fullwidth U+3000,
-     *  NBSP U+00A0, spasi U+2000–U+200A, U+202F, U+205F -> spasi ASCII;
-     *  ZWSP U+200B + BOM U+FEFF -> dihapus; pipe │ U+2502 + ∣ U+2223
-     *  -> |; sudut 〈 U+3008 / 〉 U+3009 / ‹ U+2039 / › U+203A -> < >.
-     *  Cermin Rust wajib sama persis (harness-core/src/agent_prompt.rs). */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
-    fun normalizeDsmlDelimiters(text: String): String {
-        rustAgentValue(JSONObject().put("op", "normalizeDsmlDelimiters").put("text", text))?.let { return it }
-        return normalizeDsmlDelimitersKotlin(text)
-    }
-
-    /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
-    private fun normalizeDsmlDelimitersKotlin(text: String): String {
-        val sb = StringBuilder(text.length)
-        for (c in text) {
-            when (c) {
-                '｜', '│', '∣' -> sb.append('|')
-                '＜', '〈', '‹' -> sb.append('<')
-                '＞', '〉', '›' -> sb.append('>')
-                '\u00A0', '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000' -> sb.append(' ')
-                '\u200B', '\uFEFF' -> { /* dihapus */ }
-                else -> sb.append(c)
-            }
-        }
-        return sb.toString()
-    }
-
     /** vc316 Worker BR (a): bersihkan markup tool MENTAH dari teks TAMPIL
      *  sebelum masuk bubble chat / riwayat. Menghapus blok DSML utuh
      *  (calls/invoke/parameter: tag + isi JSON parameter), blok DSML yang
      *  terpotong (tanpa penutup, sampai akhir teks), sisa tag <...DSML...>,
      *  dan dialek <tool=nama>{json}. HANYA untuk tampilan — jalur eksekusi
-     *  (extractDsmlCall / extractTagCall / findToolSpans) TIDAK memakai
+     *  (extractTagCall / findToolSpans) TIDAK memakai
      *  fungsi ini, jadi isi DSML yang sah tetap diteruskan ke tool/server
      *  apa adanya. Idempotent. Sebutan "DSML" tanpa kurung sudut (prosa
      *  biasa) TIDAK dihapus. Trade-off: contoh markup DSML di dalam blok
@@ -2031,7 +2131,7 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
     /** Implementasi Kotlin lama (fallback) — DIPERTAHANKAN. */
     private fun stripRawToolMarkupForDisplayKotlin(text: String): String {
         if (!text.contains("DSML") && !text.contains("<tool=")) return text
-        var t = normalizeDsmlDelimiters(text)
+        var t = text // Fase 6 K1: normalisasi delimiter DSML dihapus bersama parser DSML.
         // Blok DSML tertutup utuh (tag + isi parameter JSON).
         // vc331: penutup boleh polos (</parameter> / </invoke> / </calls>
         // tanpa wrapper DSML — seperti di bocoran POVA 5, penutup
@@ -2079,7 +2179,7 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
         // tidak dipotong (prosa sesudahnya tetap tampil, D12); pemindaian
         // lanjut sesudah tiap penutup supaya blok lengkap kedua dst ikut
         // diperiksa — blok tak lengkap pertama memotong semua sesudahnya.
-        val norm = normalizeDsmlDelimiters(text)
+        val norm = text // Fase 6 K1: normalisasi delimiter DSML dihapus bersama parser DSML.
         val openRe = Regex("""<\s*[|]{0,2}\s*DSML\s*[|]{0,2}\s*(calls|invoke|parameter)\b""")
         var cutAt: Int? = null
         var from = 0
@@ -2155,74 +2255,6 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
             }
         }
         return out.joinToString("\n")
-    }
-
-    /** vc331: parse SEMUA invoke DSML dalam satu respons (bukan hanya
-     *  pertama). Bocoran POVA 5 memuat 4 invoke (list_files x2 +
-     *  storage_info x2) — jalur lama (hanya pertama) membuat 3 call hilang
-     *  di lane room/tim/latar/grup yang memakai extractToolCalls (batch
-     *  vc273/vc274, maks 4 per respons). Tiap invoke diparse dari segmennya
-     *  sendiri (pembuka invoke s.d. pembuka invoke berikut / akhir teks)
-     *  supaya parameter satu invoke tidak bocor ke invoke lain. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
-    fun extractDsmlCalls(text: String): List<JSONObject> {
-        if (!text.contains("DSML")) return emptyList()
-        // v4.48.9.20 (Q2a): normalisasi di sini juga supaya pemanggil
-        // langsung (mis. rescue dari fragmen berpikir) ikut tertangani.
-        // Idempotent: menormalisasi dua kali hasilnya sama.
-        val norm = normalizeDsmlDelimiters(text)
-        val invRe = Regex("""<\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*invoke\s+name="([^"]+)"\s*>""")
-        val matches = invRe.findAll(norm).toList()
-        if (matches.isEmpty()) return emptyList()
-        val out = ArrayList<JSONObject>()
-        for ((idx, m) in matches.withIndex()) {
-            if (out.size >= MAX_BATCH_CALLS_VC273) break
-            val toolName = m.groupValues[1].trim()
-            if (toolName.isBlank()) continue
-            val segEnd = if (idx + 1 < matches.size) matches[idx + 1].range.first else norm.length
-            val seg = norm.substring(m.range.last + 1, segEnd)
-            out.add(JSONObject().put("tool", toolName).put("args", parseDsmlParams(seg)))
-        }
-        return out
-    }
-
-    /** vc331: invoke PERTAMA saja (dipakai extractToolCall jalur tunggal +
-     *  rescue MainActivity:12299). Implementasi = pertama dari
-     *  extractDsmlCalls supaya parse tunggal/plural tidak pernah beda. */
-    @Deprecated("Hanya engine deepseek — hapus bersama DsApiClient, §6")
-    fun extractDsmlCall(text: String): JSONObject? {
-        if (!text.contains("DSML")) return null
-        return extractDsmlCalls(text).firstOrNull()
-    }
-
-    /** vc331: parse parameter-parameter DSML dari satu segmen invoke.
-     *  Penutup parameter boleh polos (</parameter> tanpa wrapper DSML —
-     *  seperti di bocoran POVA 5); regex lama yang mewajibkan DSML di
-     *  penutup membuat SEMUA argumen hilang (args {}) walau nama tool
-     *  terparse — celah yang sama dengan strip (celah 2), tapi di jalur
-     *  parse. Cermin strip: wrapper DSML opsional di penutup. */
-    private fun parseDsmlParams(rest: String): JSONObject {
-        val parRe = Regex("""<\s*[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*parameter\s+name="([^"]+)"([^>]*)>(.*?)<\s*/\s*(?:[|｜]{1,2}\s*DSML\s*[|｜]{1,2}\s*)?parameter\s*>""", RegexOption.DOT_MATCHES_ALL)
-        var args = JSONObject()
-        for (pm in parRe.findAll(rest)) {
-            val pname = pm.groupValues[1].trim()
-            val pattrs = pm.groupValues[2]
-            val pval = pm.groupValues[3].trim()
-            if (pname == "args") {
-                val parsed = try { JSONObject(pval) } catch (e: Exception) { null }
-                if (parsed != null) args = parsed
-                continue
-            }
-            val v: Any = if (pattrs.contains("string=\"false\"")) {
-                try { JSONObject(pval) } catch (e: Exception) {
-                    try { JSONArray(pval) } catch (e2: Exception) {
-                        pval.toLongOrNull() ?: pval.toDoubleOrNull() ?: if (pval == "true" || pval == "false") pval.toBoolean() else pval
-                    }
-                }
-            } else pval
-            try { args.put(pname, v) } catch (e: Exception) {}
-        }
-        return args
     }
 
     // vc273 O6: batas batch multi-tool — maks 4 call per respons (lane 1-1

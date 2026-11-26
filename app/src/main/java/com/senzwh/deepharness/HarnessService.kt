@@ -323,7 +323,7 @@ class HarnessService : Service() {
                 for (u in upcoming) sb.append("\n- [${MemoryDb.fmtTs(u.dueTs)}] ${u.text}")
             }
             // Tahap C: briefing disusun LLM oleh Otak Latar tepat di jamnya;
-            // versi lokal ini tetap jadi fallback bila sesi DeepSeek mati.
+            // versi lokal ini tetap jadi fallback bila otak Models API mati.
             val goalsTxt = mdb.goalsText()
             val dataBrief = sb.toString() + if (goalsTxt.isNotBlank()) "\n\nTujuan aktif:\n$goalsTxt" else ""
             val started = BgBrain.submit(this,
@@ -359,7 +359,7 @@ class HarnessService : Service() {
 
         // 4) Tugas AI terjadwal yang jatuh tempo menit ini — dieksekusi
         // LANGSUNG oleh Otak Latar di jamnya (Tahap C); antre lama hanya
-        // jadi fallback bila sesi DeepSeek mati.
+        // jadi fallback bila otak Models API mati.
         // vc243 GELOMBANG 2 (AG-M3): catch-up hari yang sama — jadwal yang
         // tick-nya terlewat tetap jalan sekali hari itu (lihat
         // dueSchedulesCatchUp). (GR-M5/AG-M4): ikatan sesi eksplisit jadwal

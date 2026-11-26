@@ -6,33 +6,27 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Handler
-import android.os.Looper
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.CountDownLatch
+import java.util.Locale
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
  * OTAK LATAR (Tahap C, brief §0.9 — keputusan user 2026-10-22 07:36:
  * panggilan LLM di background AKTIF, tidak menunggu app dibuka).
  *
- * Mesin: sebuah WebView DeepSeek dipelihara komponen ini (cookie &
- * localStorage WebView bersifat per-aplikasi, jadi sesi login yang sama
- * dengan tab Web utama). DsApiClient membaca token SEGAR dari WebView itu
- * tiap panggilan — token tidak pernah ditulis ke penyimpanan.
+ * Mesin: Models API lewat helper bersama (LlmEngineChat) — K1 (Fase 6)
+ * menghapus WebView / klien API internal lama sepenuhnya. Tidak ada lagi
+ * sesi web, token WebView, atau wadah server lama di sini.
  *
  * Aturan main:
  * - Tool baca jalan otomatis; tool BERISIKO diparkir → notifikasi
  *   persetujuan (Setujui/Tolak); tidak pernah dieksekusi diam-diam.
  * - Hasil akhir dikirim sebagai notifikasi (tidak lagi masuk riwayat chat — vc186 Q4).
- * - Sesi DeepSeek mati (token tidak terbaca) → Otak Latar jeda, notif
- *   "login ulang" sekali per episode, tugas jatuh ke antrean lama
- *   (enqueuePrompt — jalan saat app dibuka berikutnya).
+ * - Provider gagal / rate-limit → tugas jatuh ke antrean lama
+ *   (enqueuePrompt — jalan saat app dibuka berikutnya); rate-limit
+ *   murni menahan submit 15 menit (bgLastRateLimitTs).
  * - Semua tugas diserialkan lewat satu executor agar tidak balapan.
  */
 object BgBrain {
@@ -53,11 +47,14 @@ object BgBrain {
     private const val BG_TRANSCRIPT_MIN_KEEP_CHARS = 20000
     private const val BG_WATCHDOG_STALL_MS = 10 * 60_000L
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "bg-brain").apply { isDaemon = true } }
-    @Volatile private var webView: WebView? = null
-    @Volatile private var client: DsApiClient? = null
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
 
+    // K1 (Fase 6): flag legacy "sesi mati" — TIDAK PERNAH lagi di-set
+    // true (handleError tidak lagi mengenal SESSION_DEAD); gerbang submit
+    // masih membacanya supaya instalasi lama yang flag-nya sempat true
+    // bisa sembuh sendiri (submitGateKotlin membersihkannya sesudah
+    // 15 menit). JANGAN pakai flag ini untuk logika baru.
     fun sessionDead(ctx: Context) = prefs(ctx).getBoolean("bgSessionDead", false)
 
     /** v4.12.0: gerbang Panel Gubernur untuk kerja OTONOM — jam hening +
@@ -185,15 +182,12 @@ object BgBrain {
         return true
     }
 
-    /** A2/D9 (Fase 1): gerbang kuota latar per engine — jalur deepseek
-     *  membaca counter DeepSeek lama (overCapBg, perilaku TETAP); engine
-     *  openai membaca counter Models API provider aktif (overCapModels,
-     *  bucket bg) supaya gate submit bekerja saat engine openai.
+    /** A2/D9 (Fase 1) + K1 (Fase 6): gerbang kuota latar — counter
+     *  Models API provider aktif (overCapModels, bucket bg).
      *  Provider belum siap / belum ada → false (tidak over-cap): tugas
      *  lolos gate lalu gagal jujur di chatSync/callBgSync dengan pesan
      *  provider, bukan diblokir sebagai "kuota". */
     private fun overCapBgForEngine(ctx: Context): Boolean {
-        if (AgentEngines.current(ctx) != "openai") return Governor.overCapBg(ctx)
         return try {
             val provider = LlmEngineChat.resolveProvider(ctx)
             Governor.overCapModels(ctx, provider, Governor.MODELS_BUCKET_BG)
@@ -208,8 +202,9 @@ object BgBrain {
         if (lastRL > 0 && System.currentTimeMillis() - lastRL < 15 * 60_000) return block(ctx, "cooldown")
         if (sessionDead(ctx)) {
             // F2.1: jangan mengunci mati selamanya — coba lagi maks 1x per
-            // 15 menit. Bila percobaan gagal, handleError mengunci lagi +
-            // antrean (yang kini ter-dedupe) menunggu giliran depan.
+            // 15 menit. K1 (Fase 6): handleError TIDAK LAGI men-set flag
+            // ini, jadi cabang ini hanya membersihkan flag warisan
+            // instalasi lama, bukan gerbang hidup.
             val lastRetry = prefs(ctx).getLong("bgDeadRetryTs", 0)
             if (System.currentTimeMillis() - lastRetry < 15 * 60_000) return block(ctx, "sesi mati")
             prefs(ctx).edit().putBoolean("bgSessionDead", false).putLong("bgDeadRetryTs", System.currentTimeMillis()).apply()
@@ -221,65 +216,16 @@ object BgBrain {
         return true
     }
 
-    // ---------------- Mesin sesi ----------------
-
-    private fun ensureClient(ctx: Context): DsApiClient? {
-        client?.let { return it }
-        val latch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            try {
-                if (webView == null) {
-                    val wv = WebView(ctx)
-                    wv.settings.javaScriptEnabled = true
-                    wv.settings.domStorageEnabled = true
-                    wv.webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) { latch.countDown() }
-                    }
-                    webView = wv
-                    wv.loadUrl("https://chat.deepseek.com/")
-                } else latch.countDown()
-            } catch (e: Exception) { latch.countDown() }
-        }
-        try { latch.await(30, TimeUnit.SECONDS) } catch (e: Exception) {}
-        val wv = webView ?: return null
-        if (client == null) client = DsApiClient(wv)
-        return client
-    }
-
-    // D1 (Fase 1): engine "openai" → Models API lewat helper bersama
-    // (LlmEngineChat) — TIDAK menyentuh WebView/DsApiClient, tanpa latch
-    // 300 dtk duplikat, tanpa pref dsModelVariant (mati bersama DsApiClient).
-    // Governor + TurnMetrics + jawaban-kosong=throw ditegakkan helper.
-    // Jalur deepseek (masa transisi): perilaku TETAP SAMA PERSIS —
-    // klien DsApiClient yang sama (cache `client`, dibuat ensureClient
-    // di runTask/resume sebelum loop) + antre diam-diam ke DsApiClient
-    // + bgMode + forceFresh reviewer. Param `api: DsApiClient` DIHAPUS:
-    // jalur deepseek mendapat kliennya dari cache `client` (fallback
-    // ensureClient hanya bila cache kosong — tidak pernah terjadi di
-    // jalur normal, karena runTask/resume sudah ensureClient dulu);
-    // tidak ada re-ensure per panggilan selama cache terisi.
+    // K1 (Fase 6): SATU-SATUNYA jalur LLM latar — Models API lewat
+    // helper bersama (LlmEngineChat). Governor + TurnMetrics +
+    // jawaban-kosong=throw ditegakkan helper. Engine "local" → helper
+    // melempar pesan offline (mode lokal tanpa LLM).
     private fun chatSync(ctx: Context, prompt: String, reviewer: Boolean = false): String {
-        if (AgentEngines.current(ctx) == "openai") {
-            return LlmEngineChat.chatSyncForEngine(ctx, prompt, if (reviewer) LlmCallKind.REVIEWER else LlmCallKind.BACKGROUND)
-        }
-        val api = client ?: ensureClient(ctx) ?: throw Exception("Otak Latar: WebView tidak siap.")
-        val latch = CountDownLatch(1)
-        val out = AtomicReference<String?>(null)
-        val err = AtomicReference<String?>(null)
-        // v4.48.9.20: otak latar ikut picker varian model (Mesin) +
-        // wadah server sendiri (bgMode) — lihat DsApiClient.runChat.
-        val thinkBg = prefs(ctx).getString("dsModelVariant", "v3") == "r1"
-        api.chat(prompt, thinkBg, false, { },
-            { text, _ -> out.set(text); latch.countDown() },
-            { e -> err.set(e); latch.countDown() }, bgMode = true, reviewer = reviewer, forceFresh = reviewer)
-        latch.await(300, TimeUnit.SECONDS)
-        err.get()?.let { throw Exception(it) }
-        return out.get() ?: throw Exception("Otak Latar: panggilan API timeout / tanpa hasil.")
+        return LlmEngineChat.chatSyncForEngine(ctx, prompt, if (reviewer) LlmCallKind.REVIEWER else LlmCallKind.BACKGROUND)
     }
 
     // ---------------- F5b: loop tool native (Models API) ----------------
-    // Helper di blok ini hanya dipakai loop latar engine openai. Jalur
-    // deepseek TIDAK menyentuhnya (chatSync/callBgSync tetap seperti dulu).
+    // Helper di blok ini hanya dipakai loop latar engine openai.
 
     /** F5b: latar memakai function calling native bila engine openai dan
      *  provider TIDAK text_fallback/unsupported. "unsupported" diperlakukan
@@ -352,27 +298,12 @@ object BgBrain {
         return disp.take(8000) + "…(dipotong, sisa " + (disp.length - 8000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…"
     }
 
-    // D2 (Fase 1, KRITIS) + RESIDU 2 (Fase 2, transisi): panggilan LLM
-    // latar SILENT untuk job graph (relasi, verifier, adjudikasi) +
-    // ringkas riwayat. Engine openai → helper Models API (kind GRAPH,
-    // timeout 120 dtk seperti dulu), tanpa WebView/DsApiClient.
-    // Engine deepseek → cabang LAMA seperti sebelum Fase 1 (git
-    // c71ebe2): klien DsApiClient dari cache `client` / ensureClient +
-    // api.chat(..., bgMode=true) + latch 120 dtk. Cabang deepseek ini
-    // DIHAPUS di Fase 6 bersama seluruh kode DeepSeek.
+    // D2 (Fase 1, KRITIS): panggilan LLM latar SILENT untuk job graph
+    // (relasi, verifier, adjudikasi) + ringkas riwayat. Models API
+    // (kind GRAPH, timeout 120 dtk). Engine "local" → helper melempar
+    // pesan offline.
     fun callBgSync(ctx: Context, prompt: String): String {
-        if (AgentEngines.current(ctx) == "openai") return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.GRAPH, timeoutMs = 120_000)
-        val api = client ?: ensureClient(ctx) ?: throw Exception("Otak Latar: WebView tidak siap.")
-        val latch = CountDownLatch(1)
-        val out = AtomicReference<String?>(null)
-        val err = AtomicReference<String?>(null)
-        val thinkBg = prefs(ctx).getString("dsModelVariant", "v3") == "r1"
-        api.chat(prompt, thinkBg, false, { },
-            { text, _ -> out.set(text); latch.countDown() },
-            { e -> err.set(e); latch.countDown() }, bgMode = true)
-        latch.await(120, TimeUnit.SECONDS)
-        err.get()?.let { throw Exception(it) }
-        return out.get() ?: throw Exception("Otak Latar: panggilan latar timeout / tanpa hasil.")
+        return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.GRAPH, timeoutMs = 120_000)
     }
 
     // vc228 R-01(c): ringkas riwayat lama yang terbuang guard prompt.
@@ -395,12 +326,11 @@ object BgBrain {
     fun summarizeOldHistory(ctx: Context, droppedText: String): String? {
         return try {
             if (droppedText.isBlank()) return null
-            // F3b B11: gerbang kuota engine-aware — openai cek counter
+            // F3b B11: gerbang kuota engine-aware — cek counter
             // Models API provider aktif (bucket bg) via overCapBgForEngine
             // (pola yang sama dengan submitGateKotlin); provider tidak
             // bisa di-resolve -> TIDAK early-return, helper menegakkan
-            // kuota saat eksekusi (callBgSync throw). Deepseek tetap
-            // perilaku lama (counter DeepSeek via overCapBg).
+            // kuota saat eksekusi (callBgSync throw).
             if (overCapBgForEngine(ctx)) return null
             val prompt = "Ringkas percakapan lama berikut dalam 1-2 kalimat per 10 pesan. WAJIB mempertahankan secara VERBATIM (tanpa parafrase, tanpa pembulatan, tanpa mengubah angka) field-field berikut bila ada di teks: semua angka, semua nama, semua tanggal, keputusan eksplisit user, serta penolakan dan persetujuan user. Bila suatu angka/nama/tanggal tidak yakin, tulis apa adanya dari teks atau hilangkan — jangan mengarang, jangan menambah informasi baru. Hanya fakta, keputusan, dan konteks penting yang masih relevan. Keluarkan HANYA ringkasannya, satu paragraf.\n\nPERCAKAPAN LAMA:\n" + cutAtMessageBoundary(droppedText, 6000)
             val out = callBgSync(ctx, prompt)
@@ -433,25 +363,15 @@ object BgBrain {
                 }
             } catch (e: Exception) {}
         }
-        // D1 (Fase 1): engine openai LEWATI ensureClient sepenuhnya —
-        // jangan buat WebView, jangan muat chat.deepseek.com. Jalur
-        // deepseek tetap seperti dulu (WebView gagal → antre diam-diam
-        // + catatan EventDb).
-        if (AgentEngines.current(ctx) != "openai") {
-            ensureClient(ctx) ?: run {
-                MemoryDb.enqueuePrompt(ctx, task)
-                EventDb.get(ctx).add("bgbrain", ctx.packageName, "WebView latar gagal dibuat — tugas diantrekan ($origin)")
-                return
-            }
-        }
+        // K1 (Fase 6): tidak ada lagi WebView/sesi lama yang perlu
+        // disiapkan — loop langsung jalan via helper Models API.
         val mdb = MemoryDb.get(ctx)
         // vc243 GELOMBANG 2 (AG-M4): konteks + hasil memakai sesi PEMILIK
         // tugas (ditangkap submit), bukan sesi aktif saat eksekusi.
         val sessionId = ownerSessionId ?: prefs(ctx).getLong("currentSession", 1L)
         // vc241: latar memakai katalog per tugas + WorldState tanpa goal-teratas (blok TUJUAN AKTIF sendiri sudah ada di bawah).
         // F5b: varian katalog mengikuti dialek tugas ini (native bila
-        // provider mendukung native; teks bila dialek teks). Engine
-        // deepseek selalu false (katalog teks lama, tidak berubah).
+        // provider mendukung native; teks bila dialek teks).
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(ctx, false, task, true, nativeTools = useNativeToolsBgVc5b(ctx)))
         // vc240 M23 + m18: pemanggil latar kini mengoper teks tugas
         // sebagai query relevansi (dulu tanpa argumen -> semua skor 0 ->
@@ -755,7 +675,7 @@ object BgBrain {
                 return
             }
             // F5b: native → ChatResult (toolCalls terstruktur + jawaban
-            // asisten masuk messages); teks/deepseek → String lama.
+            // asisten masuk messages); teks → String lama.
             // 400 menyebut tools di native → tandai text_fallback lalu
             // iterasi ini lanjut dialek teks (chatSync + katalog teks).
             var respCallsVc5b: List<NativeToolCall> = emptyList()
@@ -788,7 +708,7 @@ object BgBrain {
             } catch (e: Exception) {
                 handleError(ctx, task, origin, e, jobId); return
             }
-            if (sessionDead(ctx)) prefs(ctx).edit().putBoolean("bgSessionDead", false).apply()
+            if (sessionDead(ctx)) prefs(ctx).edit().putBoolean("bgSessionDead", false).apply() // K1: pembersih flag warisan instalasi lama (tidak pernah lagi di-set).
             // F5b: native → konversi NativeToolCall (arguments rusak =
             // null → ditolak tanpa eksekusi di bawah); teks → parse lama.
             // visible native = content dibersihkan markup (blok JSON teks
@@ -861,23 +781,18 @@ object BgBrain {
                     val warnBgVc249 = AgentPrompt.claimWarningForCorpus(finalBgVc249, usedToolsVc249, transcript.toString(), pinnedBgVc266, task)
                     if (warnBgVc249 != null) deliverBgVc249 = "⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnBgVc249\n\n" + deliverBgVc249
                 }
-                // vc249 + vc262 N-M12: reviewer konteks-nol latar — hanya klaim + bukti (tugas, hasil tool, fakta PIN), kini di SESI SERVER
-                // SEGAR (forceFresh via DsApiClient) — bukan lagi sesi yang sama dengan giliran agen.
+                // vc249 + vc262 N-M12: reviewer konteks-nol latar — hanya klaim + bukti (tugas, hasil tool, fakta PIN), panggilan
+                // stateless segar via helper Models API (bukan sesi yang sama dengan giliran agen).
                 if (AgentPrompt.hasFactualClaim(finalBgVc249) || usedToolsVc249.isNotEmpty()) {
                     // vc277 O16(b): kuota reviewer habis — reviewer
                     // dilewati dengan penanda, bukan diam-diam lolos.
-                    // F2a RESIDU 1: gate ENGINE-AWARE (baca engine SEKALI).
-                    // openai → kuota bucket reviewer per-provider (Governor
-                    // Models API) + teks refusalModels, TANPA suffix
-                    // "tidak independen" (reviewer stateless, independen).
-                    // deepseek (transisi) → perilaku LAMA persis
-                    // (overCapReviewer + reviewerOverCapText + suffix).
-                    val engineBg = AgentEngines.current(ctx)
-                    val indepBgVc275 = if (LlmEngineChat.reviewerIndependent(engineBg)) "" else " (reviewer tidak independen — reviewer latar memakai sesi yang sama dengan giliran agen)"
-                    val reviewerProviderBg = if (engineBg == "openai") try { LlmEngineChat.resolveProvider(ctx) } catch (e: Exception) { null } else null
-                    val overCapReviewerBgVc277 = if (engineBg == "openai") reviewerProviderBg?.let { Governor.overCapModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: false else Governor.overCapReviewer(ctx)
+                    // F2a: kuota bucket reviewer per-provider (Governor
+                    // Models API) + teks refusalModels. Reviewer stateless
+                    // (independen) — tanpa suffix "tidak independen".
+                    val reviewerProviderBg = try { LlmEngineChat.resolveProvider(ctx) } catch (e: Exception) { null }
+                    val overCapReviewerBgVc277 = reviewerProviderBg?.let { Governor.overCapModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: false
                     if (overCapReviewerBgVc277) {
-                        val overCapTextBgVc275 = if (engineBg == "openai") reviewerProviderBg?.let { Governor.refusalModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: Governor.reviewerOverCapText(ctx) else Governor.reviewerOverCapText(ctx) + indepBgVc275
+                        val overCapTextBgVc275 = reviewerProviderBg?.let { Governor.refusalModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: ""
                         deliverBgVc249 = overCapTextBgVc275 + "\n\n" + deliverBgVc249
                     }
                     try {
@@ -885,7 +800,7 @@ object BgBrain {
                         if (!overCapReviewerBgVc277 && claimsBgVc249.isNotEmpty()) {
                             val pinnedBgR = try { RedactSecrets.redact(MemoryDb.get(ctx).pinnedFactsText()) } catch (e: Exception) { "" }
                             val evBg = ("TUGAS:\n" + task + "\nHASIL TOOL:\n" + transcript.toString() + "\nFAKTA PIN:\n" + pinnedBgR).take(16000)
-                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer); tetap gagal -> penanda "belum terverifikasi". F2a: openai → reviewer stateless independen (label indepBgVc275 kosong); deepseek → reviewer memakai sesi yang sama dengan giliran agen (label tidak independen).
+                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (chatSync reviewer=true bump bucket reviewer); tetap gagal -> penanda "belum terverifikasi". Reviewer stateless independen.
                             var unsBg: List<Int> = emptyList()
                             var concBg = false
                             var reviewFailBgVc275 = false
@@ -900,11 +815,11 @@ object BgBrain {
                             } catch (e: Exception) { reviewFailBgVc275 = true }
                             // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
                             val unsBgFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsBgVc249, unsBg, pinnedBgR.lines(), task)
-                            if (reviewFailBgVc275) deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepBgVc275 + "\n\n" + deliverBgVc249
-                            else if (unsBgFiltVc266.isNotEmpty()) deliverBgVc249 = AgentPrompt.reviewerNoteText(claimsBgVc249, unsBgFiltVc266) + indepBgVc275 + "\n\n" + AgentPrompt.applyDoublePass(deliverBgVc249, claimsBgVc249, unsBgFiltVc266)
+                            if (reviewFailBgVc275) deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + deliverBgVc249
+                            else if (unsBgFiltVc266.isNotEmpty()) deliverBgVc249 = AgentPrompt.reviewerNoteText(claimsBgVc249, unsBgFiltVc266) + "\n\n" + AgentPrompt.applyDoublePass(deliverBgVc249, claimsBgVc249, unsBgFiltVc266)
                         }
                     } catch (e: Exception) {
-                        deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepBgVc275 + "\n\n" + deliverBgVc249
+                        deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + deliverBgVc249
                     }
                 }
                 try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] selesai: $steps langkah, ${System.currentTimeMillis() - loopStartMsVc263} ms, prompt terakhir ${prompt.length} char, transkrip ${transcript.length} char") } catch (e: Exception) {}
@@ -1087,7 +1002,7 @@ object BgBrain {
     }
 
     /** F5b: pangkas riwayat messages latar bila melewati ambang proaktif
-     *  80% cap (cermin guard prompt deepseek di loopInnerVc263). Yang
+     *  80% cap (cermin guard prompt lama di loopInnerVc263). Yang
      *  dibuang: blok pertukaran TERLAMA (assistant + hasil tool + pesan
      *  instruksi) — pesan user pertama (prompt penuh) TIDAK PERNAH
      *  dibuang; pasangan assistant↔tool selalu dibuang bersama supaya
@@ -1500,13 +1415,6 @@ object BgBrain {
             val transcript = StringBuilder(claimed.transcript)
             transcript.append("\n[HASIL TOOL] $tool (persetujuan notifikasi: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
             val sessionId = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
-            // D1 (Fase 1): engine openai LEWATI ensureClient sepenuhnya.
-            // Jalur deepseek tetap: WebView gagal → antre diam-diam.
-            if (AgentEngines.current(app) != "openai") {
-                ensureClient(app) ?: run {
-                    MemoryDb.enqueuePrompt(app, claimed.task); return@execute
-                }
-            }
             val jobId = claimed.job.ifBlank { null }
             val jobTools = claimed.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
             loop(app, claimed.task, claimed.origin,
@@ -1558,13 +1466,6 @@ object BgBrain {
             val transcript = StringBuilder(row.transcript)
             transcript.append("\n[HASIL TOOL] $tool (konfirmasi kedua dalam-app: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
             val sessionId = row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
-            // D1 (Fase 1): engine openai LEWATI ensureClient sepenuhnya.
-            // Jalur deepseek tetap: WebView gagal → antre diam-diam.
-            if (AgentEngines.current(app) != "openai") {
-                ensureClient(app) ?: run {
-                    MemoryDb.enqueuePrompt(app, row.task); return@execute
-                }
-            }
             val jobId = row.job.ifBlank { null }
             val jobTools = row.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
             loop(app, row.task, row.origin,
@@ -1742,38 +1643,28 @@ object BgBrain {
         try { if (jobId != null) MemoryDb.get(ctx).logJob(jobId, "gagal", (e.message ?: "").take(120)) } catch (e: Exception) {}
         val msg = e.message ?: ""
         EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] GAGAL: ${msg.take(180)}")
-        // vc316 P1: klasifikasi via DsFailure.bgActionFor — JANGAN lagi
-        // contains(...) manual di sini. Rate-limit MURNI = COOLDOWN (catat
-        // bgLastRateLimitTs 15 mnt, antrekan tugas) dan JANGAN tandai
-        // bgSessionDead=true + JANGAN notif 7702: rate-limit bukan sesi
-        // mati, hanya perlu menunggu. submit() sudah menahan tugas baru
-        // selama cooldown (alasan "cooldown") dan tick berikutnya
-        // mencoba lagi. Suspend/token tetap SESSION_DEAD seperti dulu.
-        when (DsFailure.bgActionFor(e)) {
-            DsFailure.BgErrorAction.COOLDOWN -> {
-                prefs(ctx).edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
-                MemoryDb.enqueuePrompt(ctx, task)
-                return
-            }
-            DsFailure.BgErrorAction.SESSION_DEAD -> {
-                // Sesi DeepSeek mati: jeda Otak Latar, minta login ulang (sekali per
-                // episode), tugas jatuh ke antrean lama sampai login lagi.
-                val p = prefs(ctx)
-                val firstTime = !p.getBoolean("bgSessionDead", false)
-                p.edit().putBoolean("bgSessionDead", true).apply()
-                MemoryDb.enqueuePrompt(ctx, task)
-                if (firstTime) {
-                    notify(ctx, 7702, "🔐 Sesi DeepSeek berakhir — Otak Latar jeda",
-                        "Buka app & login ulang di tab Web. Tugas latar sementara diantrekan dan jalan saat app dibuka.",
-                        "Sesi DeepSeek untuk Otak Latar tidak terbaca (kemungkinan kedaluwarsa). Buka Harness, login ulang di tab Web; setelah itu tugas terjadwal, aturan, briefing & konsolidasi kembali dieksekusi langsung di latar. Tugas yang datang selama jeda diantrekan seperti pola lama.")
-                }
-                return
-            }
-            DsFailure.BgErrorAction.GENERIC -> { /* jatuh ke notif gagal per origin di bawah */ }
+        // K1 (Fase 6): klasifikasi lokal pengganti DsFailure.bgActionFor
+        // (dihapus bersama klien API internal lama). Rate-limit MURNI = COOLDOWN (catat
+        // bgLastRateLimitTs 15 mnt, antrekan tugas, tanpa notif).
+        // Semua error lain = GENERIC (notif gagal per origin di bawah).
+        // TIDAK ADA lagi "sesi mati" / notif 7702 — provider Models API
+        // tidak punya sesi login yang bisa mati.
+        if (isRateLimitError(msg)) {
+            prefs(ctx).edit().putLong("bgLastRateLimitTs", System.currentTimeMillis()).apply()
+            MemoryDb.enqueuePrompt(ctx, task)
+            return
         }
         if (origin in setOf("jadwal", "tujuan", "briefing", "rekap", "tes")) {
             notify(ctx, NotifIds.bgFailId(origin), "⚠️ Tugas latar gagal ($origin)", msg.take(180), msg)
         }
+    }
+
+    /** Sinyal rate-limit dari pesan error helper/client: kode HTTP 429
+     *  ("HTTP 429: ...") atau substring rate_limit / too frequent. */
+    private fun isRateLimitError(msg: String): Boolean {
+        val m = msg.lowercase(Locale.US)
+        if (m.contains("rate_limit") || m.contains("too frequent")) return true
+        return Regex("HTTP\\s+429").containsMatchIn(msg)
     }
 
     // ---------------- Konsolidasi memori malam ----------------

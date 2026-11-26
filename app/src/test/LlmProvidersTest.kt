@@ -3,9 +3,10 @@ package com.senzwh.deepharness
 // Test JVM murni (tanpa Android) untuk registry provider LLM kustom.
 // Dijalankan oleh tools/run_tests.sh — TIDAK ikut masuk APK.
 //
-// Menjaga invarian: id valid, id bawaan tak tergantikan, duplikat di-upsert,
-// dan resolusi provider aktif jatuh balik ke deepseek bila provider aktif
-// hilang.
+// Menjaga invarian: id valid, id "local" tak tergantikan, duplikat
+// di-upsert, dan resolusi provider aktif jatuh ke KOSONG (belum ada
+// provider aktif, K1 Fase 6) bila provider aktif hilang — bukan ke
+// provider bawaan (provider bawaan DeepSeek internal sudah dihapus).
 
 private var failed = 0
 
@@ -31,13 +32,13 @@ private inline fun checkRejects(name: String, block: () -> Unit) {
 fun main() {
     println("== LlmProvidersTest ==")
 
-    check("deepseek bawaan ada", LlmProviders.find(LlmProviders.ID_DEEPSEEK) != null)
-    check("deepseek builtIn", LlmProviders.find(LlmProviders.ID_DEEPSEEK)!!.builtIn)
-    check("default aktif = deepseek", LlmProviders.activeId() == LlmProviders.ID_DEEPSEEK,
-        "aktif=" + LlmProviders.activeId())
-    check("activeProvider = deepseek", LlmProviders.activeProvider().id == LlmProviders.ID_DEEPSEEK)
-    check("all awal hanya deepseek", LlmProviders.all().map { it.id } == listOf(LlmProviders.ID_DEEPSEEK),
+    check("tidak ada provider bawaan 'deepseek' (K1)",
+        LlmProviders.find("deepseek") == null)
+    check("all awal kosong (tanpa provider bawaan)", LlmProviders.all().isEmpty(),
         "all=" + LlmProviders.all().map { it.id })
+    check("default aktif kosong (belum ada provider)", LlmProviders.activeId() == "",
+        "aktif=" + LlmProviders.activeId())
+    check("activeProvider null bila belum ada", LlmProviders.activeProvider() == null)
 
     val added = LlmProviders.addCustom(
         "openai", "OpenAI", "https://api.openai.com/v1", "sk-test", "gpt-4o-mini", true
@@ -65,9 +66,11 @@ fun main() {
     checkRejects("id format tidak valid ditolak") {
         LlmProviders.addCustom("Bad-ID!", "X", "https://a.b/v1", "k", "m", true)
     }
-    checkRejects("id reserved deepseek ditolak") {
-        LlmProviders.addCustom(LlmProviders.ID_DEEPSEEK, "X", "https://a.b/v1", "k", "m", true)
-    }
+    // K1 (Fase 6): id "deepseek" TIDAK dicadangkan lagi — provider bawaan
+    // internal sudah dihapus, jadi id itu bebas dipakai provider kustom.
+    val freed = LlmProviders.addCustom("deepseek", "DS Kustom", "https://a.b/v1", "k", "m", true)
+    check("id deepseek bebas dipakai provider kustom", freed.id == "deepseek" && !freed.builtIn)
+    check("removeCustom deepseek kustom sukses", LlmProviders.removeCustom("deepseek"))
     checkRejects("id reserved local ditolak") {
         LlmProviders.addCustom("local", "X", "https://a.b/v1", "k", "m", true)
     }
@@ -84,20 +87,19 @@ fun main() {
 
     check("removeCustom custom sukses", LlmProviders.removeCustom("openai"))
     check("custom hilang sesudah remove", LlmProviders.find("openai") == null)
-    check("removeCustom bawaan ditolak", !LlmProviders.removeCustom(LlmProviders.ID_DEEPSEEK))
     check("removeCustom id tak dikenal ditolak", !LlmProviders.removeCustom("tidak-ada"))
 
     LlmProviders.addCustom("groq", "Groq", "https://api.groq.com/openai/v1", "gsk_1", "llama-3.1-70b", true)
     LlmProviders.setActive("groq")
     check("setActive pindah ke groq", LlmProviders.activeId() == "groq", "aktif=" + LlmProviders.activeId())
-    check("activeProvider mengikuti", LlmProviders.activeProvider().id == "groq")
+    check("activeProvider mengikuti", LlmProviders.activeProvider()?.id == "groq")
     LlmProviders.removeCustom("groq")
-    check("aktif jatuh ke deepseek setelah provider aktif dihapus",
-        LlmProviders.activeId() == LlmProviders.ID_DEEPSEEK, "aktif=" + LlmProviders.activeId())
+    check("aktif kosong setelah provider aktif dihapus",
+        LlmProviders.activeId() == "", "aktif=" + LlmProviders.activeId())
     checkRejects("setActive id tak dikenal ditolak") {
         LlmProviders.setActive("tidak-ada")
     }
-    LlmProviders.setActive(LlmProviders.ID_DEEPSEEK)
+    LlmProviders.setActive("nokey")
 
     // chat() — validasi gagal tanpa jaringan (onError dipanggil)
     var err: String? = null
@@ -105,8 +107,9 @@ fun main() {
     check("chat provider null → error", err?.contains("belum dikonfigurasi", ignoreCase = true) == true, "err=$err")
 
     err = null
-    LlmProviders.chat(null, LlmProviders.find(LlmProviders.ID_DEEPSEEK), "x", false, { }, { _, _ -> }, { err = it })
-    check("chat provider deepseek → error", err?.contains("bukan OpenAI-compatible", ignoreCase = true) == true, "err=$err")
+    // Preset deepseek-platform (Models API, §8.2-1) tanpa key → error key.
+    LlmProviders.chat(null, LlmProviders.preset("deepseek-platform"), "x", false, { }, { _, _ -> }, { err = it })
+    check("chat preset deepseek-platform tanpa key → error", err?.contains("belum ada", ignoreCase = true) == true, "err=$err")
 
     err = null
     LlmProviders.chat(null, LlmProviders.addCustom("nokey2", "X", "https://a.b/v1", null, "m", true), "x", false, { }, { _, _ -> }, { err = it })
@@ -152,8 +155,8 @@ fun main() {
     check("T11 removeCustom aktif → pindah ke configured lain",
         LlmProviders.activeId() == "cap_b", "aktif=" + LlmProviders.activeId())
     LlmProviders.removeCustom("cap_b")
-    check("T11 removeCustom aktif terakhir → jatuh ke deepseek",
-        LlmProviders.activeId() == LlmProviders.ID_DEEPSEEK, "aktif=" + LlmProviders.activeId())
+    check("T11 removeCustom aktif terakhir → aktif kosong",
+        LlmProviders.activeId() == "", "aktif=" + LlmProviders.activeId())
 
     // parseConfigEntry: skema baru terbaca, skema lama kompatibel mundur.
     val parsedNew = LlmProviderStore.parseConfigEntry("pnew",
@@ -242,7 +245,6 @@ fun main() {
         LlmProviderStore.loadCustom(storeCtx).none { it.id == "store1" })
     check("T11 delete hapus cache model",
         LlmProviderStore.loadModels(storeCtx, "store1").isEmpty())
-    LlmProviders.setActive(LlmProviders.ID_DEEPSEEK)
 
     println(if (failed == 0) "SEMUA LULUS" else "GAGAL: $failed cek")
     if (failed != 0) kotlin.system.exitProcess(1)
