@@ -42,16 +42,19 @@ object AgentEngines {
         )
     )
 
-    fun info(id: String): EngineInfo = ALL.firstOrNull { it.id == id }
-        ?: if (LlmProviders.find(id) != null) {
-            EngineInfo(
+    fun info(id: String): EngineInfo {
+        ALL.firstOrNull { it.id == id }?.let { return it }
+        val p = LlmProviders.find(id)
+        if (p != null) {
+            return EngineInfo(
                 id,
-                LlmProviders.find(id)!!.label + " (OpenAI-compatible)",
+                p.label + " (OpenAI-compatible)",
                 setOf(Cap.TEXT_TOOLS, Cap.STREAMING, Cap.THINKING),
-                "Provider LLM kustom OpenAI-compatible aktif (baseUrl=${LlmProviders.find(id)!!.baseUrl}, model=${LlmProviders.find(id)!!.model})."
+                "Provider LLM kustom OpenAI-compatible aktif (baseUrl=${p.baseUrl}, model=${p.model})."
             )
         }
-        ?: ALL[0]
+        return ALL[0]
+    }
 
     fun current(ctx: Context): String {
         val raw = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("agentEngine", "deepseek") ?: "deepseek"
