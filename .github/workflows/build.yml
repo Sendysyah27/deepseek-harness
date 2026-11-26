@@ -20,6 +20,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default action menginstal paket `tools` yang sudah obsolete
+          # (sdkmanager exit 1 di runner). Cukup platform-tools; platform
+          # android-34 + build-tools dipasang di langkah berikutnya.
+          packages: "platform-tools"
 
       - name: Install Android platform + build-tools
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
