@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# run_tests.sh — test cepat tanpa Android/Gradle.
+#
+#   1. ToolRegistryTest (JVM murni): konsistensi katalog tool.
+#   2. test_flavor.py: logika flavor Pure di build.py.
+#
+# Pemakaian:
+#   bash tools/run_tests.sh
+#   HARNESS_KOTLINC=/path/to/kotlinc bash tools/run_tests.sh
+#
+# Butuh: kotlinc (+ kotlin-stdlib.jar), python3, curl/wget (unduh org.json).
+set -euo pipefail
+
+PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KOTLINC="${HARNESS_KOTLINC:-$(command -v kotlinc || true)}"
+if [ -z "$KOTLINC" ] || [ ! -x "$KOTLINC" ]; then
+  echo "kotlinc tidak ditemukan (set HARNESS_KOTLINC)" >&2
+  exit 1
+fi
+KOTLIN_HOME="$(cd "$(dirname "$KOTLINC")/.." && pwd)"
+STDLIB="$KOTLIN_HOME/lib/kotlin-stdlib.jar"
+if [ ! -f "$STDLIB" ]; then
+  echo "kotlin-stdlib.jar tidak ada di $KOTLIN_HOME/lib" >&2
+  exit 1
+fi
+
+JSON_JAR="$PROJ/vendor/test/json.jar"
+if [ ! -s "$JSON_JAR" ]; then
+  mkdir -p "$(dirname "$JSON_JAR")"
+  URL="https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar"
+  echo "== unduh org.json =="
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" -o "$JSON_JAR"
+  else wget -qO "$JSON_JAR" "$URL"; fi
+fi
+
+OUT="$PROJ/build-test"
+rm -rf "$OUT"
+mkdir -p "$OUT"
+
+echo "== kompilasi test Kotlin =="
+"$KOTLINC" -nowarn -cp "$JSON_JAR" -d "$OUT" \
+  "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/ToolRegistry.kt" \
+  "$PROJ/app/src/test/ToolRegistryTest.kt"
+
+echo "== jalankan ToolRegistryTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolRegistryTestKt
+
+echo "== jalankan test_flavor.py =="
+python3 "$PROJ/tools/test_flavor.py"
+
+echo "SEMUA TEST LULUS."
