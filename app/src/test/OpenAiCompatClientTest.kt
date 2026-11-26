@@ -138,6 +138,60 @@ fun main() {
             "dapat=${calls.map { it.index }}")
     }
 
+    // ------------------------------------------- T1: content + tool_calls bersamaan
+    run {
+        val sse = """
+            data: {"choices":[{"delta":{"content":"Saya "}}]}
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_7","type":"function","function":{"name":"read_file","arguments":""}}]}}]}
+            data: {"choices":[{"delta":{"content":"cek dulu"}}]}
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"/x\"}"}}]}}]}
+            data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}
+            data: [DONE]
+        """.trimIndent()
+        val partials = mutableListOf<String>()
+        val outcome = OpenAiCompatClient.parseSse(BufferedReader(StringReader(sse)), { partials.add(it) }, {})
+        check("T1 content + tool_calls: content gabung", outcome.result.content == "Saya cek dulu", "dapat=${outcome.result.content}")
+        val call = outcome.result.toolCalls.singleOrNull()
+        check("T1 content + tool_calls: tool call ikut ada",
+            call?.id == "call_7" && call?.name == "read_file" &&
+                call?.argumentsJson == """{"path":"/x"}""" && !call.argumentsBroken,
+            "dapat=$call")
+        check("T1 content + tool_calls: finish_reason tool_calls", outcome.result.finishReason == "tool_calls")
+        check("T1 content + tool_calls: onPartial tetap per fragmen content",
+            partials == listOf("Saya ", "cek dulu"), "dapat=$partials")
+    }
+    run {
+        // Non-stream: message.content + message.tool_calls bersamaan.
+        val server = startServer { ex ->
+            val body = requestBody(ex)
+            if (body.contains("\"stream\":true")) {
+                ex.sendResponseHeaders(500, -1)
+                return@startServer
+            }
+            respond(ex, 200, """{"model":"m1","choices":[{"message":{"role":"assistant","content":"Saya cek dulu","tool_calls":[{"id":"call_8","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"/y\"}"}}]},"finish_reason":"tool_calls"}]}""")
+        }
+        try {
+            var done: ChatResult? = null
+            var err: String? = null
+            OpenAiCompatClient.chatMessages(baseUrl(server), FAKE_KEY, "m1",
+                listOf(ChatMessage("user", "baca file")), null, false,
+                onPartial = {}, onDeltaToolCall = {},
+                onDone = { done = it }, onError = { err = it })
+            check("T1 non-stream content + tool_calls: keduanya ada",
+                done?.content == "Saya cek dulu" && done?.toolCalls?.size == 1,
+                "dapat=$done err=$err")
+            val call = done?.toolCalls?.singleOrNull()
+            check("T1 non-stream content + tool_calls: isi tool call benar",
+                call?.id == "call_8" && call?.name == "read_file" &&
+                    call?.argumentsJson == """{"path":"/y"}""" && call?.argumentsBroken == false,
+                "dapat=$call")
+            check("T1 non-stream content + tool_calls: finish_reason tool_calls",
+                done?.finishReason == "tool_calls", "dapat=${done?.finishReason}")
+        } finally {
+            server.stop(0)
+        }
+    }
+
     // ---------------------------------------------------------- T2: streaming
     run {
         val sse = """

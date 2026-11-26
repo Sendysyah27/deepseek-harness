@@ -112,9 +112,12 @@ object LlmProviders {
         return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
     }
 
-    /** Normalisasi nilai toolsSupport ke {native, unknown, unsupported}. */
+    /** Normalisasi nilai toolsSupport ke {native, unknown, unsupported,
+     *  text_fallback} (§2.5 + Fase 5a): "text_fallback" = provider
+     *  menolak native tools — pemanggil memakai jalur teks (§2.4,
+     *  dipakai shouldUseNativeTools). Nilai lain → "unknown". */
     fun normalizeToolsSupport(raw: String?): String = when (raw?.trim()?.lowercase()) {
-        "native", "unsupported" -> raw.trim().lowercase()
+        "native", "unsupported", "text_fallback" -> raw.trim().lowercase()
         else -> "unknown"
     }
 

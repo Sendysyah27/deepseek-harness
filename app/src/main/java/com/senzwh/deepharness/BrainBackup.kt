@@ -244,20 +244,28 @@ object BrainBackup {
                     }
                 }
                 ed.apply()
-                // §1 C2 (Fase 1): nilai backup agentEngine yang berupa id
-                // provider kustom lama BUKAN engine — petakan ke "openai"
-                // + activeId=id bila provider masih ada, else "deepseek"
-                // (selama transisi). Nilai "deepseek"/"local"/"openai"
-                // dan legacy "bridge"/"qwen"/"kimi" dibiarkan (current()
-                // sudah memetakan legacy → deepseek).
-                if (restoredEngine != null && restoredEngine !in setOf("deepseek", "local", "openai", "bridge", "qwen", "kimi")) {
+                // §6.4 (Fase 5): nilai backup agentEngine dipetakan dengan
+                // aturan yang sama seperti migrasi upgrade — "deepseek" /
+                // legacy "bridge"/"qwen"/"kimi" / id kustom → "openai";
+                // "local" tetap. Id kustom yang masih ada → activeId=id;
+                // bila sesudahnya tidak ada provider configured →
+                // flowProviderSkipped (banner, bukan wizard paksa).
+                if (restoredEngine != null) {
                     try {
-                        LlmProviderStore.hydrate(ctx)
-                        if (LlmProviders.find(restoredEngine) != null) {
-                            AgentEngines.setCurrent(ctx, "openai")
-                            LlmProviderStore.setActive(ctx, restoredEngine)
-                        } else {
-                            AgentEngines.setCurrent(ctx, "deepseek")
+                        val migrated = FirstRunState.migrateAgentEngine(restoredEngine) { LlmProviders.find(it) != null }
+                        if (migrated != restoredEngine) AgentEngines.setCurrent(ctx, migrated)
+                        if (restoredEngine !in setOf("deepseek", "local", "openai", "bridge", "qwen", "kimi")) {
+                            LlmProviderStore.hydrate(ctx)
+                            if (LlmProviders.find(restoredEngine) != null) {
+                                LlmProviderStore.setActive(ctx, restoredEngine)
+                            }
+                        }
+                        if (AgentEngines.current(ctx) == "openai") {
+                            LlmProviderStore.hydrate(ctx)
+                            val ap = LlmProviders.find(LlmProviderStore.activeId(ctx))
+                            if (ap == null || ap.kind != LlmKind.OPENAI_COMPAT || !ap.configured) {
+                                ctx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putBoolean("flowProviderSkipped", true).apply()
+                            }
                         }
                     } catch (e: Exception) { }
                 }

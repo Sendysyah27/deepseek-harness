@@ -174,6 +174,45 @@ object LlmProviderStore {
         }
     }
 
+    /** Tandai dukungan tools provider (§2.5, Fase 5a): simpan
+     *  toolsSupport baru ke cfg_<id> + registry in-memory. Hanya untuk
+     *  provider OPENAI_COMPAT; false bila provider tidak ditemukan /
+     *  bukan openai-compat / gagal simpan. */
+    fun markToolsSupport(ctx: Context, id: String, support: String): Boolean {
+        val current = LlmProviders.find(id) ?: return false
+        if (current.kind != LlmKind.OPENAI_COMPAT) return false
+        return updateProviderRecord(ctx, current.copy(
+            toolsSupport = LlmProviders.normalizeToolsSupport(support)))
+    }
+
+    /** Tandai fallback role:tool (§2.5.3): panggilan berikut langsung
+     *  memakai format teks hasil-tool, tanpa mengulang 400. */
+    fun markToolRoleFallback(ctx: Context, id: String, value: Boolean = true): Boolean {
+        val current = LlmProviders.find(id) ?: return false
+        if (current.kind != LlmKind.OPENAI_COMPAT) return false
+        return updateProviderRecord(ctx, current.copy(toolRoleFallback = value))
+    }
+
+    /** Perbarui satu record provider: registry in-memory (addCustom
+     *  menimpa id yang sama) + cfg_<id> di prefs. */
+    private fun updateProviderRecord(ctx: Context, updated: LlmProvider): Boolean {
+        return try {
+            LlmProviders.addCustom(
+                updated.id, updated.label, updated.baseUrl, updated.apiKey,
+                updated.model, updated.enabled, updated.dailyCapUnits,
+                updated.maxPromptChars, updated.maxOutputTokens,
+                updated.thinkingParam, updated.toolsSupport, updated.vision,
+                updated.toolRoleFallback
+            )
+            val ok = save(ctx, updated)
+            if (!ok) Log.w(TAG, "mark provider '${updated.id}': save gagal")
+            ok
+        } catch (e: Exception) {
+            Log.w(TAG, "mark provider '${updated.id}' gagal: ${e.message}")
+            false
+        }
+    }
+
     /** Hapus provider kustom + API key + cache model + counter Governor. */
     fun delete(ctx: Context, id: String) {
         try {

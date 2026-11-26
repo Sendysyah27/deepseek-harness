@@ -657,6 +657,73 @@ object ToolRegistry {
         return sb.toString()
     }
 
+    // ---- Skema JSON native tool_calls (§2.2, Fase 5a) ----
+    // Dibangun dari data registry yang sama dengan katalog teks, jadi
+    // tidak pernah drift dari ToolRegistry.ALL / Tools.validateArgs.
+
+    /** Tool yang TIDAK PERNAH dikirim sebagai native function calling
+     *  (§2.2) — SATU konstanta, bukan tersebar:
+     *  `list_tools` (meta — katalog lengkap sudah ada di system prompt /
+     *  di `tools` itu sendiri), `llm_provider_set` + `llm_provider_remove`
+     *  (mengubah otak dari dalam otak = risiko; hanya lewat UI Setup /
+     *  dialog). `llm_provider_ask` / `llm_provider_list` tetap native
+     *  (read-only). `ask` BUKAN tool registry — tetap teks (§2.2). */
+    val NATIVE_TOOLS_EXCLUDED: Set<String> =
+        setOf("list_tools", "llm_provider_set", "llm_provider_remove")
+
+    /** Cap panjang description di skema native (§2.2) — desc registry
+     *  TIDAK diubah; pemangkasan hanya di sini. */
+    const val TOOL_DESC_MAX_CHARS = 2000
+
+    /** Seluruh tool (default [ALL]) sebagai payload OpenAI `tools`.
+     *  Tool di [NATIVE_TOOLS_EXCLUDED] selalu disaring, termasuk bila
+     *  disertakan eksplisit di `include` — mereka tidak pernah native. */
+    fun toolsJson(include: List<ToolDef> = ALL): JSONArray {
+        val arr = JSONArray()
+        for (def in include) {
+            if (def.name in NATIVE_TOOLS_EXCLUDED) continue
+            arr.put(toolJsonSchema(def))
+        }
+        return arr
+    }
+
+    /** Satu [ToolDef] → `{"type":"function","function":{"name":...,
+     *  "description":...,"parameters":{"type":"object","properties":
+     *  {...},"required":[...]}}}`. `desc` dipakai apa adanya (cap
+     *  [TOOL_DESC_MAX_CHARS]); `enumValues` terisi → `"enum"`. */
+    fun toolJsonSchema(def: ToolDef): JSONObject {
+        val props = JSONObject()
+        val required = JSONArray()
+        for (arg in def.args) {
+            val schema = JSONObject()
+            schema.put("type", argJsonType(arg.type))
+            if (arg.enumValues.isNotEmpty()) schema.put("enum", JSONArray(arg.enumValues))
+            props.put(arg.name, schema)
+            if (arg.required) required.put(arg.name)
+        }
+        val params = JSONObject()
+        params.put("type", "object")
+        params.put("properties", props)
+        params.put("required", required)
+        val fn = JSONObject()
+        fn.put("name", def.name)
+        fn.put("description", def.desc.take(TOOL_DESC_MAX_CHARS))
+        fn.put("parameters", params)
+        return JSONObject().put("type", "function").put("function", fn)
+    }
+
+    /** `ArgSpec.type` → tipe skema JSON (§2.2): string→string,
+     *  int→integer, bool/boolean→boolean, array→array, object→object,
+     *  number→number; tipe tak dikenal → string (bukan crash). */
+    private fun argJsonType(type: String): String = when (type.lowercase()) {
+        "int", "integer" -> "integer"
+        "bool", "boolean" -> "boolean"
+        "array" -> "array"
+        "object" -> "object"
+        "number" -> "number"
+        else -> "string"
+    }
+
     // Jarak edit (Levenshtein) untuk saran nama terdekat O3.
     private fun editDistance(a: String, b: String): Int {
         val m = a.length

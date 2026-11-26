@@ -139,50 +139,25 @@ object LlmEngineChat {
         thinking && provider.thinkingParam.isNotBlank()
 
     /**
+     * Native tools dipakai kecuali provider ditandai "text_fallback"
+     * (§2.5, Fase 5a): provider itu menolak function calling native,
+     * pemanggil memakai jalur teks. Nilai lain (native / unknown /
+     * unsupported) → true; "unsupported" ditangani di error path
+     * (400 → bubble + tanpa retry, bukan di sini).
+     */
+    fun shouldUseNativeTools(toolsSupport: String): Boolean =
+        toolsSupport.trim().lowercase() != "text_fallback"
+
+    /**
      * Konversi List<ToolDef> → JSONArray skema OpenAI `tools` (§2.2).
-     * SEMENTARA sampai ToolRegistry.toolsJson() mendarat (Fase 5, K2) —
-     * saat itu fungsi ini diganti satu baris memanggil toolsJson().
-     * Aturan: tiap tool → {"type":"function","function":{name, description
-     * (cap 2000 char), parameters:{type:object, properties, required}}};
-     * ArgSpec.type dipetakan string/int/bool/array/object/number;
-     * enumValues terisi → "enum". Null/empty → null (tanpa tools).
+     * Delegasi satu baris ke ToolRegistry.toolsJson() (Fase 5a) —
+     * termasuk penyaringan NATIVE_TOOLS_EXCLUDED. Null/empty → null
+     * (tanpa tools); hasil kosong sesudah saring → null juga.
      */
     fun toolsToJson(tools: List<ToolRegistry.ToolDef>?): JSONArray? {
         if (tools.isNullOrEmpty()) return null
-        val arr = JSONArray()
-        for (def in tools) {
-            val props = JSONObject()
-            val required = JSONArray()
-            for (arg in def.args) {
-                val schema = JSONObject()
-                schema.put("type", when (arg.type.lowercase()) {
-                    "int", "integer" -> "integer"
-                    "bool", "boolean" -> "boolean"
-                    "array" -> "array"
-                    "object" -> "object"
-                    "number" -> "number"
-                    else -> "string"
-                })
-                if (arg.enumValues.isNotEmpty()) {
-                    schema.put("enum", JSONArray(arg.enumValues))
-                }
-                props.put(arg.name, schema)
-                if (arg.required) required.put(arg.name)
-            }
-            val params = JSONObject()
-            params.put("type", "object")
-            params.put("properties", props)
-            params.put("required", required)
-            val fn = JSONObject()
-            fn.put("name", def.name)
-            fn.put("description", def.desc.take(2000))
-            fn.put("parameters", params)
-            val tool = JSONObject()
-            tool.put("type", "function")
-            tool.put("function", fn)
-            arr.put(tool)
-        }
-        return arr
+        val arr = ToolRegistry.toolsJson(tools)
+        return if (arr.length() == 0) null else arr
     }
 
     // ---- Resolusi provider (Android) ----
@@ -215,11 +190,12 @@ object LlmEngineChat {
     @Throws(Exception::class)
     fun chatSyncForEngine(
         ctx: Context, prompt: String, kind: LlmCallKind,
-        thinking: Boolean = false, timeoutMs: Int = 120_000
+        thinking: Boolean = false, timeoutMs: Int = 120_000,
+        tools: List<ToolRegistry.ToolDef>? = null
     ): String {
         return chatMessagesForEngine(
             ctx, listOf(ChatMessage("user", prompt)), kind,
-            tools = null, thinking = thinking, timeoutMs = timeoutMs
+            tools = tools, thinking = thinking, timeoutMs = timeoutMs
         )
     }
 
@@ -235,7 +211,8 @@ object LlmEngineChat {
         kind: LlmCallKind, tools: List<ToolRegistry.ToolDef>? = null,
         thinking: Boolean = false, timeoutMs: Int = 120_000,
         onPartial: (String) -> Unit = {},
-        onToolCalls: (List<NativeToolCall>) -> Unit = {}
+        onToolCalls: (List<NativeToolCall>) -> Unit = {},
+        toolChoice: Any? = null
     ): String {
         // Engine dibaca SEKALI (current() sudah hydrate — D7).
         val engine = AgentEngines.current(ctx)
@@ -278,7 +255,8 @@ object LlmEngineChat {
             // daftar final disampaikan via onToolCalls sesudah onDone.
             onDeltaToolCall = { },
             onDone = { r -> resultRef.set(r); latch.countDown() },
-            onError = { e -> errRef.set(e); latch.countDown() }
+            onError = { e -> errRef.set(e); latch.countDown() },
+            toolChoice = toolChoice
         )
         val done = try {
             latch.await(timeoutMs.toLong() + 30_000L, TimeUnit.MILLISECONDS)
@@ -287,7 +265,28 @@ object LlmEngineChat {
             false
         }
         if (!done) throw RuntimeException("Provider '${provider.id}' timeout (${timeoutMs} ms) — tidak ada jawaban.")
-        errRef.get()?.let { throw RuntimeException(RedactSecrets.redact(it)) }
+        errRef.get()?.let { rawErr ->
+            val clean = RedactSecrets.redact(rawErr)
+            // §2.5 (Fase 5a): 400 penolakan tools dicatat di cfg_<id>,
+            // bukan diam-diam — hanya bila request ini memang mengirim
+            // tools. TOOLS_UNSUPPORTED → bubble §2.5 1(b), tanpa retry.
+            // ROLE_TOOL_FALLBACK → tandai; fallback format teks sekali
+            // dilakukan pemanggil (sendContinuation), bukan di sini.
+            val rejection = OpenAiCompatClient.classifyToolsRejection(clean)
+            if (rejection != null && tools != null) {
+                when (rejection) {
+                    ToolsRejection.TOOLS_UNSUPPORTED -> {
+                        LlmProviderStore.markToolsSupport(ctx, provider.id, "unsupported")
+                        throw RuntimeException(
+                            OpenAiCompatClient.toolsUnsupportedMessage(provider.id))
+                    }
+                    ToolsRejection.ROLE_TOOL_FALLBACK -> {
+                        LlmProviderStore.markToolRoleFallback(ctx, provider.id, true)
+                    }
+                }
+            }
+            throw RuntimeException(clean)
+        }
         val result = resultRef.get()
             ?: throw RuntimeException("Provider '${provider.id}' timeout / tanpa hasil.")
 

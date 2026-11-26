@@ -75,6 +75,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelCaps.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/VisionFiles.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmEngineChat.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/FirstRunState.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelPickerController.kt" \
   "$PROJ/app/src/test/ToolRegistryTest.kt" \
   "$PROJ/app/src/test/LlmProvidersTest.kt" \
@@ -87,7 +88,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/EngineRouterTest.kt" \
   "$PROJ/app/src/test/ReviewerMigrationTest.kt" \
   "$PROJ/app/src/test/RoomTeamGraphMigrationTest.kt" \
-  "$PROJ/app/src/test/ModelPickerControllerTest.kt"
+  "$PROJ/app/src/test/ModelPickerControllerTest.kt" \
+  "$PROJ/app/src/test/ToolFallbackTest.kt"
 
 echo "== jalankan ToolRegistryTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolRegistryTestKt
@@ -124,6 +126,9 @@ java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.RoomTeamGraphMigrationT
 
 echo "== jalankan ModelPickerControllerTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelPickerControllerTestKt
+
+echo "== jalankan ToolFallbackTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolFallbackTestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"

@@ -30,24 +30,34 @@ import java.util.TreeMap
 data class Result(val content: String, val thinking: String = "", val model: String = "")
 
 /** Satu pesan chat. `imageUrl` hanya untuk role user (K5); `toolCallId`
- *  hanya untuk role "tool" (hasil tool native, §2.5.3). */
+ *  hanya untuk role "tool" (hasil tool native, §2.5.3); `toolCalls`
+ *  hanya untuk role "assistant" (tool call yang dibuat pesan itu, §2.4 —
+ *  dibawa saat lanjutan supaya round-trip role:tool valid OpenAI). */
 data class ChatMessage(
     val role: String,
     val content: String,
     val imageUrl: String? = null,
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+    val toolCalls: List<NativeToolCall> = emptyList()
 )
 
 /** Satu function call native (OpenAI `tool_calls`). `argumentsBroken`
  *  = arguments bukan JSON valid (disimpan mentah, repair di pemanggil,
- *  bukan di client — §2.3). `index` = indeks delta SSE asal. */
+ *  bukan di client — §2.3). `index` = indeks delta SSE asal (dipakai
+ *  pengurutan hasil streaming; default 0 untuk non-stream). */
 data class NativeToolCall(
     val id: String,
     val name: String,
     val argumentsJson: String,
-    val index: Int = 0,
-    val argumentsBroken: Boolean = false
+    val argumentsBroken: Boolean = false,
+    val index: Int = 0
 )
+
+/** Penolakan tools oleh provider (§2.5, Fase 5a): 400 yang menyebut
+ *  tools → provider tidak mendukung function calling; 400 yang menyebut
+ *  role/tool → pesan hasil tool `role:tool` ditolak server (fallback
+ *  teks SEKALI, §2.5.3). */
+enum class ToolsRejection { TOOLS_UNSUPPORTED, ROLE_TOOL_FALLBACK }
 
 /** Hasil satu giliran chat (streaming maupun non-stream). */
 data class ChatResult(
@@ -117,6 +127,31 @@ object OpenAiCompatClient {
     private class UnknownFormatException(message: String) : NoFallbackException(message)
     private class HttpStatusException(val code: Int, message: String) : Exception(message)
 
+    // ------------------------------------------- penolakan tools (§2.5)
+
+    /** Klasifikasi murni pesan error HTTP (§2.5): null bila bukan 400
+     *  yang menyebut tools/role. Urutan: role dulu — "role 'tool' is not
+     *  supported" menyebut keduanya, dan itu kasus fallback (§2.5.3),
+     *  bukan unsupported. "function calling" tanpa kata tool tetap
+     *  dihitung penolakan tools. Pencatatan (tandai provider di
+     *  cfg_<id>) dilakukan pemanggil (LlmEngineChat), bukan di sini —
+     *  client tidak tahu id provider / Context. */
+    fun classifyToolsRejection(errorMessage: String?): ToolsRejection? {
+        val m = errorMessage ?: return null
+        if (!m.contains("400")) return null
+        val lower = m.lowercase()
+        return when {
+            lower.contains("role") -> ToolsRejection.ROLE_TOOL_FALLBACK
+            lower.contains("tool") || lower.contains("function") -> ToolsRejection.TOOLS_UNSUPPORTED
+            else -> null
+        }
+    }
+
+    /** Bubble penolakan tools (§2.5 butir 1(b)) — sediakan di sini,
+     *  JANGAN hardcode di MainActivity. */
+    fun toolsUnsupportedMessage(providerId: String): String =
+        "⚠️ Provider '$providerId' menolak function calling (model ini tidak mendukung tools). Ganti model atau provider di Setup > 73."
+
     // ---------------------------------------------------------------- ask
 
     @Throws(Exception::class)
@@ -172,7 +207,7 @@ object OpenAiCompatClient {
                      apiKey: String,
                      model: String,
                      messages: List<ChatMessage>,
-                     tools: JSONArray?,
+                     tools: JSONArray? = null,
                      thinkingEnabled: Boolean,
                      onPartial: (String) -> Unit,
                      onDeltaToolCall: (NativeToolCall) -> Unit,
@@ -272,6 +307,14 @@ object OpenAiCompatClient {
                 o.put("content", m.content)
             }
             if (m.role == "tool" && m.toolCallId != null) o.put("tool_call_id", m.toolCallId)
+            if (m.role == "assistant" && m.toolCalls.isNotEmpty()) {
+                val tcs = JSONArray()
+                for (tc in m.toolCalls) {
+                    tcs.put(JSONObject().put("id", tc.id).put("type", "function")
+                        .put("function", JSONObject().put("name", tc.name).put("arguments", tc.argumentsJson)))
+                }
+                o.put("tool_calls", tcs)
+            }
             msgs.put(o)
         }
         body.put("messages", msgs)

@@ -50,7 +50,7 @@ import java.io.File
     private val SETUP_CATS = listOf(
         Triple("monitor", "🔐 Izin & Monitor HP", "Izin lanjutan, PIN, kontak darurat, mode siaga"),
         Triple("koneksi", "🔌 Koneksi", "Login AI, izin, koordinator, Mode ADB, Proot"),
-        Triple("mesin", "⚙️ Mesin Agen", "Mesin DeepSeek & 4 browser multi-akun"),
+        Triple("mesin", "⚙️ Mesin Agen", "Models API / Lokal (offline)"),
         Triple("konektor", "🔗 Konektor", "Panel konektor, MCP, Shizuku legacy"),
         Triple("persona", "🎭 Persona & Mode Chat", "Mode chat bawaan, perilaku, otak & profil agen"),
         Triple("otomasi", "🧠 Memori & Otomasi", "Gubernur latar, rutinitas agen, memori, backup otak"),
@@ -65,14 +65,14 @@ import java.io.File
     // label 54. Pencarian label kebal terhadap sisipan tombol baru.
     internal fun MainActivity.catLabels(key: String): List<String> = when (key) {
         "monitor" -> listOf("18.", "19.", "20.", "21.", "22.", "23.", "24.", "25.", "55.")
-        "koneksi" -> listOf("1.", "2.", "3.", "4.", "5.", "6.", "9.", "10.", "33.", "34.", "35.", "36.", "37.", "38.", "52.", "63.", "64.", "67.")
+        "koneksi" -> listOf("2.", "3.", "4.", "5.", "6.", "9.", "10.", "33.", "34.", "35.", "36.", "37.", "38.", "52.", "63.", "64.", "67.")
         "mesin" -> listOf("39.", "73.")
         "konektor" -> listOf("7.", "8.", "61.", "62.", "71.")
-        "persona" -> listOf("11.", "12.", "40.", "41.", "42.")
+        "persona" -> listOf("40.", "41.", "42.")
         "otomasi" -> listOf("13.", "14.", "15.", "16.", "17.", "28.", "29.", "30.", "31.", "32.", "49.", "50.", "53.", "54.", "56.", "65.", "65a.", "65b.", "66.", "68.", "69.", "70.")
         "skill" -> listOf("51.")
         "tampilan" -> listOf("26.", "27.", "44.", "45.", "46.", "47.", "48.")
-        "debug" -> listOf("57.", "58.", "59.", "60.", "12b.", "12c.", "12d.")
+        "debug" -> listOf("57.", "58.", "59.", "60.")
         else -> emptyList()
     }
 
@@ -86,7 +86,6 @@ import java.io.File
         "24." -> AksiMeta("💬", "Komentar Layar Proaktif", "Tawaran bantuan dari isi layar", 0)
         "25." -> AksiMeta("🔄", "Akun Google & Sinkron", "Gmail + frasa sandi memori", 0)
         "55." -> AksiMeta("📰", "Tes Laporan Pagi", "Tes sekali jalan — hasil via notifikasi", 0)
-        "1." -> AksiMeta("🔑", "Login DeepSeek", "Buka tab Web untuk login", 0)
         "2." -> AksiMeta("🔔", "Akses Notifikasi", "Izin baca notifikasi untuk agen", 0)
         "3." -> AksiMeta("♿", "Aksesibilitas", "Izin aksesibilitas Android", 0)
         "4." -> AksiMeta("📊", "Statistik Pemakaian", "Izin Usage Stats — pemakaian app", 0)
@@ -101,7 +100,7 @@ import java.io.File
         "37." -> AksiMeta("🔗", "Pairing Mandiri", "Pairing Mode ADB S3, tanpa Termux", 0)
         "38." -> AksiMeta("📦", "Via Klien Tertanam", "Nyalakan via klien tertanam S3", 0)
         "52." -> AksiMeta("🐧", "Ubuntu Proot", "Unduh & tes Ubuntu di dalam app", 0)
-        "39." -> AksiMeta("⚙️", "Mesin Agen DeepSeek", "Mesin bawaan + 4 browser multi-akun", 0)
+        "39." -> AksiMeta("⚙️", "Mesin Agen", "Models API (dialog 73) / Lokal (offline)", 0)
         "7." -> AksiMeta("📜", "Shizuku: File rish", "Jalur lama — pakai hanya bila perlu", 0)
         "8." -> AksiMeta("📦", "Shizuku: File dex", "Jalur lama — pakai hanya bila perlu", 0)
         "61." -> AksiMeta("🔗", "Konektor MCP", "Server MCP resmi + kustom", 0)
@@ -112,8 +111,6 @@ import java.io.File
         "63." -> AksiMeta("🧑‍🏭", "Jobs Proot (Supervisor)", "Job latar proot: status, ekor log, kill, restart", 0)
         "64." -> AksiMeta("🔍", "Mitmproxy Terkelola", "Resident mitmproxy: mulai, stop, sehat, route, proxy env", 0)
         "67." -> AksiMeta("👷", "Worker (Device Server)", "Daftar & kendali worker proot/Python", 0)
-        "11." -> AksiMeta("🧪", "Tes Solver PoW", "Tes sekali jalan solver PoW mode API Internal", 0)
-        "12." -> AksiMeta("🔄", "Ganti Mode Chat", "Pindah WebView ⇄ API Internal", 0)
         "40." -> AksiMeta("🎭", "Pak Perilaku Agen", "Preset gaya kerja", 0)
         "41." -> AksiMeta("🧠", "Otak Agen", "Edit file SOUL / AGENTS / MEMORY", 0)
         "42." -> AksiMeta("👤", "Profil Agen", "Ganti / buat agen", 0)
@@ -151,9 +148,6 @@ import java.io.File
         "58." -> AksiMeta("🕵️", "Tes Pola Redaksi", "Uji penyamaran data sensitif di log", 0)
         "59." -> AksiMeta("✅", "Uji Mandiri", "Tes kesehatan app tanpa model & jaringan", 0)
         "60." -> AksiMeta("🐢", "Jejak ANR Terakhir", "Laporan macet (ANR) terakhir", 0)
-        "12b." -> AksiMeta("🎛️", "Mode Operator", "Paksa API Internal + rekam diagnostik", 0)
-        "12c." -> AksiMeta("🎞️", "Lihat Rekaman Diagnostik", "Buka hasil rekaman Mode Operator", 0)
-        "12d." -> AksiMeta("🔍", "Bandingkan Rekaman Browser", "Bandingkan rekaman dengan browser DeepSeek", 0)
         else -> AksiMeta("⚙️", "Aksi " + prefix, "Buka aksi", 0)
     }
 
@@ -247,8 +241,8 @@ import java.io.File
             box.addView(themeSwitchRow())
             when (setupView) {
                 "monitor" -> box.addView(setupPermsCard())
-                "koneksi" -> box.addView(setupLoginAiCard(st))
-                "mesin" -> box.addView(setupSlotCard())
+                "koneksi" -> box.addView(setupModelsApiCard())
+                "mesin" -> box.addView(setupEngineCard())
                 "konektor" -> box.addView(setupConnectorsCard(st))
                 "persona" -> { box.addView(setupDefModeCard()); val pPers = getSharedPreferences("harness", Context.MODE_PRIVATE); val persEt = EditText(this).apply { hint = "Persona / instruksi asisten"; setText(pPers.getString("persona", "")); setTextColor(th.text); setHintTextColor(th.dim); background = roundedS(th.card, 14, th.stroke); minLines = 2 }; box.addView(persEt); box.addView(Button(this).apply { text = "Simpan Persona"; gravity = Gravity.START; background = roundedS(th.card, 14, th.stroke); setTextColor(th.text); setOnClickListener { pPers.edit().putString("persona", persEt.text.toString()).apply(); setupStatusTv.text = "Persona tersimpan ✓ (berlaku mulai pesan chat berikutnya)" } }) }
                 "otomasi" -> { box.addView(setupGovCard(st)); box.addView(setupRoutinesCard(st)) }
@@ -275,7 +269,7 @@ import java.io.File
             box.addView(tv("AKSI KATEGORI INI", 12f, th.dim, true))
             for (prefix in catLabels(setupView)) {
                 if (setupView == "koneksi") {
-                    val grp = when (prefix) { "1." -> "IZIN SISTEM"; "33." -> "KOORDINATOR"; "35." -> "MODE ADB"; "52." -> "LAINNYA"; else -> null }
+                    val grp = when (prefix) { "33." -> "KOORDINATOR"; "35." -> "MODE ADB"; "52." -> "LAINNYA"; else -> null }
                     if (grp != null) box.addView(tv(grp, 12f, th.dim, true).apply { setPadding(0, dp(6), 0, dp(2)) })
                 }
                 if (prefix == "21.") {
@@ -325,111 +319,48 @@ import java.io.File
         return c
     }
 
-    internal fun MainActivity.setupLoginAiCard(st: JSONObject): LinearLayout {
+    /** F5c §5.9 — kartu Models API (pengganti kartu Login AI DeepSeek):
+     *  status otak aktif + tombol ke dialog 73. */
+    internal fun MainActivity.setupModelsApiCard(): LinearLayout {
         val c = cardBoxT()
         val th = currentTheme()
-        c.addView(tv("LOGIN AI", 12f, th.dim, true))
-        fun provRow(name: String, status: String, pillColor: Int): LinearLayout {
-            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(2)) }
-            r.addView(tv(name, 14f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
-            r.addView(TextView(this).apply {
-                text = status; textSize = 11f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD
-                background = rounded(pillColor, 18); setPadding(dp(10), dp(4), dp(10), dp(4))
-            })
-            return r
-        }
-        val logged = st.optBoolean("dsLogin", false)
-        c.addView(provRow("🐳 DeepSeek", if (logged) "Tersambung" else "Terputus", if (logged) Color.rgb(43, 182, 115) else Color.rgb(198, 84, 74)))
+        c.addView(tv("MODELS API", 12f, th.dim, true))
+        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "deepseek" }
+        val prov = try {
+            LlmProviderStore.hydrate(this)
+            LlmProviders.activeProvider().takeIf { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+        } catch (e: Exception) { null }
+        c.addView(tv(
+            if (engine == "local") "Otak aktif: Lokal (offline) — agen aturan tanpa LLM."
+            else if (prov != null) "Otak aktif: ${prov.label} (${prov.id}) • model ${prov.model}"
+            else "Otak belum diatur — atur provider dulu.",
+            13f, th.text))
+        c.addView(Button(this).apply { text = "🧠 Atur Provider (73)"; setOnClickListener { showLlmProviderDialog() } })
+        return c
+    }
+
+    /** F5c §5.9 — kartu Mesin Agen (pengganti kartu 5 Browser slot):
+     *  status engine + jalan ke dialog 73 / tombol 39. */
+    internal fun MainActivity.setupEngineCard(): LinearLayout {
+        val c = cardBoxT()
+        val th = currentTheme()
+        c.addView(tv("MESIN AGEN", 12f, th.dim, true))
+        val engine = try { AgentEngines.current(this) } catch (e: Exception) { "deepseek" }
+        c.addView(tv(
+            if (engine == "local") "Mesin: Lokal (offline)"
+            else "Mesin: Models API (OpenAI-compatible)",
+            13f, th.text))
         val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        rowB.addView(Button(this).apply { text = "🌐 Buka Web Login"; setOnClickListener { showTab("Web") } })
-        rowB.addView(Button(this).apply { text = "🔑 Pool Akun"; setOnClickListener { uiAccountsDialog() } })
+        rowB.addView(Button(this).apply { text = "🧠 Provider LLM (73)"; setOnClickListener { showLlmProviderDialog() } })
+        rowB.addView(Button(this).apply { text = "⚙️ Mesin Agen (39)"; setOnClickListener { setupBtnByLabel("39.")?.performClick() } })
         c.addView(rowB)
         return c
     }
 
-    /** v4.46.0 F2 — Kartu 4 Browser (multi-akun DeepSeek). Per slot: status
-     *  + Buka Browser N + Pakai Browser N + Hapus. Definisi standby yang
-     *  jujur: proses slot hanya jalan saat dibuka; "Siap" = login tersimpan
-     *  (token di pool + sesi di data-dir slot). */
-    internal fun MainActivity.setupSlotCard(): LinearLayout {
-        val c = cardBoxT()
-        val th = currentTheme()
-        c.addView(tv("5 BROWSER — MULTI-AKUN DEEPSEEK", 12f, th.dim, true))
-        val filled = AccountPool.filledSlots(this)
-        val pref = AccountPool.slotPref(this)
-        val eff = AccountPool.resolveSlot(this)
-        c.addView(tv(if (pref == 0) "Mode: Otomatis — chat memakai slot login pertama yang bebas." else "Mode: Browser $pref tetap untuk chat.", 12f, th.dim))
-        c.addView(tv("Standby = login tersimpan di browser slot; proses slot hanya jalan saat dibuka. Tutup app tidak menghapus login slot.", 11.5f, th.dim))
-        c.addView(tv("Persona per slot (khusus grup): satu agen satu slot; tanpa ikatan = fallback lama. Edit teks persona tetap di Kelola Agen.", 11.5f, th.dim))
-        for (slot in 1..5) {
-            val ready = filled.contains(slot)
-            val isEff = eff == slot
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(2)) }
-            row.addView(tv("Browser $slot", 14f, th.text, true).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
-            row.addView(TextView(this).apply {
-                text = (if (ready) "Siap (login tersimpan)" else "Belum login") + (if (isEff) " • AKTIF" else "")
-                textSize = 11f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD
-                background = rounded(if (ready) Color.rgb(43, 182, 115) else Color.rgb(110, 122, 148), 18); setPadding(dp(10), dp(4), dp(10), dp(4))
-            })
-            c.addView(row)
-            val boundName = GroupChat.personaNameFor(GroupChat.slotPersona(host, slot))
-            c.addView(tv("Persona: $boundName", 12f, th.dim))
-            val pickRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (ag in GroupChat.MEMBERS) {
-                val sel = GroupChat.slotPersona(host, slot) == ag.id
-                pickRow.addView(Button(this).apply {
-                    text = ag.name
-                    textSize = 11f
-                    background = rounded(if (sel) try { Color.parseColor(ag.accent) } catch (e: Exception) { Color.rgb(34, 34, 34) } else Color.rgb(34, 34, 34), 14)
-                    setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-                    setOnClickListener { GroupChat.setSlotPersona(host, slot, ag.id); refreshSetupNative() }
-                })
-            }
-            run {
-                val sel = GroupChat.slotPersona(host, slot).isBlank()
-                pickRow.addView(Button(this).apply {
-                    text = "—"
-                    textSize = 11f
-                    background = rounded(if (sel) Color.rgb(110, 122, 148) else Color.rgb(34, 34, 34), 14)
-                    setTextColor(Color.WHITE)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-                    setOnClickListener { GroupChat.setSlotPersona(host, slot, ""); refreshSetupNative() }
-                })
-            }
-            c.addView(pickRow)
-            val rowB = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            val cls: Class<*> = when (slot) { 1 -> SlotBrowser1::class.java; 2 -> SlotBrowser2::class.java; 3 -> SlotBrowser3::class.java; 4 -> SlotBrowser4::class.java; else -> SlotBrowser5::class.java }
-            thRowBtn(rowB, "Buka Browser $slot") { try { startActivity(Intent(host, cls).putExtra("slot", slot)) } catch (e: Exception) {} }
-            thRowBtn(rowB, "Pakai Browser $slot") { AccountPool.setSlotPref(host, slot); getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putBoolean("apiMode", true).apply(); refreshSetupNative() }
-            if (ready) thRowBtn(rowB, "Hapus") { AccountPool.clearSlot(host, slot); if (AccountPool.slotPref(host) == slot) AccountPool.setSlotPref(host, 0); refreshSetupNative() }
-            c.addView(rowB)
-        }
-        val autoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        autoRow.addView(thBtn("Otomatis (slot login pertama)") { AccountPool.setSlotPref(host, 0); getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putBoolean("apiMode", true).apply(); refreshSetupNative() }.apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT) })
-        c.addView(autoRow)
-        // v4.48.9.20: picker varian model DeepSeek (natif — hanya mengubah
-        // thinking_enabled di body completion; sesi + PoW tidak berubah).
-        // V3 = thinking mati (jawaban langsung); R1 = thinking hidup.
-        // Menulis dsModelVariant + menyelaraskan DeepThink bawaan
-        // (uiSetDefMode) sehingga chat 1-1 ikut lewat checkbox yang sama.
-        c.addView(tv("VARIAN MODEL DEEPSEEK", 12f, th.dim, true))
-        c.addView(tv("V3 = jawaban langsung. R1 (DeepThink) = model menalar dulu — lebih lambat & boros token. Berlaku untuk chat 1-1 dan otak latar; grup/tim tetap tanpa thinking.", 11.5f, th.dim))
-        val prefsH = getSharedPreferences("harness", Context.MODE_PRIVATE)
-        val variant = thinkingVariantVc230()
-        val varRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val v3Btn = thBtn("DeepSeek V3", variant == "v3") { prefsH.edit().putString("dsModelVariant", "v3").apply(); uiSetDefMode("think", false); refreshSetupNative() }
-        v3Btn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-        val r1Btn = thBtn("DeepSeek R1 (DeepThink)", variant == "r1") { prefsH.edit().putString("dsModelVariant", "r1").apply(); uiSetDefMode("think", true); refreshSetupNative() }
-        r1Btn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-        val autoBtn = thBtn("Otomatis", variant == "auto") { prefsH.edit().putString("dsModelVariant", "auto").apply(); refreshSetupNative() }
-        autoBtn.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), dp(2), dp(2), dp(2)) }
-        varRow.addView(v3Btn)
-        varRow.addView(autoBtn)
-        varRow.addView(r1Btn)
-        c.addView(varRow)
-        return c
-    }
+    // F5c (sapu settings): setupSlotCard() DIHAPUS — pemilih slot Browser
+    // 1–5, persona per slot, tombol Buka/Pakai Browser N, tombol Otomatis
+    // slot, + picker varian model DeepSeek V3/R1 (dsModelVariant) sudah
+    // tidak ada lagi. Kategori "mesin" kini memakai setupEngineCard().
 
     internal fun MainActivity.setupConnectorsCard(st: JSONObject): LinearLayout {
         val c = cardBoxT()
@@ -604,13 +535,9 @@ import java.io.File
         toggleRow(c, "Deep Search bawaan (tiap pesan baru)", p.getBoolean("defSearch", true)) { on -> uiSetDefMode("search", on); refreshSetupNative() }
         toggleRow(c, "DeepThink bawaan (tiap pesan baru)", p.getBoolean("defThink", false)) { on -> uiSetDefMode("think", on); refreshSetupNative() }
         toggleRow(c, "Mode Bebas", p.getBoolean("modeBebas", false)) { on -> p.edit().putBoolean("modeBebas", on).apply(); refreshSetupNative() }
-        c.addView(tv("DeepSeek lebih jarang menolak topik sensitif; penolakan server tetap bisa terjadi.", 11.5f, th.dim))
-        val apiMode = p.getBoolean("apiMode", false)
-        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(2)) }
-        modeRow.addView(tv("Mode chat aktif", 13f, th.text).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
-        modeRow.addView(TextView(this).apply { text = if (apiMode) "API Internal" else "WebView"; textSize = 11f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD; background = rounded(if (apiMode) ACCENT else Color.rgb(110, 122, 148), 18); setPadding(dp(10), dp(4), dp(10), dp(4)) })
-        c.addView(modeRow)
-        c.addView(Button(this).apply { text = "Ganti Mode Chat"; setOnClickListener { setupBtnByLabel("12.")?.performClick() } })
+        // F5c (sapu settings): baris "Mode chat aktif WebView/API Internal"
+        // + tombol "Ganti Mode Chat" (tombol 12) DIHAPUS — tidak ada lagi
+        // slot WebView vs API Internal (K1).
         return c
     }
 
@@ -748,7 +675,7 @@ import java.io.File
         // vc183: header klasik tidak dirender lagi.
         fun addHeader(label: String) { }
         addHeader("🔌 KONEKSI & MESIN")
-        addBtn("1. Login DeepSeek (tab Web)") { showTab("Web") }
+        // F5c (sapu settings): tombol 1 "Login DeepSeek (tab Web)" DIHAPUS (K1).
         addBtn("2. Aktifkan akses Notifikasi") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         addBtn("3. Aktifkan Accessibility (baca layar + tap/swipe)") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         addBtn("4. Izinkan Usage Stats (pemakaian app)") {
@@ -792,55 +719,15 @@ import java.io.File
             getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putString("persona", personaInput.text.toString()).apply()
             setupStatusTv.text = "Persona tersimpan ✓ (berlaku mulai pesan chat berikutnya)"
         }
-        addBtn("11. Tes Solver PoW (eksperimen mode API internal)") {
-            setupStatusTv.text = "Solver PoW: menghitung…"
-            Thread {
-                val plantedChallenge = PowSolver.dsHashV1Hex("harness-test_1792611672443_4242")
-                val r = PowSolver.solveDeepSeek(plantedChallenge, "harness-test", 1792611672443L, 100000)
-                runOnUiThread {
-                    if (r == null) setupStatusTv.text = "Solver PoW: GAGAL menemukan jawaban tanam 4242 — implementasi DeepSeekHashV1 meleset."
-                    else setupStatusTv.text = "Solver PoW (DeepSeekHashV1) ✓ ketemu jawaban tanam nonce=${r.nonce} (target 4242) percobaan=${r.tries} waktu=${r.elapsedMs}ms. Skema preimage asli: hash(salt_expire_nonce) harus PERSIS challenge; Keccak skip round 0."
-                }
-            }.start()
-        }
-        addBtn("12. Ganti Mode Chat: WebView ⇄ API Internal (PoW, eksperimen)") {
-            val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
-            val now = !prefs.getBoolean("apiMode", false)
-            prefs.edit().putBoolean("apiMode", now).apply()
-            setupStatusTv.text = "Mode chat sekarang: ${if (now) "API INTERNAL (PoW) — eksperimen Jalur B" else "WebView (stabil)"}. Berlaku mulai pesan chat berikutnya. Mode API butuh tab Web sudah login."
-        }
-        addBtn("12b. Mode Operator: paksa API Internal + rekam diagnostik") {
-            val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
-            val now = !prefs.getBoolean("operatorMode", false)
-            prefs.edit().putBoolean("operatorMode", now).apply()
-            setupStatusTv.text = "Mode Operator sekarang: ${if (now) "AKTIF — chat DeepSeek dipaksa lewat API Internal + tiap panggilan API direkam (maks 20 baris, token hanya 12 karakter pertama)" else "NONAKTIF"}. Berlaku mulai pesan chat berikutnya. Lihat rekamannya di tombol 12c."
-        }
-        addBtn("12c. Lihat Rekaman Diagnostik API (Mode Operator)") {
-            val diag = try { getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsApiDiag", "") ?: "" } catch (e: Exception) { "" }
-            val msg = if (diag.isBlank()) "Belum ada rekaman. Nyalakan Mode Operator (tombol 12b), kirim satu chat DeepSeek, lalu buka lagi tombol ini." else diag
-            android.app.AlertDialog.Builder(this)
-                .setTitle("Rekaman Diagnostik API DeepSeek")
-                .setMessage(msg)
-                .setPositiveButton("Tutup", null)
-                .show()
-        }
-        addBtn("12d. Bandingin Rekaman Browser DeepSeek (Mode Operator)") {
-            // F1 (B13 lazy): apiClient kini nullable — bila engine openai,
-            // klien DeepSeek tidak pernah dibuat dan tidak ada rekaman.
-            val dsClient = apiClient
-            if (dsClient == null) {
-                Toast.makeText(this, "Klien DeepSeek belum dibuat (engine Models API) — tidak ada rekaman browser.", Toast.LENGTH_LONG).show()
-                return@addBtn
-            }
-            Toast.makeText(this, "Membaca rekaman browser…", Toast.LENGTH_SHORT).show()
-            dsClient.readDeepSeekCapture { msg ->
-                android.app.AlertDialog.Builder(this)
-                    .setTitle("Rekaman Browser DeepSeek")
-                    .setMessage(msg)
-                    .setPositiveButton("Tutup", null)
-                    .show()
-            }
-        }
+        // F5c (sapu settings): tombol 11 "Tes Solver PoW" DIHAPUS (K1 —
+        // solver PoW mode API Internal DeepSeek).
+        // F5c (sapu settings): tombol 12 "Ganti Mode Chat WebView ⇄ API
+        // Internal" DIHAPUS (K1 — toggle terkait WebView).
+        // F5c (sapu settings): tombol 12b "Mode Operator" DIHAPUS (K1).
+        // F5c (sapu settings): tombol 12c "Lihat Rekaman Diagnostik API"
+        // DIHAPUS (K1).
+        // F5c (sapu settings): tombol 12d "Bandingin Rekaman Browser
+        // DeepSeek" DIHAPUS (K1).
         addHeader("🧠 MEMORI, OTOMASI & PEMANGGILAN")
         addBtn("13. Bubble Melayang (panggil asisten dari app mana pun)") {
             val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
@@ -1318,17 +1205,37 @@ import java.io.File
                 runOnUiThread { setupStatusTv.text = "MODE ADB (S3): $r" }
             }.start()
         }
-        addBtn("39. Mesin Agen — DeepSeek (bawaan)") {
+        addBtn("39. Mesin Agen — Models API / Lokal (offline)") {
+            // F5c §5.9/frame 24: pemilih engine — hanya Models API (via
+            // dialog 73) / Lokal (offline). TANPA opsi DeepSeek (K1).
+            val engine = AgentEngines.current(this)
+            val prov = try {
+                LlmProviderStore.hydrate(this)
+                LlmProviders.activeProvider().takeIf { it.kind == LlmKind.OPENAI_COMPAT && it.configured }
+            } catch (e: Exception) { null }
+            val statusLine = when {
+                engine == "local" -> "Otak aktif: Lokal (offline) — agen aturan tanpa LLM."
+                prov != null -> "Otak aktif: ${prov.label} (${prov.id}) • model ${prov.model}"
+                else -> "Otak belum diatur — atur provider di Setup > 73. Provider LLM."
+            }
+            val capLine = if (prov != null) "\nKuota: ${try { Governor.capModels(this, prov) } catch (e: Exception) { 500 }} unit/hari (bucket Models API)" else ""
             AlertDialog.Builder(this)
                 .setTitle("Mesin Agen")
-                .setMessage("Mesin chat satu-satunya adalah DeepSeek (API internal). Bridge lokal sudah dihapus permanen (v4.45.1). Otak Latar tetap DeepSeek.")
-                .setPositiveButton("Tutup", null)
+                .setMessage("Mesin: " + (if (engine == "local") "Lokal (offline)" else "Models API") + "\n" + statusLine + capLine)
+                .setPositiveButton("Provider LLM…") { _, _ -> showLlmProviderDialog() }
+                .setNeutralButton("Lokal (offline)") { _, _ ->
+                    AgentEngines.setCurrent(this, "local")
+                    // Pilihan Lokal sadar = bukan "skip": banner NO_PROVIDER mati.
+                    try { getSharedPreferences("harness", Context.MODE_PRIVATE).edit().putBoolean("flowProviderSkipped", false).apply() } catch (e: Exception) {}
+                    setupStatusTv.text = "MESIN AGEN: Lokal (offline) aktif — agen aturan tanpa LLM."
+                }
+                .setNegativeButton("Tutup", null)
                 .show()
         }
         addBtn("40. Pak Perilaku Agen (J6) — preset gaya kerja") { setupBehaviorDialog() }
         addBtn("41. Otak Agen — SOUL/AGENTS/MEMORY (Agen Native)") { setupBrainDialog() }
         addBtn("42. Profil Agen — ganti/buat agen (Agen Native)") { setupAgentsDialog() }
-        addBtn("43. Setup Awal — jalankan ulang wizard (onboarding/login/izin)") {
+        addBtn("43. Setup Awal — jalankan ulang wizard (onboarding/provider/izin)") {
             uiSetFlow("reset")
             setupStatusTv.text = "🧭 SETUP AWAL: wizard direset — wizard tampil otomatis di UI utama dari langkah onboarding."
         }

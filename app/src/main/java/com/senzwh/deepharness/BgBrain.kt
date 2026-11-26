@@ -125,6 +125,21 @@ object BgBrain {
     // (bukan saat eksekusi/selesai) lalu diwariskan ke runTask/loop/park/
     // resume/deliver. Pemanggil terjadwal mengoper ikatan eksplisitnya.
     fun submit(ctx: Context, task: String, origin: String, notifTitle: String? = null, jobId: String? = null, jobTools: Set<String>? = null, ownerSessionId: Long? = null): Boolean {
+        // F5c §5.7 NO_PROVIDER: engine openai tanpa provider configured →
+        // tolak di gate + notif sekali (id notif tetap 7710 — submit
+        // berulang menimpa notif yang sama, tidak menumpuk). Tugas TIDAK
+        // masuk antrean. Engine "local" tidak kena gate ini.
+        if (AgentEngines.current(ctx) == "openai") {
+            val provReady = try {
+                LlmProviderStore.hydrate(ctx)
+                val p = LlmProviders.find(LlmProviderStore.activeId(ctx))
+                p != null && p.kind == LlmKind.OPENAI_COMPAT && p.configured
+            } catch (e: Exception) { false }
+            if (!provReady) {
+                notify(ctx, 7710, "Tugas latar ditunda", "Tugas latar ditunda — otak belum diatur (Setup > 73).")
+                return block(ctx, "tanpa provider")
+            }
+        }
         // v4.48.9.2: cooldown global pasca-rate-limit — 15 menit sejak
         // handleError mencatat bgLastRateLimitTs. Dicek PERTAMA supaya
         // alasan "cooldown" menang atas "sesi mati" dalam jendela ini;
@@ -262,6 +277,81 @@ object BgBrain {
         return out.get() ?: throw Exception("Otak Latar: panggilan API timeout / tanpa hasil.")
     }
 
+    // ---------------- F5b: loop tool native (Models API) ----------------
+    // Helper di blok ini hanya dipakai loop latar engine openai. Jalur
+    // deepseek TIDAK menyentuhnya (chatSync/callBgSync tetap seperti dulu).
+
+    /** F5b: latar memakai function calling native bila engine openai dan
+     *  provider TIDAK text_fallback/unsupported. "unsupported" diperlakukan
+     *  sebagai dialek teks + DITRANSISIKAN ke text_fallback (tersimpan +
+     *  EventDb — latar tak punya bubble; 1-1 tidak perlu mengulang
+     *  transisi). Tanpa provider: true (biar helper yang melempar pesan
+     *  kanonik NO_PROVIDER). */
+    private fun useNativeToolsBgVc5b(ctx: Context): Boolean {
+        if (AgentEngines.current(ctx) != "openai") return false
+        return try {
+            val prov = LlmEngineChat.resolveProvider(ctx)
+            when (prov.toolsSupport) {
+                "text_fallback" -> false
+                "unsupported" -> {
+                    markTextFallbackBgVc5b(ctx, prov)
+                    false
+                }
+                else -> LlmEngineChat.shouldUseNativeTools(prov.toolsSupport)
+            }
+        } catch (e: Exception) { true }
+    }
+
+    /** F5b: "HTTP 400: ..." yang menyebut tools/function = provider menolak
+     *  function calling (§2.5.1b). Format error client: "HTTP <kode>: <detail>". */
+    private fun isToolsUnsupportedErrorBgVc5b(msg: String): Boolean {
+        val m = msg.lowercase()
+        if (!m.contains("400")) return false
+        return m.contains("tool") || m.contains("function")
+    }
+
+    /** F5b: tandai provider text_fallback (tersimpan + EventDb — TERCATAT,
+     *  bukan diam-diam). Dipakai saat 400 menyebut tools di latar. */
+    private fun markTextFallbackBgVc5b(ctx: Context, prov: LlmProvider? = null) {
+        try {
+            val p = prov ?: LlmEngineChat.resolveProvider(ctx)
+            if (p.toolsSupport != "text_fallback") LlmProviderStore.save(ctx, p.copy(toolsSupport = "text_fallback"))
+            EventDb.get(ctx).add("bgbrain", ctx.packageName, "provider ${p.id} menolak tools → text_fallback (tugas latar lanjut dialek teks)")
+        } catch (e: Exception) {}
+    }
+
+    /** F5b: panggilan messages engine openai untuk loop latar — mengembalikan
+     *  ChatResult (content + toolCalls native). tools = ToolRegistry.ALL
+     *  (helper mengonversi sendiri, excluded tersaring) bila native,
+     *  null bila dialek teks. toolChoice tidak dipakai di latar (auto).
+     *  Throw = pesan helper (D4/kuota/provider). */
+    @Throws(Exception::class)
+    private fun chatMessagesBgVc5b(ctx: Context, messages: List<ChatMessage>, useNative: Boolean): ChatResult {
+        val callsRef = AtomicReference<List<NativeToolCall>>(emptyList())
+        val content = LlmEngineChat.chatMessagesForEngine(
+            ctx, messages, LlmCallKind.BACKGROUND,
+            tools = if (useNative) ToolRegistry.ALL else null,
+            thinking = false,
+            onToolCalls = { calls -> callsRef.set(calls) }
+        )
+        return ChatResult(content, "", "", callsRef.get(), null)
+    }
+
+    /** F5b: NativeToolCall → JSONObject jalur lama ({tool,args,id}). Null
+     *  bila argumen bukan objek JSON (tidak dieksekusi — lihat pemanggil). */
+    private fun nativeToJsonVc5b(call: NativeToolCall): JSONObject? {
+        val args = try { JSONObject(call.argumentsJson.ifBlank { "{}" }) } catch (e: Exception) { return null }
+        return JSONObject().put("tool", call.name).put("args", args).put("id", call.id)
+    }
+
+    /** F5b: isi pesan hasil tool latar — hasil dipotong di 8000 char
+     *  (sama seperti transkrip latar) + penanda sisa / get_result. */
+    private fun toolResultContentBgVc5b(result: String, resultId: String?, resultTotal: Int): String {
+        val disp = RedactSecrets.redact(result)
+        if (disp.length <= 8000) return disp
+        return disp.take(8000) + "…(dipotong, sisa " + (disp.length - 8000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…"
+    }
+
     // D2 (Fase 1, KRITIS) + RESIDU 2 (Fase 2, transisi): panggilan LLM
     // latar SILENT untuk job graph (relasi, verifier, adjudikasi) +
     // ringkas riwayat. Engine openai → helper Models API (kind GRAPH,
@@ -359,7 +449,10 @@ object BgBrain {
         // tugas (ditangkap submit), bukan sesi aktif saat eksekusi.
         val sessionId = ownerSessionId ?: prefs(ctx).getLong("currentSession", 1L)
         // vc241: latar memakai katalog per tugas + WorldState tanpa goal-teratas (blok TUJUAN AKTIF sendiri sudah ada di bawah).
-        val sb = StringBuilder(AgentPrompt.buildSystemPrompt(ctx, false, task, true))
+        // F5b: varian katalog mengikuti dialek tugas ini (native bila
+        // provider mendukung native; teks bila dialek teks). Engine
+        // deepseek selalu false (katalog teks lama, tidak berubah).
+        val sb = StringBuilder(AgentPrompt.buildSystemPrompt(ctx, false, task, true, nativeTools = useNativeToolsBgVc5b(ctx)))
         // vc240 M23 + m18: pemanggil latar kini mengoper teks tugas
         // sebagai query relevansi (dulu tanpa argumen -> semua skor 0 ->
         // urutan mentah). BATAS m18 yang dicatat eksplisit: API tugas
@@ -553,6 +646,16 @@ object BgBrain {
         val pinnedBgVc266 = try { MemoryDb.get(ctx).pinnedFactsText() } catch (e: Exception) { "" }
         var steps = steps0
         var prompt = firstPrompt ?: continuationPrompt(ctx, transcript, sessionId)
+        // F5b: engine openai native → loop messages (ChatResult.toolCalls);
+        // dialek teks (text_fallback/unsupported) → jalur string lama
+        // (chatSync + extractToolCalls) dengan katalog teks (runTask).
+        // `prompt` (string) hanya dipakai jalur string; jalur native
+        // memakai bgMessagesVc5b (prompt penuh SEKALI di awal, lanjutan
+        // hanya append hasil tool role:tool).
+        val isOpenaiBgVc5b = AgentEngines.current(ctx) == "openai"
+        var useNativeBgVc5b = isOpenaiBgVc5b && useNativeToolsBgVc5b(ctx)
+        val bgMessagesVc5b = ArrayList<ChatMessage>()
+        if (useNativeBgVc5b) bgMessagesVc5b.add(ChatMessage("user", prompt))
         var lastRejected: String? = null
         var rejectNudges = 0
         var gateRetriedVc249 = false
@@ -605,6 +708,15 @@ object BgBrain {
                 }
             )
             transcript.append("\n").append(BatchToolVc274.combinedMessage("latar", reportBgVc274))
+            // F5b: hasil batch sebagai pesan role:tool (satu per call) —
+            // transkrip tetap mendapat teks gabungan (bukti reviewer +
+            // deliver), messages mendapat hasil terstruktur.
+            if (useNativeBgVc5b) {
+                for (oc in reportBgVc274.outcomes) {
+                    bgMessagesVc5b.add(ChatMessage("tool", toolResultContentBgVc5b(oc.result, oc.resultId, oc.resultTotal), toolCallId = oc.callId.ifBlank { null }))
+                }
+                trimBgMessagesVc5b(ctx, bgMessagesVc5b)
+            }
             trimTranscriptVc263(transcript, BG_TRANSCRIPT_MAX_CHARS)
             val stopBgVc274 = reportBgVc274.outcomes.firstOrNull { AgentPrompt.StuckWatch.isStop(it.stuckText) }
             if (stopBgVc274 != null) {
@@ -642,13 +754,69 @@ object BgBrain {
                 deliver(ctx, origin, notifTitle, sessionId, "Tugas latar berhenti rapi: baterai di bawah 20% dan tidak dicas — hasil dikirim sebagai notifikasi, lanjutkan manual bila perlu.", jobId)
                 return
             }
-            val resp = try { chatSync(ctx, prompt) } catch (e: Exception) {
+            // F5b: native → ChatResult (toolCalls terstruktur + jawaban
+            // asisten masuk messages); teks/deepseek → String lama.
+            // 400 menyebut tools di native → tandai text_fallback lalu
+            // iterasi ini lanjut dialek teks (chatSync + katalog teks).
+            var respCallsVc5b: List<NativeToolCall> = emptyList()
+            var nativeFailedToTextVc5b = false
+            var respTextVc5b = ""
+            if (useNativeBgVc5b) {
+                // F5b: pangkas riwayat sebelum kirim (semua jalur iterasi
+                // lewat sini; trim di ekor jalur hanya pelengkap).
+                trimBgMessagesVc5b(ctx, bgMessagesVc5b)
+                try {
+                    val rVc5b = chatMessagesBgVc5b(ctx, bgMessagesVc5b, true)
+                    respCallsVc5b = rVc5b.toolCalls
+                    bgMessagesVc5b.add(ChatMessage("assistant", rVc5b.content))
+                    respTextVc5b = rVc5b.content
+                } catch (e: Exception) {
+                    if (isToolsUnsupportedErrorBgVc5b(e.message ?: "")) {
+                        markTextFallbackBgVc5b(ctx)
+                        useNativeBgVc5b = false
+                        nativeFailedToTextVc5b = true
+                    } else {
+                        handleError(ctx, task, origin, e, jobId); return
+                    }
+                }
+            }
+            val resp = if (useNativeBgVc5b) respTextVc5b else try {
+                // Dialek teks sesudah 400: prompt awal membawa varian
+                // katalog NATIVE — katalog teks disisipkan eksplisit.
+                val pVc5b = if (nativeFailedToTextVc5b) prompt + "\n\nSISTEM (dialek teks — provider ini tidak mendukung function calling native): pakai format teks berikut untuk memanggil tool, BUKAN function calling.\n" + AgentPrompt.toolCatalogText(ctx) else prompt
+                chatSync(ctx, pVc5b)
+            } catch (e: Exception) {
                 handleError(ctx, task, origin, e, jobId); return
             }
             if (sessionDead(ctx)) prefs(ctx).edit().putBoolean("bgSessionDead", false).apply()
-            val multiBgVc249 = AgentPrompt.extractToolCalls(resp)
-            val (visible, obj) = AgentPrompt.extractToolCall(resp)
+            // F5b: native → konversi NativeToolCall (arguments rusak =
+            // null → ditolak tanpa eksekusi di bawah); teks → parse lama.
+            // visible native = content dibersihkan markup (blok JSON teks
+            // TIDAK dieksekusi — plan §2.4.2).
+            val brokenBgVc5b: List<NativeToolCall> =
+                if (useNativeBgVc5b) respCallsVc5b.filter { it.argumentsBroken } else emptyList()
+            val multiBgVc249: List<JSONObject> = if (useNativeBgVc5b) {
+                respCallsVc5b.filter { !it.argumentsBroken }.mapNotNull { nativeToJsonVc5b(it) }
+            } else AgentPrompt.extractToolCalls(resp)
+            val (visible, obj) = if (useNativeBgVc5b) {
+                Pair(AgentPrompt.stripRawToolMarkupForDisplay(resp), multiBgVc249.firstOrNull())
+            } else AgentPrompt.extractToolCall(resp)
             val callIdBgVc272 = obj?.optString("id") ?: ""
+            // F5b: argumen JSON rusak → tolak tanpa eksekusi. Call valid di
+            // respons ini TIDAK ikut dieksekusi (model diminta kirim ulang
+            // semuanya) — belum dieksekusi, jadi tidak ada kerja hilang.
+            // Gerbang persetujuan latar TIDAK berubah (call rusak tidak
+            // pernah sampai ke eksekutor/parkir).
+            if (brokenBgVc5b.isNotEmpty()) {
+                for (c in brokenBgVc5b) {
+                    val rejVc5b = "⚠️ PANGGILAN TOOL DITOLAK SISTEM: argumen JSON tool '" + c.name + "' rusak / bukan objek JSON valid (diterima mentah, tidak dieksekusi)."
+                    transcript.append("\n[HASIL TOOL] " + c.name + ": ").append(rejVc5b)
+                    bgMessagesVc5b.add(ChatMessage("tool", rejVc5b, toolCallId = c.id.ifBlank { null }))
+                }
+                bgMessagesVc5b.add(ChatMessage("user", "SISTEM (koreksi format): Argumen JSON di atas rusak sehingga tool tidak bisa dijalankan. Kirim ulang panggilan tool yang rusak itu SEKARANG dengan argumen JSON lengkap yang valid — dan kirim ulang juga panggilan tool lain dari respons sebelumnya bila masih dibutuhkan."))
+                trimTranscriptVc263(transcript, BG_TRANSCRIPT_MAX_CHARS)
+                continue
+            }
             // vc274 O6+O7: >1 tool per respons di lane latar DIEKSEKUSI
             // sebagai batch (BatchToolVc274 — aturan sama seperti 1-1
             // vc273: baca independen konkuren maks 4, tulis sekuensial
@@ -658,7 +826,9 @@ object BgBrain {
             if (multiBgVc249.size > 1 && BatchToolVc274.useBatch(multiBgVc249)) {
                 if (visible.isNotBlank()) transcript.append("\nAsisten: ").append(visible.take(2000))
                 if (execBatchBgVc274(multiBgVc249)) return
-                prompt = continuationPrompt(ctx, transcript, sessionId)
+                // F5b: jalur native tidak membangun ulang prompt string —
+                // messages sudah membawa hasil tool role:tool.
+                if (!useNativeBgVc5b) prompt = continuationPrompt(ctx, transcript, sessionId)
                 continue
             }
             if (obj == null) {
@@ -667,8 +837,11 @@ object BgBrain {
                 val rj = lastRejected
                 if (rj != null && rejectNudges < 1) {
                     rejectNudges++
-                    transcript.append("\n[SISTEM] Jawaban ditolak: kamu belum memanggil ulang tool $rj dengan argumen terisi lengkap dari tugas di atas. Panggil tool itu SEKARANG — dilarang mengakhiri tugas dengan pertanyaan atau prosa.")
-                    prompt = continuationPrompt(ctx, transcript, sessionId)
+                    val nudgeVc5b = "[SISTEM] Jawaban ditolak: kamu belum memanggil ulang tool $rj dengan argumen terisi lengkap dari tugas di atas. Panggil tool itu SEKARANG — dilarang mengakhiri tugas dengan pertanyaan atau prosa."
+                    transcript.append("\n").append(nudgeVc5b)
+                    // F5b: native → nudgenya jadi pesan user (bukan prompt
+                    // string yang dibangun ulang); teks → perilaku lama.
+                    if (useNativeBgVc5b) bgMessagesVc5b.add(ChatMessage("user", nudgeVc5b)) else prompt = continuationPrompt(ctx, transcript, sessionId)
                     continue
                 }
                 val finalBgVc249 = visible.ifBlank { resp.trim() }
@@ -678,7 +851,9 @@ object BgBrain {
                 if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(finalBgVc249) && usedToolsVc249.isNotEmpty() && !allMemBgVc266 && !AgentPrompt.evidenceMarkerPresent(finalBgVc249)) {
                     gateRetriedVc249 = true
                     transcript.append("\n[SISTEM] ").append(AgentPrompt.EVIDENCE_GATE_NUDGE)
-                    prompt = continuationPrompt(ctx, transcript, sessionId)
+                    // F5b: native → gate nudgenya jadi pesan user (bukan
+                    // prompt string yang dibangun ulang); teks → lama.
+                    if (useNativeBgVc5b) bgMessagesVc5b.add(ChatMessage("user", "[SISTEM] " + AgentPrompt.EVIDENCE_GATE_NUDGE)) else prompt = continuationPrompt(ctx, transcript, sessionId)
                     continue
                 }
                 var deliverBgVc249 = finalBgVc249
@@ -758,6 +933,10 @@ object BgBrain {
             // analyze_photo/delete_session/parkir) — jangan pakai id basi.
             val t0BgVc303 = System.currentTimeMillis()
             val ridBeforeBgVc303 = Tools.lastResultId()
+            // F5b: id hasil jalur tunggal (untuk penanda get_result di
+            // pesan role:tool di bawah).
+            var ridSingleBgVc5b = ""
+            var totalSingleBgVc5b = 0
             // Slice 12 (vc329): keputusan rute tool lewat seam Rust;
             // eksekusi/parkir/notifikasi tetap Kotlin. Fallback = `when`
             // asli bila seam tak-tersedia.
@@ -847,11 +1026,19 @@ object BgBrain {
             run {
                 val ridAfterBgVc303 = Tools.lastResultId()
                 val ridBgVc303 = if (ridAfterBgVc303 != null && ridAfterBgVc303 != ridBeforeBgVc303) ridAfterBgVc303 else ""
+                ridSingleBgVc5b = ridBgVc303
+                totalSingleBgVc5b = if (ridBgVc303.isBlank()) 0 else Tools.lastFullLength()
                 workVc303?.add(WorkItem(tool, System.currentTimeMillis() - t0BgVc303, !WorkLog.isFailed(result), RedactSecrets.redact(result).take(120), evidence = result, args = args.toString().take(4000), resultId = ridBgVc303, totalChars = if (ridBgVc303.isBlank()) 0 else Tools.lastFullLength(), callId = callIdBgVc272))
             }
             lastRejected = if (result.startsWith("⚠️ PANGGILAN TOOL DITOLAK SISTEM")) tool else null
             try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] tool $tool -> ${result.take(160)}") } catch (e: Exception) {}
             transcript.append("\n[HASIL TOOL] $tool" + (if (callIdBgVc272.isNotBlank()) " [$callIdBgVc272]" else "") + ": ").append(result.take(8000))
+            // F5b: hasil tunggal sebagai pesan role:tool (cabang parkir /
+            // pesan analyze_photo/delete_session ikut — itu hasil dari
+            // tool call tersebut). Gerbang persetujuan TIDAK berubah.
+            if (useNativeBgVc5b) {
+                bgMessagesVc5b.add(ChatMessage("tool", toolResultContentBgVc5b(result, ridSingleBgVc5b.ifBlank { null }, totalSingleBgVc5b), toolCallId = callIdBgVc272.ifBlank { null }))
+            }
             // vc263 (AG-M6): pangkas transkrip SEBELUM giliran berikut
             // (transkrip penuh dulu disisipkan tanpa batas di [RIWAYAT]).
             trimTranscriptVc263(transcript, BG_TRANSCRIPT_MAX_CHARS)
@@ -876,7 +1063,9 @@ object BgBrain {
                 if (!result.startsWith("Gagal:") && !result.startsWith("⚠️ PANGGILAN TOOL DITOLAK")) edHbVc263.putLong("bgLastSuccess_" + loopKeyVc263, hbVc263)
                 edHbVc263.apply()
             } catch (e: Exception) {}
-            prompt = continuationPrompt(ctx, transcript, sessionId)
+            // F5b: jalur native tidak membangun ulang prompt string —
+            // messages sudah membawa hasil tool role:tool.
+            if (!useNativeBgVc5b) prompt = continuationPrompt(ctx, transcript, sessionId)
             // vc263 (AG-M6): guard cap prompt latar — dulu promptCap sama
             // sekali tidak dipakai di lane ini. Bila masih di atas cap,
             // transkrip dipangkas lagi lalu prompt dibangun ulang SEKALI.
@@ -890,6 +1079,29 @@ object BgBrain {
                 prompt = continuationPrompt(ctx, transcript, sessionId)
                 try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] prompt latar melewati ambang proaktif 80% cap ($proactiveBgVc278 dari $capBgVc278) — transkrip dipangkas $droppedVc263 char lalu dibangun ulang (panjang akhir ${prompt.length})") } catch (e: Exception) {}
             }
+            // F5b: jalur native — pangkas riwayat messages (cermin guard
+            // cap prompt di atas; prompt string di jalur native tidak
+            // dipakai lagi sesudah iterasi pertama).
+            if (useNativeBgVc5b) trimBgMessagesVc5b(ctx, bgMessagesVc5b)
+        }
+    }
+
+    /** F5b: pangkas riwayat messages latar bila melewati ambang proaktif
+     *  80% cap (cermin guard prompt deepseek di loopInnerVc263). Yang
+     *  dibuang: blok pertukaran TERLAMA (assistant + hasil tool + pesan
+     *  instruksi) — pesan user pertama (prompt penuh) TIDAK PERNAH
+     *  dibuang; pasangan assistant↔tool selalu dibuang bersama supaya
+     *  tidak ada pesan role:tool yang kehilangan pemanggilnya. */
+    private fun trimBgMessagesVc5b(ctx: Context, messages: MutableList<ChatMessage>) {
+        val cap = TurnMetrics.promptCap(ctx)
+        val threshold = TurnMetrics.proactiveThreshold(cap)
+        while (messages.size > 1 && messages.sumOf { it.content.length } > threshold) {
+            var end = 2
+            while (end < messages.size && messages[end].role != "assistant") end++
+            val dropped = (1 until end).sumOf { messages[it].content.length }
+            if (dropped <= 0) break
+            repeat(end - 1) { messages.removeAt(1) }
+            try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "pesan latar melewati ambang proaktif 80% cap ($threshold dari $cap) — blok pertukaran tertua dipangkas $dropped char") } catch (e: Exception) {}
         }
     }
 

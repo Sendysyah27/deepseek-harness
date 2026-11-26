@@ -412,6 +412,13 @@ import java.io.File
     internal fun MainActivity.onGroupUserMessage(text: String) {
         try { MemoryDb.get(this).addGroupMsg("user", "Anda", text) } catch (e: Exception) {}
         addGroupBubble("Anda", "#4d8cff", text, true)
+        // Koordinator merge (Fase 5c §5.7 NO_PROVIDER): grup/room tanpa
+        // provider → tolak di gate + buka dialog 73, JANGAN kirim ronde.
+        if (isNoProviderState()) {
+            addGroupBubble("Sistem", "#7d8aa0", "⚠️ Otak belum diatur — atur provider dulu di Setup > 73. Provider LLM. [Buka Setup]", false, true)
+            showNoProviderDialog()
+            return
+        }
         GroupChat.sendRound(this, text, object : GroupChat.Listener {
             override fun onAgent(name: String, accent: String, text: String) {
                 runOnUiThread { addGroupBubble(name, accent, text, false) }
