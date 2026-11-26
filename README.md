@@ -43,6 +43,8 @@ di source. Nama persona default netral (`Asisten` / `Operator`), label app
 
 ## Persyaratan build
 
+> Ringkasan lengkap + catatan Termux (aarch64) + CI ada di **[BUILD.md](BUILD.md)**.
+
 Build memakai `build.py` (Python 3, tanpa Gradle — aapt2 + kotlinc + d8 +
 apksigner langsung). Yang dibutuhkan:
 
