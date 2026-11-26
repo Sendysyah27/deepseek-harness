@@ -544,55 +544,102 @@ object GroupChat {
                             try {
                                 val claimsGrpVc249 = AgentPrompt.splitClaims(cleanVc249)
                                 if (claimsGrpVc249.isNotEmpty()) {
-                                    // vc298 BAGIAN 1 (1A): reviewer WAJIB slot
-                                    // Browser 5 — tanpa fallback ke slot lain.
-                                    val rSlotGrp = try { AccountPool.reviewerSlot(app) } catch (e: Exception) { null }
-                                    val rAuthGrp = if (rSlotGrp != null) try { AccountPool.slotAuth(app, rSlotGrp) } catch (e: Exception) { null } else null
-                                    if (rSlotGrp == null || rAuthGrp == null) {
-                                        val noteGrpSkip = ReviewerVc298.SKIP_NOTE
-                                        try { mdb.addGroupMsg("sistem", "Sistem", noteGrpSkip) } catch (e: Exception) {}
-                                        listener.onSystem(noteGrpSkip)
-                                    } else if (Governor.overCapReviewer(app)) {
-                                        // vc277 O16(b): kuota reviewer habis — reviewer
-                                        // dilewati dengan penanda, bukan diam-diam lolos.
-                                        val noteGrpOverCapVc277 = Governor.reviewerOverCapText(app)
-                                        try { mdb.addGroupMsg("sistem", "Sistem", noteGrpOverCapVc277) } catch (e: Exception) {}
-                                        listener.onSystem(noteGrpOverCapVc277)
-                                    } else {
-                                        val pinnedGrpR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                                        val evGrp = ("HASIL TOOL GRUP:\n" + roundCorpusVc249.toString() + "\nPESAN USER:\n" + userText + "\nFAKTA PIN:\n" + pinnedGrpR).take(16000)
-                                        val rClientGrp = SlotClient(app, rSlotGrp, rAuthGrp.first, rAuthGrp.second)
-                                        // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
-                                        var unsGrp: List<Int> = emptyList()
-                                        var concGrp = false
-                                        var reviewFailGrpVc275 = false
-                                        try {
-                                            val (rawGrp, _) = rClientGrp.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsGrpVc249, evGrp), false, false, reviewer = true)
-                                            val (u1GrpVc275, c1GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp)
-                                            if (c1GrpVc275) { unsGrp = u1GrpVc275; concGrp = true } else {
-                                                val (rawGrp2Vc275, _) = rClientGrp.chatSync(AgentPrompt.reviewerRetryPrompt(claimsGrpVc249, evGrp), false, false, reviewer = true)
-                                                val (u2GrpVc275, c2GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp2Vc275)
-                                                if (c2GrpVc275) { unsGrp = u2GrpVc275; concGrp = true } else reviewFailGrpVc275 = true
+                                    // F2c: engine dibaca SEKALI — openai → reviewer lewat helper Models API (tanpa slot Browser 5, tanpa SlotClient); deepseek → jalur lama di bawah, persis seperti sekarang.
+                                    val engineGrpVcF2c = AgentEngines.current(app)
+                                    if (engineGrpVcF2c == "openai") {
+                                        // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
+                                        val providerGrpVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
+                                        val refusalGrpVcF2c = providerGrpVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
+                                        if (refusalGrpVcF2c != null) {
+                                            try { mdb.addGroupMsg("sistem", "Sistem", refusalGrpVcF2c) } catch (e: Exception) {}
+                                            listener.onSystem(refusalGrpVcF2c)
+                                        } else {
+                                            val pinnedGrpR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
+                                            val evGrp = ("HASIL TOOL GRUP:\n" + roundCorpusVc249.toString() + "\nPESAN USER:\n" + userText + "\nFAKTA PIN:\n" + pinnedGrpR).take(16000)
+                                            // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
+                                            var unsGrp: List<Int> = emptyList()
+                                            var concGrp = false
+                                            var reviewFailGrpVc275 = false
+                                            try {
+                                                val rawGrp = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsGrpVc249, evGrp), LlmCallKind.REVIEWER)
+                                                val (u1GrpVc275, c1GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp)
+                                                if (c1GrpVc275) { unsGrp = u1GrpVc275; concGrp = true } else {
+                                                    val rawGrp2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsGrpVc249, evGrp), LlmCallKind.REVIEWER)
+                                                    val (u2GrpVc275, c2GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp2Vc275)
+                                                    if (c2GrpVc275) { unsGrp = u2GrpVc275; concGrp = true } else reviewFailGrpVc275 = true
+                                                }
+                                            } catch (e: Exception) { reviewFailGrpVc275 = true }
+                                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
+                                            val unsGrpFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsGrpVc249, unsGrp, pinnedGrpR.lines(), userText)
+                                            // F2c: reviewer Models API independen dari giliran agen (reviewerIndependent(engine) == true) — tanpa label "tidak independen".
+                                            val indepGrpVc275 = ""
+                                            if (reviewFailGrpVc275) {
+                                                val noteGrpInc = AgentPrompt.reviewerNotVerifiedNote() + indepGrpVc275
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpInc) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpInc)
+                                            } else if (unsGrpFiltVc266.isNotEmpty()) {
+                                                val noteGrpRev = AgentPrompt.reviewerNoteText(claimsGrpVc249, unsGrpFiltVc266) + indepGrpVc275
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpRev) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpRev)
+                                                // vc250: double-pass — pesan agen yang tampil hanya berisi klaim yang lolos.
+                                                filteredGrpVc250 = AgentPrompt.applyDoublePass(cleanVc249, claimsGrpVc249, unsGrpFiltVc266)
+                                            } else if (indepGrpVc275.isNotBlank()) {
+                                                val noteGrpIndep = "🔍 Reviewer konteks-nol: verdict diterima" + indepGrpVc275 + "."
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpIndep) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpIndep)
                                             }
-                                        } catch (e: Exception) { reviewFailGrpVc275 = true }
-                                        // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                                        val unsGrpFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsGrpVc249, unsGrp, pinnedGrpR.lines(), userText)
-                                        // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
-                                        val indepGrpVc275 = AgentPrompt.reviewerIndependenceNote(slot, rSlotGrp)
-                                        if (reviewFailGrpVc275) {
-                                            val noteGrpInc = AgentPrompt.reviewerNotVerifiedNote() + indepGrpVc275
-                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpInc) } catch (e: Exception) {}
-                                            listener.onSystem(noteGrpInc)
-                                        } else if (unsGrpFiltVc266.isNotEmpty()) {
-                                            val noteGrpRev = AgentPrompt.reviewerNoteText(claimsGrpVc249, unsGrpFiltVc266) + indepGrpVc275
-                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpRev) } catch (e: Exception) {}
-                                            listener.onSystem(noteGrpRev)
-                                            // vc250: double-pass — pesan agen yang tampil hanya berisi klaim yang lolos.
-                                            filteredGrpVc250 = AgentPrompt.applyDoublePass(cleanVc249, claimsGrpVc249, unsGrpFiltVc266)
-                                        } else if (indepGrpVc275.isNotBlank()) {
-                                            val noteGrpIndep = "🔍 Reviewer konteks-nol: verdict diterima" + indepGrpVc275 + "."
-                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpIndep) } catch (e: Exception) {}
-                                            listener.onSystem(noteGrpIndep)
+                                        }
+                                    } else {
+                                        // vc298 BAGIAN 1 (1A): reviewer WAJIB slot
+                                        // Browser 5 — tanpa fallback ke slot lain.
+                                        val rSlotGrp = try { AccountPool.reviewerSlot(app) } catch (e: Exception) { null }
+                                        val rAuthGrp = if (rSlotGrp != null) try { AccountPool.slotAuth(app, rSlotGrp) } catch (e: Exception) { null } else null
+                                        if (rSlotGrp == null || rAuthGrp == null) {
+                                            val noteGrpSkip = ReviewerVc298.SKIP_NOTE
+                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpSkip) } catch (e: Exception) {}
+                                            listener.onSystem(noteGrpSkip)
+                                        } else if (Governor.overCapReviewer(app)) {
+                                            // vc277 O16(b): kuota reviewer habis — reviewer
+                                            // dilewati dengan penanda, bukan diam-diam lolos.
+                                            val noteGrpOverCapVc277 = Governor.reviewerOverCapText(app)
+                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpOverCapVc277) } catch (e: Exception) {}
+                                            listener.onSystem(noteGrpOverCapVc277)
+                                        } else {
+                                            val pinnedGrpR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
+                                            val evGrp = ("HASIL TOOL GRUP:\n" + roundCorpusVc249.toString() + "\nPESAN USER:\n" + userText + "\nFAKTA PIN:\n" + pinnedGrpR).take(16000)
+                                            val rClientGrp = SlotClient(app, rSlotGrp, rAuthGrp.first, rAuthGrp.second)
+                                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
+                                            var unsGrp: List<Int> = emptyList()
+                                            var concGrp = false
+                                            var reviewFailGrpVc275 = false
+                                            try {
+                                                val (rawGrp, _) = rClientGrp.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsGrpVc249, evGrp), false, false, reviewer = true)
+                                                val (u1GrpVc275, c1GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp)
+                                                if (c1GrpVc275) { unsGrp = u1GrpVc275; concGrp = true } else {
+                                                    val (rawGrp2Vc275, _) = rClientGrp.chatSync(AgentPrompt.reviewerRetryPrompt(claimsGrpVc249, evGrp), false, false, reviewer = true)
+                                                    val (u2GrpVc275, c2GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp2Vc275)
+                                                    if (c2GrpVc275) { unsGrp = u2GrpVc275; concGrp = true } else reviewFailGrpVc275 = true
+                                                }
+                                            } catch (e: Exception) { reviewFailGrpVc275 = true }
+                                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
+                                            val unsGrpFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsGrpVc249, unsGrp, pinnedGrpR.lines(), userText)
+                                            // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
+                                            val indepGrpVc275 = AgentPrompt.reviewerIndependenceNote(slot, rSlotGrp)
+                                            if (reviewFailGrpVc275) {
+                                                val noteGrpInc = AgentPrompt.reviewerNotVerifiedNote() + indepGrpVc275
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpInc) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpInc)
+                                            } else if (unsGrpFiltVc266.isNotEmpty()) {
+                                                val noteGrpRev = AgentPrompt.reviewerNoteText(claimsGrpVc249, unsGrpFiltVc266) + indepGrpVc275
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpRev) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpRev)
+                                                // vc250: double-pass — pesan agen yang tampil hanya berisi klaim yang lolos.
+                                                filteredGrpVc250 = AgentPrompt.applyDoublePass(cleanVc249, claimsGrpVc249, unsGrpFiltVc266)
+                                            } else if (indepGrpVc275.isNotBlank()) {
+                                                val noteGrpIndep = "🔍 Reviewer konteks-nol: verdict diterima" + indepGrpVc275 + "."
+                                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpIndep) } catch (e: Exception) {}
+                                                listener.onSystem(noteGrpIndep)
+                                            }
                                         }
                                     }
                                 }

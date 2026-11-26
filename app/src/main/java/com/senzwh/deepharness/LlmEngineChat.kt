@@ -73,6 +73,15 @@ object LlmEngineChat {
     }
 
     /**
+     * Fase 2 — reviewer independen? Engine openai = panggilan stateless
+     * independen (tanpa sesi server bersama giliran agen). Engine deepseek
+     * = reviewer memakai slot/sesi DeepSeek yang sama → tidak independen.
+     * Murni, untuk gate + label di semua situs reviewer (B3/B4/B5/B8/B9/B10
+     * + loopInnerVc263 BgBrain).
+     */
+    fun reviewerIndependent(engine: String): Boolean = engine == "openai"
+
+    /**
      * Routing engine → jalur. Engine openai → helper Models API untuk
      * SEMUA kind (tidak ada kind yang jatuh ke DeepSeek).
      */

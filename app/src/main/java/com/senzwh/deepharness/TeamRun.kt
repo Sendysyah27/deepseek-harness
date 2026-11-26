@@ -312,47 +312,88 @@ object TeamRun {
             try {
                 val claimsTeamVc249 = AgentPrompt.splitClaims(outTeamVc249)
                 if (claimsTeamVc249.isNotEmpty()) {
-                    // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5 —
-                    // tanpa fallback ke slot lain.
-                    val rSlotTeam = try { AccountPool.reviewerSlot(app) } catch (e: Exception) { null }
-                    val rAuthTeam = if (rSlotTeam != null) try { AccountPool.slotAuth(app, rSlotTeam) } catch (e: Exception) { null } else null
-                    if (rSlotTeam == null || rAuthTeam == null) {
-                        outTeamVc249 = ReviewerVc298.SKIP_NOTE + "\n\n" + outTeamVc249
-                    } else if (Governor.overCapReviewer(app)) {
-                        // vc277 O16(b): kuota reviewer habis — reviewer
-                        // dilewati dengan penanda, bukan diam-diam lolos.
-                        outTeamVc249 = Governor.reviewerOverCapText(app) + "\n\n" + outTeamVc249
+                    // F2c: engine dibaca SEKALI — openai → reviewer lewat helper Models API (tanpa slot Browser 5, tanpa SlotClient); deepseek → jalur lama di bawah, persis seperti sekarang.
+                    val engineTeamVcF2c = AgentEngines.current(app)
+                    if (engineTeamVcF2c == "openai") {
+                        // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
+                        val providerTeamVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
+                        val refusalTeamVcF2c = providerTeamVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
+                        if (refusalTeamVcF2c != null) {
+                            outTeamVc249 = refusalTeamVcF2c + "\n\n" + outTeamVc249
+                        } else {
+                            val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
+                            // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
+                            // terstruktur (didahulukan — bukan transcript mentah
+                            // yang terpotong dari kepala) + jawaban akhir lane
+                            // + FAKTA PIN. Format jejak sama seperti 1-1
+                            // ("- <tool> [ok|gagal] <hasil>") supaya aturan
+                            // JEJAK TOOL vc257 di prompt reviewer menyala.
+                            val traceTeamVc298 = toolTraceVc298.toString()
+                            val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
+                            // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
+                            var unsTeam: List<Int> = emptyList()
+                            var concTeam = false
+                            var reviewFailTeamVc275 = false
+                            try {
+                                val rawTeam = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
+                                val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
+                                if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
+                                    val rawTeam2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
+                                    val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
+                                    if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
+                                }
+                            } catch (e: Exception) { reviewFailTeamVc275 = true }
+                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
+                            val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
+                            // F2c: reviewer Models API independen dari giliran lane (reviewerIndependent(engine) == true) — tanpa label "tidak independen", sehingga cabang "verdict diterima + indep" di bawah tidak menyala.
+                            val indepTeamVc275 = ""
+                            if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepTeamVc275 + "\n\n" + outTeamVc249
+                            else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + indepTeamVc275 + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
+                            else if (indepTeamVc275.isNotBlank()) outTeamVc249 = "🔍 Reviewer konteks-nol: verdict diterima" + indepTeamVc275 + ".\n\n" + outTeamVc249
+                        }
                     } else {
-                        val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                        // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
-                        // terstruktur (didahulukan — bukan transcript mentah
-                        // yang terpotong dari kepala) + jawaban akhir lane
-                        // + FAKTA PIN. Format jejak sama seperti 1-1
-                        // ("- <tool> [ok|gagal] <hasil>") supaya aturan
-                        // JEJAK TOOL vc257 di prompt reviewer menyala.
-                        val traceTeamVc298 = toolTraceVc298.toString()
-                        val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
-                        val rClientTeam = SlotClient(app, rSlotTeam, rAuthTeam.first, rAuthTeam.second)
-                        // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
-                        var unsTeam: List<Int> = emptyList()
-                        var concTeam = false
-                        var reviewFailTeamVc275 = false
-                        try {
-                            val (rawTeam, _) = rClientTeam.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
-                            val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
-                            if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
-                                val (rawTeam2Vc275, _) = rClientTeam.chatSync(AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
-                                val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
-                                if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
-                            }
-                        } catch (e: Exception) { reviewFailTeamVc275 = true }
-                        // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                        val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
-                        // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
-                        val indepTeamVc275 = AgentPrompt.reviewerIndependenceNote(lane.slot, rSlotTeam)
-                        if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepTeamVc275 + "\n\n" + outTeamVc249
-                        else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + indepTeamVc275 + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
-                        else if (indepTeamVc275.isNotBlank()) outTeamVc249 = "🔍 Reviewer konteks-nol: verdict diterima" + indepTeamVc275 + ".\n\n" + outTeamVc249
+                        // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5 —
+                        // tanpa fallback ke slot lain.
+                        val rSlotTeam = try { AccountPool.reviewerSlot(app) } catch (e: Exception) { null }
+                        val rAuthTeam = if (rSlotTeam != null) try { AccountPool.slotAuth(app, rSlotTeam) } catch (e: Exception) { null } else null
+                        if (rSlotTeam == null || rAuthTeam == null) {
+                            outTeamVc249 = ReviewerVc298.SKIP_NOTE + "\n\n" + outTeamVc249
+                        } else if (Governor.overCapReviewer(app)) {
+                            // vc277 O16(b): kuota reviewer habis — reviewer
+                            // dilewati dengan penanda, bukan diam-diam lolos.
+                            outTeamVc249 = Governor.reviewerOverCapText(app) + "\n\n" + outTeamVc249
+                        } else {
+                            val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
+                            // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
+                            // terstruktur (didahulukan — bukan transcript mentah
+                            // yang terpotong dari kepala) + jawaban akhir lane
+                            // + FAKTA PIN. Format jejak sama seperti 1-1
+                            // ("- <tool> [ok|gagal] <hasil>") supaya aturan
+                            // JEJAK TOOL vc257 di prompt reviewer menyala.
+                            val traceTeamVc298 = toolTraceVc298.toString()
+                            val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
+                            val rClientTeam = SlotClient(app, rSlotTeam, rAuthTeam.first, rAuthTeam.second)
+                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
+                            var unsTeam: List<Int> = emptyList()
+                            var concTeam = false
+                            var reviewFailTeamVc275 = false
+                            try {
+                                val (rawTeam, _) = rClientTeam.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
+                                val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
+                                if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
+                                    val (rawTeam2Vc275, _) = rClientTeam.chatSync(AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), false, false, reviewer = true)
+                                    val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
+                                    if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
+                                }
+                            } catch (e: Exception) { reviewFailTeamVc275 = true }
+                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
+                            val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
+                            // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
+                            val indepTeamVc275 = AgentPrompt.reviewerIndependenceNote(lane.slot, rSlotTeam)
+                            if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepTeamVc275 + "\n\n" + outTeamVc249
+                            else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + indepTeamVc275 + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
+                            else if (indepTeamVc275.isNotBlank()) outTeamVc249 = "🔍 Reviewer konteks-nol: verdict diterima" + indepTeamVc275 + ".\n\n" + outTeamVc249
+                        }
                     }
                 }
             } catch (e: Exception) {

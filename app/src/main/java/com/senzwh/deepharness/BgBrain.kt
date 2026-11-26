@@ -245,7 +245,7 @@ object BgBrain {
     // tidak ada re-ensure per panggilan selama cache terisi.
     private fun chatSync(ctx: Context, prompt: String, reviewer: Boolean = false): String {
         if (AgentEngines.current(ctx) == "openai") {
-            return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.BACKGROUND)
+            return LlmEngineChat.chatSyncForEngine(ctx, prompt, if (reviewer) LlmCallKind.REVIEWER else LlmCallKind.BACKGROUND)
         }
         val api = client ?: ensureClient(ctx) ?: throw Exception("Otak Latar: WebView tidak siap.")
         val latch = CountDownLatch(1)
@@ -262,17 +262,27 @@ object BgBrain {
         return out.get() ?: throw Exception("Otak Latar: panggilan API timeout / tanpa hasil.")
     }
 
-    // D2 (Fase 1, KRITIS): panggilan LLM latar SILENT untuk job graph
-    // (relasi, verifier, adjudikasi) + ringkas riwayat — SELALU lewat
-    // helper Models API (kind GRAPH, timeout 120 dtk seperti dulu).
-    // ensureClient + api.chat(..., bgMode=true) DIHAPUS dari fungsi ini:
-    // di engine openai tidak ada lagi WebView/DsApiClient di jalur ini.
-    // Engine bukan openai → helper throw (pesan jujur, tanpa fallback
-    // diam ke DeepSeek); pemanggil sudah menangkapnya (GraphJobs
-    // runLlmConsolPhase: try/catch per fase; summarizeOldHistory:
-    // catch-all → null).
+    // D2 (Fase 1, KRITIS) + RESIDU 2 (Fase 2, transisi): panggilan LLM
+    // latar SILENT untuk job graph (relasi, verifier, adjudikasi) +
+    // ringkas riwayat. Engine openai → helper Models API (kind GRAPH,
+    // timeout 120 dtk seperti dulu), tanpa WebView/DsApiClient.
+    // Engine deepseek → cabang LAMA seperti sebelum Fase 1 (git
+    // c71ebe2): klien DsApiClient dari cache `client` / ensureClient +
+    // api.chat(..., bgMode=true) + latch 120 dtk. Cabang deepseek ini
+    // DIHAPUS di Fase 6 bersama seluruh kode DeepSeek.
     fun callBgSync(ctx: Context, prompt: String): String {
-        return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.GRAPH, timeoutMs = 120_000)
+        if (AgentEngines.current(ctx) == "openai") return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.GRAPH, timeoutMs = 120_000)
+        val api = client ?: ensureClient(ctx) ?: throw Exception("Otak Latar: WebView tidak siap.")
+        val latch = CountDownLatch(1)
+        val out = AtomicReference<String?>(null)
+        val err = AtomicReference<String?>(null)
+        val thinkBg = prefs(ctx).getString("dsModelVariant", "v3") == "r1"
+        api.chat(prompt, thinkBg, false, { },
+            { text, _ -> out.set(text); latch.countDown() },
+            { e -> err.set(e); latch.countDown() }, bgMode = true)
+        latch.await(120, TimeUnit.SECONDS)
+        err.get()?.let { throw Exception(it) }
+        return out.get() ?: throw Exception("Otak Latar: panggilan latar timeout / tanpa hasil.")
     }
 
     // vc228 R-01(c): ringkas riwayat lama yang terbuang guard prompt.
@@ -675,14 +685,26 @@ object BgBrain {
                 if (AgentPrompt.hasFactualClaim(finalBgVc249) || usedToolsVc249.isNotEmpty()) {
                     // vc277 O16(b): kuota reviewer habis — reviewer
                     // dilewati dengan penanda, bukan diam-diam lolos.
-                    val overCapReviewerBgVc277 = Governor.overCapReviewer(ctx)
-                    if (overCapReviewerBgVc277) deliverBgVc249 = Governor.reviewerOverCapText(ctx) + " (reviewer tidak independen — reviewer latar memakai sesi yang sama dengan giliran agen)\n\n" + deliverBgVc249
+                    // F2a RESIDU 1: gate ENGINE-AWARE (baca engine SEKALI).
+                    // openai → kuota bucket reviewer per-provider (Governor
+                    // Models API) + teks refusalModels, TANPA suffix
+                    // "tidak independen" (reviewer stateless, independen).
+                    // deepseek (transisi) → perilaku LAMA persis
+                    // (overCapReviewer + reviewerOverCapText + suffix).
+                    val engineBg = AgentEngines.current(ctx)
+                    val indepBgVc275 = if (LlmEngineChat.reviewerIndependent(engineBg)) "" else " (reviewer tidak independen — reviewer latar memakai sesi yang sama dengan giliran agen)"
+                    val reviewerProviderBg = if (engineBg == "openai") try { LlmEngineChat.resolveProvider(ctx) } catch (e: Exception) { null } else null
+                    val overCapReviewerBgVc277 = if (engineBg == "openai") reviewerProviderBg?.let { Governor.overCapModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: false else Governor.overCapReviewer(ctx)
+                    if (overCapReviewerBgVc277) {
+                        val overCapTextBgVc275 = if (engineBg == "openai") reviewerProviderBg?.let { Governor.refusalModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: Governor.reviewerOverCapText(ctx) else Governor.reviewerOverCapText(ctx) + indepBgVc275
+                        deliverBgVc249 = overCapTextBgVc275 + "\n\n" + deliverBgVc249
+                    }
                     try {
                         val claimsBgVc249 = AgentPrompt.splitClaims(finalBgVc249)
                         if (!overCapReviewerBgVc277 && claimsBgVc249.isNotEmpty()) {
                             val pinnedBgR = try { RedactSecrets.redact(MemoryDb.get(ctx).pinnedFactsText()) } catch (e: Exception) { "" }
                             val evBg = ("TUGAS:\n" + task + "\nHASIL TOOL:\n" + transcript.toString() + "\nFAKTA PIN:\n" + pinnedBgR).take(16000)
-                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer); tetap gagal -> penanda "belum terverifikasi". Reviewer latar memakai klien DsApiClient yang sama dengan giliran agen, jadi verdict selalu berlabel tidak independen.
+                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer); tetap gagal -> penanda "belum terverifikasi". F2a: openai → reviewer stateless independen (label indepBgVc275 kosong); deepseek → reviewer memakai sesi yang sama dengan giliran agen (label tidak independen).
                             var unsBg: List<Int> = emptyList()
                             var concBg = false
                             var reviewFailBgVc275 = false
@@ -697,12 +719,11 @@ object BgBrain {
                             } catch (e: Exception) { reviewFailBgVc275 = true }
                             // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
                             val unsBgFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsBgVc249, unsBg, pinnedBgR.lines(), task)
-                            val indepBgVc275 = " (reviewer tidak independen — reviewer latar memakai sesi yang sama dengan giliran agen)"
                             if (reviewFailBgVc275) deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepBgVc275 + "\n\n" + deliverBgVc249
                             else if (unsBgFiltVc266.isNotEmpty()) deliverBgVc249 = AgentPrompt.reviewerNoteText(claimsBgVc249, unsBgFiltVc266) + indepBgVc275 + "\n\n" + AgentPrompt.applyDoublePass(deliverBgVc249, claimsBgVc249, unsBgFiltVc266)
                         }
                     } catch (e: Exception) {
-                        deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + " (reviewer tidak independen — reviewer latar memakai sesi yang sama dengan giliran agen)\n\n" + deliverBgVc249
+                        deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepBgVc275 + "\n\n" + deliverBgVc249
                     }
                 }
                 try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] selesai: $steps langkah, ${System.currentTimeMillis() - loopStartMsVc263} ms, prompt terakhir ${prompt.length} char, transkrip ${transcript.length} char") } catch (e: Exception) {}

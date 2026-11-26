@@ -9795,30 +9795,73 @@ class MainActivity : Activity() {
                             // (AccountPool.REVIEWER_SLOT) — tanpa fallback ke
                             // slot lain. Slot 5 kosong = reviewer dilewati
                             // dengan penanda jujur (bukan lolos diam-diam).
-                            val rSlotVc249 = try { AccountPool.reviewerSlot(this) } catch (e: Exception) { null }
-                            val rAuthVc249 = if (rSlotVc249 != null) try { AccountPool.slotAuth(this, rSlotVc249) } catch (e: Exception) { null } else null
-                            if (rSlotVc249 == null || rAuthVc249 == null) {
-                                addMsg(ReviewerVc298.SKIP_NOTE, "meta", turn = true)
-                            } else if (Governor.overCapReviewer(this)) {
-                                // vc277 O16(b): kuota reviewer habis — reviewer
-                                // dilewati dengan penanda, bukan diam-diam lolos.
-                                addMsg(Governor.reviewerOverCapText(this), "meta", turn = true)
+                            // F2b B3: engine dibaca SEKALI — openai lewat
+                            // LlmEngineChat (Models API, reviewer independen,
+                            // tanpa slot Browser 5); deepseek tetap jalur lama.
+                            val engineVc249 = AgentEngines.current(this)
+                            var unsVc249: List<Int> = emptyList()
+                            var concVc249 = false
+                            var reviewFailVc275 = false
+                            var indepNoteVc275 = ""
+                            var reviewerDoneVc249 = false
+                            if (engineVc249 == "openai") {
+                                // Gate over-cap per-provider (bucket reviewer):
+                                // refusal ditampilkan + reviewer dilewati;
+                                // provider null -> lanjut ke helper (helper
+                                // throw pesan kanonik -> penanda "belum
+                                // terverifikasi" via reviewFail di bawah).
+                                val providerVc249 = try { LlmEngineChat.resolveProvider(this) } catch (e: Exception) { null }
+                                val refusalVc249 = providerVc249?.let { Governor.refusalModels(this, it, Governor.MODELS_BUCKET_REVIEWER) }
+                                if (refusalVc249 != null) {
+                                    addMsg(refusalVc249, "meta", turn = true)
+                                } else {
+                                    // vc275 O11: verdict tak terparse -> retry
+                                    // 1x format ketat; tetap gagal -> penanda
+                                    // "belum terverifikasi", bukan lolos diam-diam.
+                                    try {
+                                        val rawVc249 = LlmEngineChat.chatSyncForEngine(this, AgentPrompt.zeroCtxReviewPrompt(claimsVc249, evidenceVc249), LlmCallKind.REVIEWER)
+                                        val (u1Vc275, c1Vc275) = AgentPrompt.parseZeroCtxReview(rawVc249)
+                                        if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
+                                            val raw2Vc275 = LlmEngineChat.chatSyncForEngine(this, AgentPrompt.reviewerRetryPrompt(claimsVc249, evidenceVc249), LlmCallKind.REVIEWER)
+                                            val (u2Vc275, c2Vc275) = AgentPrompt.parseZeroCtxReview(raw2Vc275)
+                                            if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
+                                        }
+                                    } catch (e: Exception) { reviewFailVc275 = true }
+                                    // openai = reviewer independen (stateless,
+                                    // tanpa sesi server bersama giliran agen).
+                                    indepNoteVc275 = if (LlmEngineChat.reviewerIndependent(engineVc249)) "" else AgentPrompt.reviewerIndependenceNote(turnSlotVc249, null)
+                                    reviewerDoneVc249 = true
+                                }
                             } else {
-                                // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer, bukan interaktif — chatSync reviewer=true bump reviewer + memakai sesi server TETAP reviewer slot 5 sejak vc298, bukan sesi ephemeral baru tiap review); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
-                                var unsVc249: List<Int> = emptyList()
-                                var concVc249 = false
-                                var reviewFailVc275 = false
-                                try {
-                                    val (rawVc249, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
-                                    val (u1Vc275, c1Vc275) = AgentPrompt.parseZeroCtxReview(rawVc249)
-                                    if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
-                                        val (raw2Vc275, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.reviewerRetryPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
-                                        val (u2Vc275, c2Vc275) = AgentPrompt.parseZeroCtxReview(raw2Vc275)
-                                        if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
-                                    }
-                                } catch (e: Exception) { reviewFailVc275 = true }
-                                // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
-                                val indepNoteVc275 = AgentPrompt.reviewerIndependenceNote(turnSlotVc249, rSlotVc249)
+                                // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
+                                // (AccountPool.REVIEWER_SLOT) — tanpa fallback ke
+                                // slot lain. Slot 5 kosong = reviewer dilewati
+                                // dengan penanda jujur (bukan lolos diam-diam).
+                                val rSlotVc249 = try { AccountPool.reviewerSlot(this) } catch (e: Exception) { null }
+                                val rAuthVc249 = if (rSlotVc249 != null) try { AccountPool.slotAuth(this, rSlotVc249) } catch (e: Exception) { null } else null
+                                if (rSlotVc249 == null || rAuthVc249 == null) {
+                                    addMsg(ReviewerVc298.SKIP_NOTE, "meta", turn = true)
+                                } else if (Governor.overCapReviewer(this)) {
+                                    // vc277 O16(b): kuota reviewer habis — reviewer
+                                    // dilewati dengan penanda, bukan diam-diam lolos.
+                                    addMsg(Governor.reviewerOverCapText(this), "meta", turn = true)
+                                } else {
+                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer, bukan interaktif — chatSync reviewer=true bump reviewer + memakai sesi server TETAP reviewer slot 5 sejak vc298, bukan sesi ephemeral baru tiap review); tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam.
+                                    try {
+                                        val (rawVc249, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
+                                        val (u1Vc275, c1Vc275) = AgentPrompt.parseZeroCtxReview(rawVc249)
+                                        if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
+                                            val (raw2Vc275, _) = SlotClient(this, rSlotVc249, rAuthVc249.first, rAuthVc249.second).chatSync(AgentPrompt.reviewerRetryPrompt(claimsVc249, evidenceVc249), false, false, reviewer = true)
+                                            val (u2Vc275, c2Vc275) = AgentPrompt.parseZeroCtxReview(raw2Vc275)
+                                            if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
+                                        }
+                                    } catch (e: Exception) { reviewFailVc275 = true }
+                                    // vc275 O11(a): label jujur bila reviewer memakai slot yang sama dengan giliran agen (hanya 1 slot login).
+                                    indepNoteVc275 = AgentPrompt.reviewerIndependenceNote(turnSlotVc249, rSlotVc249)
+                                    reviewerDoneVc249 = true
+                                }
+                            }
+                            if (reviewerDoneVc249) {
                                 // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
                                 val unsVc249FiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsVc249, unsVc249, pinnedFullVc266.lines(), currentTurnUser)
                                 // vc282: pesan sistem sebagai bukti reviewer — klaim
@@ -15101,26 +15144,65 @@ internal fun showApiTokenDialog() {
                         val tasks = Automation.sessionTasks(curSess)
                         val t2 = tasks.optJSONObject(i) ?: return@thSmallBtn
                         val criteria = t2.optString("criteria").ifBlank { "Tugas tuntas bila: " + t2.optString("text") }
-                        if (apiClient == null) {
+                        // F2b B5: engine-branch DULU — di engine openai
+                        // apiClient memang null by design (lazy B13), jadi
+                        // cek apiClient tidak boleh mendahului branch.
+                        val engineVerifyVcF2b = AgentEngines.current(this)
+                        val recentVerifyVcF2b = StringBuilder()
+                        val msgsVerifyVcF2b = Automation.loadMessages(this, room.optString("id"))
+                        var collectedVerifyVcF2b = 0
+                        for (j in msgsVerifyVcF2b.length() - 1 downTo 0) {
+                            if (collectedVerifyVcF2b >= 8) break
+                            val m = msgsVerifyVcF2b.optJSONObject(j) ?: continue
+                            val ms = m.optString("sess", "")
+                            if (ms.isNotBlank() && ms != curSess.optString("id")) continue
+                            recentVerifyVcF2b.append(m.optString("sender")).append(": ").append(m.optString("text")).append("\n")
+                            collectedVerifyVcF2b++
+                        }
+                        val verAgentVcF2b = if (sub == "multi") "Mandor, koordinator automation" else "agen " + (Agents.all(this).firstOrNull { it.id == curSess.optString("agent") }?.name ?: "automation")
+                        val promptVerifyVcF2b = "Kamu " + verAgentVcF2b + " yang memeriksa hasil tugas. Tugas: " + t2.optString("text") + ". Kriteria selesai: " + criteria + ". Bukti terbaru dari room:\n" + recentVerifyVcF2b.toString() + "Jawab PERSIS dua baris: baris pertama STATUS: TERVERIFIKASI atau STATUS: SEBAGIAN atau STATUS: GAGAL; baris kedua BUKTI: <satu kalimat bukti>. Jangan teks lain."
+                        if (engineVerifyVcF2b == "openai") {
+                            // Gate over-cap per-provider (bucket reviewer):
+                            // refusal -> SEBAGIAN + reviewer dilewati (helper
+                            // tidak dipanggil); provider null -> lanjut ke
+                            // helper (throw pesan kanonik -> onError SEBAGIAN).
+                            val providerVerifyVcF2b = try { LlmEngineChat.resolveProvider(this) } catch (e: Exception) { null }
+                            val refusalVerifyVcF2b = providerVerifyVcF2b?.let { Governor.refusalModels(this, it, Governor.MODELS_BUCKET_REVIEWER) }
+                            if (refusalVerifyVcF2b != null) {
+                                Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", refusalVerifyVcF2b)
+                                Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — $refusalVerifyVcF2b", curSess.optString("id")); renderBoard()
+                            } else {
+                                verifying.add(i); renderBoard()
+                                LlmEngineChat.chatAsync(this, promptVerifyVcF2b, LlmCallKind.REVIEWER,
+                                    onDone = { answer -> runOnUiThread {
+                                        verifying.remove(i)
+                                        val st = when {
+                                            answer.contains("TERVERIFIKASI") -> "TERVERIFIKASI"
+                                            answer.contains("GAGAL") -> "GAGAL"
+                                            else -> "SEBAGIAN"
+                                        }
+                                        val note = answer.substringAfter("BUKTI:", "").trim().take(200).ifBlank { answer.take(200) }
+                                        if (st == "GAGAL") {
+                                            Automation.setSessionTaskVerifyOnly(this, room, curSess, i, st, note)
+                                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "GAGAL — $note", curSess.optString("id")); renderBoard()
+                                        } else {
+                                            Automation.setSessionTaskVerified(this, room, curSess, i, st, note)
+                                            Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "$st — $note", curSess.optString("id")); renderBoard()
+                                        }
+                                    } },
+                                    onError = { err -> runOnUiThread {
+                                        verifying.remove(i)
+                                        Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi gagal: $err")
+                                        Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — verifikasi gagal: $err", curSess.optString("id")); renderBoard()
+                                    } })
+                            }
+                        } else if (apiClient == null) {
                             Automation.setSessionTaskVerified(this, room, curSess, i, "SEBAGIAN", "Verifikasi dilewati — engine belum siap.")
                             Automation.logAction(this, room.optString("id"), "sistem", "verifikasi tugas", "SEBAGIAN — engine belum siap: " + t2.optString("text"), curSess.optString("id")); renderBoard()
                         } else {
                             verifying.add(i); renderBoard()
-                            val recent = StringBuilder()
-                            val msgs = Automation.loadMessages(this, room.optString("id"))
-                            var collected = 0
-                            for (j in msgs.length() - 1 downTo 0) {
-                                if (collected >= 8) break
-                                val m = msgs.optJSONObject(j) ?: continue
-                                val ms = m.optString("sess", "")
-                                if (ms.isNotBlank() && ms != curSess.optString("id")) continue
-                                recent.append(m.optString("sender")).append(": ").append(m.optString("text")).append("\n")
-                                collected++
-                            }
-                            val verAgent = if (sub == "multi") "Mandor, koordinator automation" else "agen " + (Agents.all(this).firstOrNull { it.id == curSess.optString("agent") }?.name ?: "automation")
-                            val prompt = "Kamu " + verAgent + " yang memeriksa hasil tugas. Tugas: " + t2.optString("text") + ". Kriteria selesai: " + criteria + ". Bukti terbaru dari room:\n" + recent.toString() + "Jawab PERSIS dua baris: baris pertama STATUS: TERVERIFIKASI atau STATUS: SEBAGIAN atau STATUS: GAGAL; baris kedua BUKTI: <satu kalimat bukti>. Jangan teks lain."
                             try {
-                                apiClient?.chat(prompt, false, false, { _: String -> },
+                                apiClient?.chat(promptVerifyVcF2b, false, false, { _: String -> },
                                     { answer, _ -> runOnUiThread {
                                         verifying.remove(i)
                                         val st = when {
@@ -15690,47 +15772,86 @@ internal fun showApiTokenDialog() {
                     var noteRoomVc249 = ""
                     var correctedRoomVc262 = ""
                     try {
-                        // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
-                        // — tanpa fallback ke slot lain.
-                        val rSlotRoomVc249 = try { AccountPool.reviewerSlot(ctxRoomVc249) } catch (e: Exception) { null }
-                        val rAuthRoomVc249 = if (rSlotRoomVc249 != null) try { AccountPool.slotAuth(ctxRoomVc249, rSlotRoomVc249) } catch (e: Exception) { null } else null
-                        if (rSlotRoomVc249 == null || rAuthRoomVc249 == null) {
-                            noteRoomVc249 = ReviewerVc298.SKIP_NOTE
-                            if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak jalan: slot Browser 5 tidak login)"
-                        } else if (Governor.overCapReviewer(ctxRoomVc249)) {
-                            // vc277 O16(b): kuota reviewer habis — reviewer
-                            // dilewati dengan penanda, bukan diam-diam lolos.
-                            noteRoomVc249 = Governor.reviewerOverCapText(ctxRoomVc249) + " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
-                            if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — kuota reviewer habis)"
-                        } else {
-                            // vc262 N-M11: pesan user terakhir di sub-room ini masuk bukti (dihitung sekali di atas sebagai userRoomVc266).
-                            val userRoomVc262 = userRoomVc266
-                            val claimsRoomVc249 = AgentPrompt.splitClaims(reviewAnswerVc249)
-                            if (claimsRoomVc249.isNotEmpty()) {
-                                val pinnedRoomR = try { RedactSecrets.redact(MemoryDb.get(ctxRoomVc249).pinnedFactsText()) } catch (e: Exception) { "" }
-                                // vc301 SF-D8: sama seperti korpus reviewer
-                                // 1-1 — .take(16000) dulu tanpa penanda; kini
-                                // sisa char disebut eksplisit.
-                                val rawEvRoomVc301 = "HASIL TOOL ROOM:\n" + reviewEvidenceVc249 + "\nPESAN USER:\n" + userRoomVc262 + "\nFAKTA PIN:\n" + pinnedRoomR
-                                val evRoomVc249 = if (rawEvRoomVc301.length > 16000) rawEvRoomVc301.take(16000) + "…(dipotong, sisa " + (rawEvRoomVc301.length - 16000) + " char)…" else rawEvRoomVc301
-                                val rClientRoomVc275 = SlotClient(ctxRoomVc249, rSlotRoomVc249, rAuthRoomVc249.first, rAuthRoomVc249.second)
-                                // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi".
-                                var unsRoomVc249: List<Int> = emptyList()
-                                var concRoomVc249 = false
-                                var reviewFailRoomVc275 = false
-                                try {
-                                    val (raw1RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
-                                    val (u1RoomVc275, c1RoomVc275) = AgentPrompt.parseZeroCtxReview(raw1RoomVc275)
-                                    if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
-                                        val (raw2RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.reviewerRetryPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
-                                        val (u2RoomVc275, c2RoomVc275) = AgentPrompt.parseZeroCtxReview(raw2RoomVc275)
-                                        if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
-                                    }
-                                } catch (e: Exception) { reviewFailRoomVc275 = true }
+                        // F2b B4: engine dibaca SEKALI — openai lewat
+                        // LlmEngineChat (Models API, reviewer independen,
+                        // tanpa slot Browser 5); deepseek tetap jalur lama.
+                        // vc262 N-M11: pesan user terakhir di sub-room ini masuk bukti (dihitung sekali di atas sebagai userRoomVc266).
+                        val engineRoomVc249 = AgentEngines.current(ctxRoomVc249)
+                        val userRoomVc262 = userRoomVc266
+                        val claimsRoomVc249 = AgentPrompt.splitClaims(reviewAnswerVc249)
+                        if (claimsRoomVc249.isNotEmpty()) {
+                            val pinnedRoomR = try { RedactSecrets.redact(MemoryDb.get(ctxRoomVc249).pinnedFactsText()) } catch (e: Exception) { "" }
+                            // vc301 SF-D8: sama seperti korpus reviewer
+                            // 1-1 — .take(16000) dulu tanpa penanda; kini
+                            // sisa char disebut eksplisit.
+                            val rawEvRoomVc301 = "HASIL TOOL ROOM:\n" + reviewEvidenceVc249 + "\nPESAN USER:\n" + userRoomVc262 + "\nFAKTA PIN:\n" + pinnedRoomR
+                            val evRoomVc249 = if (rawEvRoomVc301.length > 16000) rawEvRoomVc301.take(16000) + "…(dipotong, sisa " + (rawEvRoomVc301.length - 16000) + " char)…" else rawEvRoomVc301
+                            var unsRoomVc249: List<Int> = emptyList()
+                            var concRoomVc249 = false
+                            var reviewFailRoomVc275 = false
+                            var indepRoomVc275 = ""
+                            var reviewerDoneRoomVc249 = false
+                            if (engineRoomVc249 == "openai") {
+                                // Gate over-cap per-provider (bucket reviewer):
+                                // refusal ditampilkan sebagai note + jawaban
+                                // ditahan tampil "belum terverifikasi";
+                                // provider null -> lanjut ke helper (helper
+                                // throw pesan kanonik -> penanda "belum
+                                // terverifikasi" via reviewFail di bawah).
+                                val providerRoomVc249 = try { LlmEngineChat.resolveProvider(ctxRoomVc249) } catch (e: Exception) { null }
+                                val refusalRoomVc249 = providerRoomVc249?.let { Governor.refusalModels(ctxRoomVc249, it, Governor.MODELS_BUCKET_REVIEWER) }
+                                if (refusalRoomVc249 != null) {
+                                    noteRoomVc249 = refusalRoomVc249
+                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — kuota reviewer habis)"
+                                } else {
+                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi".
+                                    try {
+                                        val raw1RoomVc275 = LlmEngineChat.chatSyncForEngine(ctxRoomVc249, AgentPrompt.zeroCtxReviewPrompt(claimsRoomVc249, evRoomVc249), LlmCallKind.REVIEWER)
+                                        val (u1RoomVc275, c1RoomVc275) = AgentPrompt.parseZeroCtxReview(raw1RoomVc275)
+                                        if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
+                                            val raw2RoomVc275 = LlmEngineChat.chatSyncForEngine(ctxRoomVc249, AgentPrompt.reviewerRetryPrompt(claimsRoomVc249, evRoomVc249), LlmCallKind.REVIEWER)
+                                            val (u2RoomVc275, c2RoomVc275) = AgentPrompt.parseZeroCtxReview(raw2RoomVc275)
+                                            if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
+                                        }
+                                    } catch (e: Exception) { reviewFailRoomVc275 = true }
+                                    // openai = reviewer independen (stateless,
+                                    // tanpa sesi server bersama giliran agen).
+                                    indepRoomVc275 = if (LlmEngineChat.reviewerIndependent(engineRoomVc249)) "" else " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
+                                    reviewerDoneRoomVc249 = true
+                                }
+                            } else {
+                                // vc298 BAGIAN 1 (1A): reviewer WAJIB slot Browser 5
+                                // — tanpa fallback ke slot lain.
+                                val rSlotRoomVc249 = try { AccountPool.reviewerSlot(ctxRoomVc249) } catch (e: Exception) { null }
+                                val rAuthRoomVc249 = if (rSlotRoomVc249 != null) try { AccountPool.slotAuth(ctxRoomVc249, rSlotRoomVc249) } catch (e: Exception) { null } else null
+                                if (rSlotRoomVc249 == null || rAuthRoomVc249 == null) {
+                                    noteRoomVc249 = ReviewerVc298.SKIP_NOTE
+                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak jalan: slot Browser 5 tidak login)"
+                                } else if (Governor.overCapReviewer(ctxRoomVc249)) {
+                                    // vc277 O16(b): kuota reviewer habis — reviewer
+                                    // dilewati dengan penanda, bukan diam-diam lolos.
+                                    noteRoomVc249 = Governor.reviewerOverCapText(ctxRoomVc249) + " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
+                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — kuota reviewer habis)"
+                                } else {
+                                    val rClientRoomVc275 = SlotClient(ctxRoomVc249, rSlotRoomVc249, rAuthRoomVc249.first, rAuthRoomVc249.second)
+                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat (counter govCountReviewer — chatSync reviewer=true bump reviewer + sesi server TETAP reviewer slot 5 sejak vc298); tetap gagal -> penanda "belum terverifikasi".
+                                    try {
+                                        val (raw1RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.zeroCtxReviewPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
+                                        val (u1RoomVc275, c1RoomVc275) = AgentPrompt.parseZeroCtxReview(raw1RoomVc275)
+                                        if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
+                                            val (raw2RoomVc275, _) = rClientRoomVc275.chatSync(AgentPrompt.reviewerRetryPrompt(claimsRoomVc249, evRoomVc249), false, false, reviewer = true)
+                                            val (u2RoomVc275, c2RoomVc275) = AgentPrompt.parseZeroCtxReview(raw2RoomVc275)
+                                            if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
+                                        }
+                                    } catch (e: Exception) { reviewFailRoomVc275 = true }
+                                    // vc275 O11(a): slot giliran agen room tidak dilacak terpisah — reviewer memakai Browser 5; karena tidak bisa dibuktikan berbeda dari akun giliran agen, verdict dilabeli tidak independen.
+                                    indepRoomVc275 = " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
+                                    reviewerDoneRoomVc249 = true
+                                }
+                            }
+                            if (reviewerDoneRoomVc249) {
                                 // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
                                 val unsRoomFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsRoomVc249, unsRoomVc249, pinnedRoomR.lines(), userRoomVc262)
-                                // vc275 O11(a): slot giliran agen room tidak dilacak terpisah — reviewer memakai Browser 5; karena tidak bisa dibuktikan berbeda dari akun giliran agen, verdict dilabeli tidak independen.
-                                val indepRoomVc275 = " (reviewer tidak independen — reviewer room memakai Browser 5; akun giliran agen tidak dilacak terpisah)"
                                 if (reviewFailRoomVc275) {
                                     noteRoomVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepRoomVc275
                                     if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak memberi verdict)"
@@ -15745,8 +15866,8 @@ internal fun showApiTokenDialog() {
                                     if (footerRoomVc289.isNotEmpty()) correctedRoomVc262 = correctedRoomVc262 + "\n\n" + footerRoomVc289
                                     if (holdRoomVc275) showTextRoomVc275 = correctedRoomVc262
                                 } else if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249
-                            } else if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249
-                        }
+                            }
+                        } else if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249
                     } catch (e: Exception) {
                         noteRoomVc249 = AgentPrompt.reviewerNotVerifiedNote()
                         if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — panggilan reviewer gagal)"
