@@ -48,7 +48,18 @@ object TeamRun {
         // pintu masuk run(), sebelum kuota/baterai/lane jalan.
         if (prefs(app).getBoolean("f1Off", false)) return "run_team DIBATALKAN: kill switch F1 dimatikan user — aktifkan lagi F1 lewat Profil > Kill Switch F1, lalu kirim ulang tugas tim."
         // vc262 XL-Kuota: penolakan tim memakai hitungan tim terpisah.
-        Governor.refusalTeam(app)?.let { return "run_team ditunda — $it" }
+        // F3 koordinator: gate kuota engine-aware (K4) — openai: counter
+        // per-provider bucket team; deepseek: counter legacy refusalTeam.
+        // Provider belum siap → jangan tolak di sini, helper menolak jujur
+        // saat lane jalan.
+        if (AgentEngines.current(app) == "openai") {
+            try {
+                val provTeamVcF3 = LlmEngineChat.resolveProvider(app)
+                Governor.refusalModels(app, provTeamVcF3, Governor.MODELS_BUCKET_TEAM)?.let { return "run_team ditunda — $it" }
+            } catch (e: Exception) { /* provider belum siap — lanjut */ }
+        } else {
+            Governor.refusalTeam(app)?.let { return "run_team ditunda — $it" }
+        }
         try {
             val bi = app.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
             val lvl = bi?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
@@ -107,8 +118,17 @@ object TeamRun {
     // — R-id dikumpulkan dari BatchToolVc274 outcomes (recordOutcome) +
     // jalur tunggal (Tools.lastResultId sesudah execute).
     private fun runLane(app: Context, lane: Lane): Pair<String, List<String>> {
-        if (lane.slot < 0) return "Ruang ${lane.agentName}: tidak ada akun login untuk lane ini (slot yang diminta kosong, atau semua slot login sudah dipakai lane lain) — buka Browser di Setup, login, lalu ulangi." to emptyList()
-        val api = makeClient(app, lane.slot) ?: return "Ruang ${lane.agentName}: Browser ${lane.slot} belum login — buka Browser ${lane.slot} di Setup, login, lalu ulangi." to emptyList()
+        // F3c (B9): engine dibaca SEKALI per lane — openai → helper Models
+        // API (tanpa slot, tanpa makeClient); deepseek → blok lama persis.
+        // Guard slot<0 hanya berlaku deepseek: openai tidak butuh akun
+        // Browser login, lane slot -1 tetap jalan via helper.
+        val engineTeamVcF3c = AgentEngines.current(app)
+        if (engineTeamVcF3c != "openai" && lane.slot < 0) return "Ruang ${lane.agentName}: tidak ada akun login untuk lane ini (slot yang diminta kosong, atau semua slot login sudah dipakai lane lain) — buka Browser di Setup, login, lalu ulangi." to emptyList()
+        val api: SlotClient? = if (engineTeamVcF3c == "openai") {
+            null
+        } else {
+            makeClient(app, lane.slot) ?: return "Ruang ${lane.agentName}: Browser ${lane.slot} belum login — buka Browser ${lane.slot} di Setup, login, lalu ulangi." to emptyList()
+        }
         val laneRidsVc303 = ArrayList<String>()
         val role = when (lane.agentId.lowercase()) {
             "mandor" -> "Kamu berperan sebagai Mandor — eksekutor lapangan: kerjakan tugas secara konkret langkah demi langkah, pakai tool yang perlu, laporkan hasil apa adanya termasuk kegagalan."
@@ -218,7 +238,14 @@ object TeamRun {
             // vc262 N-M10: F1 dicek tiap putaran lane — lane berhenti dalam
             // 1 langkah berikutnya bila user mematikan kill switch.
             if (prefs(app).getBoolean("f1Off", false)) { finalText = "Ruang ${lane.agentName} dihentikan: kill switch F1 dimatikan user."; break }
-            val resp = try { chatSync(app, api, prompt) } catch (e: Exception) { finalText = "Ruang ${lane.agentName} berhenti: ${e.message}"; "" }
+            // F3c (B9): openai → helper sinkron kind TEAM (Governor +
+            // TurnMetrics otomatis di helper, jawaban kosong = error);
+            // deepseek → chatSync lokal lama. Throw helper (provider belum
+            // siap/kuota) → pesan gagal lane yang sudah ada di bawah.
+            val resp = try {
+                if (engineTeamVcF3c == "openai") LlmEngineChat.chatSyncForEngine(app, prompt, LlmCallKind.TEAM)
+                else chatSync(app, api!!, prompt)
+            } catch (e: Exception) { finalText = "Ruang ${lane.agentName} berhenti: ${e.message}"; "" }
             if (finalText != null) break
             val multiTeamVc249 = AgentPrompt.extractToolCalls(resp)
             val (visible, obj) = AgentPrompt.extractToolCall(resp)
@@ -414,18 +441,31 @@ object TeamRun {
     }
 
     private fun verify(app: Context, goal: String, lanes: List<Lane>, results: List<String>): String {
-        val api = makeClient(app, 0) ?: return "Verifikasi tidak jalan (tidak ada browser login) — hasil ruang belum diperiksa silang."
+        // F3c (B9): engine dibaca SEKALI — openai → helper Models API
+        // (kind TEAM, tanpa makeClient); deepseek → makeClient lama.
+        val engineVerifyVcF3c = AgentEngines.current(app)
+        val api: SlotClient? = if (engineVerifyVcF3c == "openai") {
+            null
+        } else {
+            makeClient(app, 0) ?: return "Verifikasi tidak jalan (tidak ada browser login) — hasil ruang belum diperiksa silang."
+        }
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
         sb.append(memoryBlockForTask(app, goal))
         sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
         sb.append("\n\n[MODE TIM — VERIFIKASI SILANG] Kamu Mentor, pemeriksa independen yang TIDAK ikut mengerjakan. Tujuan tim: ").append(goal).append("\nHasil tiap ruang:\n")
         lanes.forEachIndexed { i, l -> sb.append("— ").append(l.agentName).append(": ").append(results[i].take(4000)).append("\n") }
         sb.append("\nNilai dengan tegas & singkat TANPA tool: mana yang konsisten, mana yang bertentangan atau belum terbukti, apa yang masih kurang untuk tujuan tim.")
-        return try { chatSync(app, api, sb.toString()).take(8000) } catch (e: Exception) { "Verifikasi gagal: ${e.message}" }
+        // F3c (B9): openai → helper kind TEAM; deepseek → chatSync lokal
+        // lama. Pesan gagal yang sudah ada dipakai ulang.
+        return try {
+            if (engineVerifyVcF3c == "openai") LlmEngineChat.chatSyncForEngine(app, sb.toString(), LlmCallKind.TEAM).take(8000)
+            else chatSync(app, api!!, sb.toString()).take(8000)
+        } catch (e: Exception) { "Verifikasi gagal: ${e.message}" }
     }
 
     /** v4.46.0 F3: klien slot TANPA WebView latar. Slot 0 = otomatis (slot
-     *  login pertama); 1–4 = slot tetap; null bila slot kosong. */
+     *  login pertama); 1–4 = slot tetap; null bila slot kosong.
+     *  F3c (B9): TETAP — hanya dipakai cabang deepseek (lane + verifikasi). */
     private fun makeClient(app: Context, slot: Int): SlotClient? {
         val s = if (slot in 1..5) slot else try { AccountPool.filledSlots(app).firstOrNull() } catch (e: Exception) { null } ?: return null
         val auth = try { AccountPool.slotAuth(app, s) } catch (e: Exception) { null } ?: return null
@@ -435,6 +475,10 @@ object TeamRun {
     private fun chatSync(app: Context, api: SlotClient, prompt: String): String {
         // vc262 XL-Kuota: tiap giliran lane bump hitungan TIM (bukan interaktif).
         // vc277 O16(a): bump berbobot ukuran prompt yang dikirim.
+        // F3c (B9): bumpTeam TETAP — fungsi ini sesudah migrasi hanya
+        // dipakai cabang deepseek (lane + verifikasi); helper Models API
+        // (openai) memakai counter terpisah via Governor.bumpModels(bucket
+        // team), jadi tidak ada double-count.
         try { Governor.bumpTeam(app, Governor.weightFor(prompt.length)) } catch (e: Exception) {}
         return api.chatSync(prompt, false, false).first
     }

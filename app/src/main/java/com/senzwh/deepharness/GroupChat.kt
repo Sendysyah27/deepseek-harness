@@ -27,8 +27,11 @@ import org.json.JSONObject
  *  2 agen dalam 1 ronde.
  *
  *  Riwayat grup disimpan di tabel khusus group_msgs (MemoryDb) — TIDAK
- *  PERNAH menyentuh baris history 1-1. Klien LLM = SlotClient yang sudah
- *  ada (tanpa duplikasi jalur chat, tanpa perubahan logika SlotClient). */
+ *  PERNAH menyentuh baris history 1-1. Klien LLM engine deepseek =
+ *  SlotClient yang sudah ada (tanpa duplikasi jalur chat, tanpa perubahan
+ *  logika SlotClient); engine openai = helper Models API
+ *  LlmEngineChat.chatSyncForEngine(kind ROOM) — tanpa slot, tanpa
+ *  SlotClient, tanpa AccountPool. */
 object GroupChat {
 
     data class Member(val id: String, val name: String, val accent: String, val persona: String)
@@ -332,7 +335,12 @@ object GroupChat {
                     listener.onSystem(note)
                 }
                 val memories = retrieveMemories(app, userText)
-                val filled = try { AccountPool.filledSlots(app) } catch (e: Exception) { emptyList() }
+                // F3c (B8): engine dibaca SEKALI per ronde — openai → tiap
+                // anggota lewat helper Models API (tanpa slot); deepseek →
+                // blok lama (slot + SlotClient). filled hanya dibaca bila
+                // deepseek (openai tidak butuh AccountPool).
+                val engineGrpVcF3c = AgentEngines.current(app)
+                val filled = if (engineGrpVcF3c == "openai") emptyList<Int>() else try { AccountPool.filledSlots(app) } catch (e: Exception) { emptyList() }
                 val used = HashSet<Int>()
                 val responded = HashSet<String>()
                 var bubbles = 0
@@ -341,20 +349,32 @@ object GroupChat {
                     val m = queue[i]; i++
                     if (responded.contains(m.id)) continue
                     responded.add(m.id)
-                    val slot: Int? = resolveSlot(app, m.id, used, filled)
-                    if (slot == null) {
-                        val note = "💤 ${m.name} sedang istirahat — isi slot di Setup untuk membangunkannya."
-                        try { mdb.addGroupMsg("istirahat", m.name, note) } catch (e: Exception) {}
-                        listener.onRest(m.name, note)
-                        continue
-                    }
-                    used.add(slot)
-                    val auth = try { AccountPool.slotAuth(app, slot) } catch (e: Exception) { null }
-                    if (auth == null) {
-                        val note = "💤 ${m.name} sedang istirahat — isi slot di Setup untuk membangunkannya."
-                        try { mdb.addGroupMsg("istirahat", m.name, note) } catch (e: Exception) {}
-                        listener.onRest(m.name, note)
-                        continue
+                    // F3c (B8): openai → tanpa slot/auth (anggota aktif
+                    // selalu menjawab via helper); deepseek → blok lama
+                    // persis (resolveSlot + slotAuth, tanpa slot = istirahat).
+                    val slot: Int?
+                    val auth: Pair<String, String>?
+                    if (engineGrpVcF3c == "openai") {
+                        slot = null
+                        auth = null
+                    } else {
+                        val s = resolveSlot(app, m.id, used, filled)
+                        if (s == null) {
+                            val note = "💤 ${m.name} sedang istirahat — isi slot di Setup untuk membangunkannya."
+                            try { mdb.addGroupMsg("istirahat", m.name, note) } catch (e: Exception) {}
+                            listener.onRest(m.name, note)
+                            continue
+                        }
+                        used.add(s)
+                        slot = s
+                        val a = try { AccountPool.slotAuth(app, s) } catch (e: Exception) { null }
+                        if (a == null) {
+                            val note = "💤 ${m.name} sedang istirahat — isi slot di Setup untuk membangunkannya."
+                            try { mdb.addGroupMsg("istirahat", m.name, note) } catch (e: Exception) {}
+                            listener.onRest(m.name, note)
+                            continue
+                        }
+                        auth = a
                     }
                     currentAgent = m.name
                     try { listener.onTurnStart(m.name) } catch (e: Exception) {}
@@ -369,7 +389,10 @@ object GroupChat {
                         if (roundWorkVc303.isNotEmpty()) WorkNotesVc301.appendToKey(app, WorkNotesVc301.groupNotesKey(), roundWorkVc303, { s -> RedactSecrets.redact(s) })
                     }
                     try {
-                        val client = SlotClient(app, slot, auth.first, auth.second)
+                        // F3c (B8): openai → tanpa SlotClient (helper di
+                        // bawah); deepseek → SlotClient lama. slot/auth
+                        // non-null di cabang deepseek (null = continue di atas).
+                        val client: SlotClient? = if (engineGrpVcF3c == "openai") null else SlotClient(app, slot!!, auth!!.first, auth!!.second)
                         var finalText: String? = null
                         var toolIter = 0
                         var proseBeforeTool = ""
@@ -433,7 +456,16 @@ object GroupChat {
                             return false
                         }
                         while (true) {
-                            val (answer, _) = client.chatSync(prompt, false, false)
+                            // F3c (B8): openai → helper sinkron kind ROOM
+                            // (Governor + TurnMetrics otomatis di helper,
+                            // jawaban kosong = error); deepseek → SlotClient
+                            // lama. Throw helper naik ke catch giliran →
+                            // catatan "⚠️ <nama> gagal: ..." (bukan diam).
+                            val answer: String = if (engineGrpVcF3c == "openai") {
+                                LlmEngineChat.chatSyncForEngine(app, prompt, LlmCallKind.ROOM)
+                            } else {
+                                client!!.chatSync(prompt, false, false).first
+                            }
                             if (!execMode) { finalText = answer.trim(); break }
                             val multiGrpVc249 = AgentPrompt.extractToolCalls(answer)
                             val (visible, toolObj) = AgentPrompt.extractToolCall(answer)

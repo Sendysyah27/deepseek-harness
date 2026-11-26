@@ -16104,6 +16104,23 @@ internal fun showApiTokenDialog() {
         }
 
         fun fallbackSolo(ag: Agents.Profile, prompt: String, err: String, sessId: String = "") {
+            val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
+            // (tanpa slot); deepseek tetap jalur lama (slot pertama login).
+            val engineFbVcF3a = AgentEngines.current(applicationContext)
+            if (engineFbVcF3a == "openai") {
+                Automation.logAction(this, room.optString("id"), ag.name, "self-healing fallback", "Models API menggantikan engine utama", sessId)
+                typingAdd(ag.name)
+                Thread {
+                    try {
+                        val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM, thinking = think)
+                        runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) }
+                    } catch (e: Exception) {
+                        runOnUiThread { typingRemove(ag.name); healDiagnose(ag.name, e.message ?: "error") }
+                    }
+                }.start()
+                return
+            }
             val slots = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { null }
             val slot = slots?.firstOrNull()
             if (slot == null) { healDiagnose(ag.name, err, sessId); return }
@@ -16111,7 +16128,6 @@ internal fun showApiTokenDialog() {
             if (auth == null) { healDiagnose(ag.name, err, sessId); return }
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing fallback", "slot $slot menggantikan engine utama", sessId)
             typingAdd(ag.name)
-            val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
             Thread {
                 try {
                     val client = SlotClient(applicationContext, slot, auth.first, auth.second)
@@ -16129,10 +16145,26 @@ internal fun showApiTokenDialog() {
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing percobaan $attempt", "gagal: " + err.take(120), sessId)
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
             if (attempt > 3) { fallbackSolo(ag, prompt, err, sessId); return }
-            if (apiClient == null) { healDiagnose(ag.name, err, sessId); return }
-            typingAdd(ag.name)
             val think = getSharedPreferences("harness", Context.MODE_PRIVATE).getString("dsModelVariant", "v3") == "r1"
             val retryPrompt = prompt + "\n\n(Percobaan ulang self-healing ke-$attempt — sebelumnya gagal: $err. Coba pendekatan yang BERBEDA secara mendasar, bukan variasi kecil.)"
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
+            // (sinkron di thread latar — healSolo jalan di UI thread);
+            // deepseek tetap jalur lama (apiClient async).
+            val engineHealVcF3a = AgentEngines.current(applicationContext)
+            if (engineHealVcF3a == "openai") {
+                typingAdd(ag.name)
+                Thread {
+                    try {
+                        val answer = LlmEngineChat.chatSyncForEngine(applicationContext, retryPrompt, LlmCallKind.ROOM, thinking = think)
+                        runOnUiThread { typingRemove(ag.name); healCounts.remove(key); handleRoomReply(sub, ag.name, answer, sessId) }
+                    } catch (e: Exception) {
+                        runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", attempt + 1, sessId) }
+                    }
+                }.start()
+                return
+            }
+            if (apiClient == null) { healDiagnose(ag.name, err, sessId); return }
+            typingAdd(ag.name)
             try {
                 apiClient?.chat(retryPrompt, think, false, { _: String -> },
                     { answer, _ -> runOnUiThread { typingRemove(ag.name); healCounts.remove(key); handleRoomReply(sub, ag.name, answer, sessId) } },
@@ -16145,7 +16177,23 @@ internal fun showApiTokenDialog() {
             val cnt = (healCounts[key] ?: 0) + 1; healCounts[key] = cnt
             Automation.logAction(this, room.optString("id"), ag.name, "self-healing percobaan $attempt", "gagal: " + err.take(120), sessId)
             if (cnt >= 3) { Automation.appendMessage(this, room.optString("id"), sub, "sistem", "⚠️ Self-healing: kegagalan identik ke-$cnt untuk ${ag.name} (pola StuckDetector).", sessId); renderMessages(); scrollBottom() }
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
+            // (tanpa slot); deepseek tetap jalur lama (SlotClient slot agen).
+            val engineHealMultiVcF3a = AgentEngines.current(applicationContext)
             if (attempt > 3) {
+                if (engineHealMultiVcF3a == "openai") {
+                    typingAdd(ag.name)
+                    Thread {
+                        try {
+                            val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM)
+                            healCounts.remove(key)
+                            runOnUiThread { typingRemove(ag.name); handleRoomReply("multi", ag.name, answer, sessId) }
+                        } catch (e: Exception) {
+                            runOnUiThread { typingRemove(ag.name); healDiagnose(ag.name, e.message ?: "error", sessId) }
+                        }
+                    }.start()
+                    return
+                }
                 var fb: Triple<Agents.Profile, Int, Pair<String, String>>? = null
                 val others = Agents.all(this).filter { (it.id == "asisten" || it.id == "mandor" || it.id == "mentor" || it.id == "agen4") && it.id != ag.id }
                 for (o in others) {
@@ -16175,9 +16223,13 @@ internal fun showApiTokenDialog() {
             typingAdd(ag.name)
             Thread {
                 try {
-                    val client = SlotClient(applicationContext, slot, auth.first, auth.second)
                     val varied = prompt + "\n\n(Percobaan ulang self-healing ke-$attempt — sebelumnya gagal: $err. Coba pendekatan yang BERBEDA secara mendasar, bukan variasi kecil.)"
-                    val (answer, _) = client.chatSync(varied, false, false)
+                    val answer = if (engineHealMultiVcF3a == "openai") {
+                        LlmEngineChat.chatSyncForEngine(applicationContext, varied, LlmCallKind.ROOM)
+                    } else {
+                        val client = SlotClient(applicationContext, slot, auth.first, auth.second)
+                        client.chatSync(varied, false, false).first
+                    }
                     healCounts.remove(key)
                     runOnUiThread { typingRemove(ag.name); handleRoomReply("multi", ag.name, answer, sessId) }
                 } catch (e: Exception) {
@@ -16187,7 +16239,11 @@ internal fun showApiTokenDialog() {
         }
 
         fun dispatchSolo(ag: Agents.Profile, prompt: String, sessId: String = "", userText: String = "") {
-            if (apiClient == null) { appendSystem("Solo: engine belum siap — buka tab Web / chat 1-1 dulu."); return }
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API
+            // (sinkron di thread latar — dispatchSolo jalan di UI thread);
+            // deepseek tetap jalur lama (apiClient async).
+            val engineSoloVcF3a = AgentEngines.current(applicationContext)
+            if (engineSoloVcF3a != "openai" && apiClient == null) { appendSystem("Solo: engine belum siap — buka tab Web / chat 1-1 dulu."); return }
             typingAdd(ag.name)
             try {
                 val variantSoloVc230 = thinkingVariantVc230()
@@ -16195,9 +16251,20 @@ internal fun showApiTokenDialog() {
                 val think = thinkBase || (variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText))
                 if (!thinkBase && variantSoloVc230 == "auto" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing: thinking otomatis karena tugas sulit (Solo, Setup = Otomatis). Perbedaan jalur vc230: 1-1 ikut Setup; Solo ikut Setup yang sama; grup/tim selalu tanpa thinking; latar ikut varian Setup.")
                 if (variantSoloVc230 == "v3" && userText.isNotBlank() && isHardTaskVc212(userText)) appendSystem("🧠 Routing Solo: tugas sulit terdeteksi, tapi Setup = V3 — auto-thinking TIDAK diaktifkan tanpa persetujuan eksplisit.")
-                apiClient?.chat(prompt, think, false, { _: String -> },
-                    { answer, _ -> runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) } },
-                    { err -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err, 1, sessId) } })
+                if (engineSoloVcF3a == "openai") {
+                    Thread {
+                        try {
+                            val answer = LlmEngineChat.chatSyncForEngine(applicationContext, prompt, LlmCallKind.ROOM, thinking = think)
+                            runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) }
+                        } catch (e: Exception) {
+                            runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, e.message ?: "error", 1, sessId) }
+                        }
+                    }.start()
+                } else {
+                    apiClient?.chat(prompt, think, false, { _: String -> },
+                        { answer, _ -> runOnUiThread { typingRemove(ag.name); handleRoomReply(sub, ag.name, answer, sessId) } },
+                        { err -> runOnUiThread { typingRemove(ag.name); healSolo(ag, prompt, err, 1, sessId) } })
+                }
             } catch (e: Exception) {
                 typingRemove(ag.name)
                 healSolo(ag, prompt, e.message ?: "error", 1, sessId)
@@ -16210,9 +16277,13 @@ internal fun showApiTokenDialog() {
             val mentioned = agents.filter { text.contains("@" + it.name, ignoreCase = true) }
             val targets = if (mentioned.isNotEmpty()) mentioned else agents
             val used = HashSet<Int>()
+            // F3 koordinator: di engine openai agen jalan tanpa slot (helper
+            // stateless) — slot/auth dummy, tidak pernah dipakai jalur openai.
+            val engineMultiJobsVcF3 = AgentEngines.current(applicationContext)
             val jobs = ArrayList<Triple<Agents.Profile, Int, Pair<String, String>>>()
             val notes = ArrayList<String>()
             for (ag in targets) {
+                if (engineMultiJobsVcF3 == "openai") { jobs.add(Triple(ag, 0, Pair("", ""))); continue }
                 val bound = try { GroupChat.boundSlotFor(applicationContext, ag.id) } catch (e: Exception) { null }
                 val slot = if (bound != null && !used.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !used.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
                 if (slot == null) { notes.add("💤 ${ag.name} istirahat — slot belum diatur."); continue }
@@ -16228,12 +16299,19 @@ internal fun showApiTokenDialog() {
             for (n in notes) appendSystem(n)
             if (jobs.isEmpty()) { appendSystem("Tidak ada agen dengan slot aktif di room multi."); return }
             val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
+            // deepseek tetap SlotClient lama (sesi slot giliran agen).
+            val engineMultiVcF3a = AgentEngines.current(applicationContext)
             for ((ag, slot, auth) in jobs) {
                 Thread {
                     runOnUiThread { typingAdd(ag.name) }
                     try {
-                        val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                        val (answer, _) = client.chatSync(prompts[ag.id] ?: text, false, false)
+                        val answer = if (engineMultiVcF3a == "openai") {
+                            LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: text, LlmCallKind.ROOM)
+                        } else {
+                            val client = SlotClient(applicationContext, slot, auth.first, auth.second)
+                            client.chatSync(prompts[ag.id] ?: text, false, false).first
+                        }
                         val (visible, toolObj) = AgentPrompt.extractToolCall(answer)
                         if (!(visible.trim() == "LEWATI" && toolObj == null)) {
                             runOnUiThread { handleRoomReply("multi", ag.name, answer, sessId) }
@@ -16266,30 +16344,41 @@ internal fun showApiTokenDialog() {
             val sess = Automation.sessionById(room, sessId) ?: org.json.JSONObject()
             val primaryId = sess.optString("primaryAgent", "").ifBlank { "mandor" }
             val primary = Agents.all(this).firstOrNull { it.id == primaryId } ?: Agents.all(this).firstOrNull { it.id == "mandor" } ?: Agents.active(this)
+            // F3 koordinator: di engine openai sintesis juri tidak butuh slot
+            // utama (helper stateless) — gerbang slot hanya untuk deepseek.
+            val engineSynthPrimVcF3 = AgentEngines.current(applicationContext)
             val filled = try { AccountPool.filledSlots(applicationContext) } catch (e: Exception) { emptyList<Int>() }
             val prefSlot = sess.optInt("primarySlot", 0)
             var pSlot: Int? = null
             if (prefSlot in filled) pSlot = prefSlot
             if (pSlot == null) { val bound = try { GroupChat.boundSlotFor(applicationContext, primary.id) } catch (e: Exception) { null }; if (bound != null && bound in filled) pSlot = bound }
             if (pSlot == null) pSlot = filled.firstOrNull()
-            if (pSlot == null) {
+            if (pSlot == null && engineSynthPrimVcF3 != "openai") {
                 runOnUiThread { appendSystemSess(sessId, "⚖️ Parlemen: tidak ada slot utama login — sintesis juri dilewati; jawaban per slot tetap tampil di atas."); renderMessages(); scrollBottom() }
                 return
             }
-            val pAuth = try { AccountPool.slotAuth(applicationContext, pSlot) } catch (e: Exception) { null }
+            if (pSlot == null) pSlot = 0
+            val pAuth = try { if (engineSynthPrimVcF3 == "openai") Pair("", "") else AccountPool.slotAuth(applicationContext, pSlot) } catch (e: Exception) { null }
             if (pAuth == null) {
                 runOnUiThread { appendSystemSess(sessId, "⚖️ Parlemen: slot utama belum login — sintesis juri dilewati; jawaban per slot tetap tampil di atas."); renderMessages(); scrollBottom() }
                 return
             }
             runOnUiThread { typingAdd(primary.name) }
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
+            // deepseek tetap SlotClient lama (slot utama sesi).
+            val engineSynthVcF3a = AgentEngines.current(applicationContext)
             try {
                 val labeled = StringBuilder()
                 for ((slot, v) in answered) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): ").append(v.third.take(20000)).append("\n\n")
                 for ((slot, v) in lewati) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): LEWATI (menilai tidak relevan).\n")
                 for ((slot, v) in gagal) labeled.append("Slot ").append(slot).append(" (").append(v.first).append("): tidak menjawab (gagal/timeout: ").append(v.third.take(200)).append(").\n")
                 val synthPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), juri parlemen room multi. Pertanyaan debat: " + question + "\n\nJawaban per slot:\n" + labeled.toString() + "\nTugas: sintesis SATU putusan untuk user. Mulai pesan persis dengan baris PARLEMEN — <putusan ringkas>. Lalu: alasan per kubu bila ada perbedaan; perbedaan pendapat antar slot dicatat JUJUR (jangan dipaksa konsensus bila slot-slot berbeda); daftar slot LEWATI/gagal di akhir. Jangan tambah bagian lain."
-                val synthClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
-                val (synth, _) = synthClient.chatSync(synthPrompt, false, false)
+                val synth = if (engineSynthVcF3a == "openai") {
+                    LlmEngineChat.chatSyncForEngine(applicationContext, synthPrompt, LlmCallKind.ROOM)
+                } else {
+                    val synthClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
+                    synthClient.chatSync(synthPrompt, false, false).first
+                }
                 val (synthVis, _) = AgentPrompt.extractToolCall(synth)
                 val synthBody = (if (synthVis.isNotBlank()) synthVis else synth).trim()
                 val synthFirst = synthBody.lineSequence().firstOrNull()?.trim() ?: ""
@@ -16320,9 +16409,13 @@ internal fun showApiTokenDialog() {
             val builtinIds = setOf("asisten", "mandor", "mentor", "agen4")
             val agents = if (memberIds.isNotEmpty()) Agents.all(this).filter { memberIds.contains(it.id) }.ifEmpty { Agents.all(this).filter { builtinIds.contains(it.id) } } else Agents.all(this).filter { builtinIds.contains(it.id) }
             val used = HashSet<Int>()
+            // F3 koordinator: di engine openai agen jalan tanpa slot (helper
+            // stateless) — slot/auth dummy, tidak pernah dipakai jalur openai.
+            val engineDebateJobsVcF3 = AgentEngines.current(applicationContext)
             val jobs = ArrayList<Triple<Agents.Profile, Int, Pair<String, String>>>()
             val notes = ArrayList<String>()
             for (ag in agents) {
+                if (engineDebateJobsVcF3 == "openai") { jobs.add(Triple(ag, 0, Pair("", ""))); continue }
                 val bound = try { GroupChat.boundSlotFor(applicationContext, ag.id) } catch (e: Exception) { null }
                 val slot = if (bound != null && !used.contains(bound)) bound else try { AccountPool.filledSlots(applicationContext).firstOrNull { s -> !used.contains(s) && GroupChat.slotPersona(applicationContext, s).isBlank() } } catch (e: Exception) { null }
                 if (slot == null) { notes.add("💤 ${ag.name} istirahat — slot belum diatur."); continue }
@@ -16339,12 +16432,19 @@ internal fun showApiTokenDialog() {
             if (jobs.isEmpty()) { appendSystem("Tidak ada agen dengan slot aktif di room multi."); return }
             val results = java.util.Collections.synchronizedMap(HashMap<Int, Triple<String, String, String>>())
             val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
+            // deepseek tetap SlotClient lama (sesi slot giliran agen).
+            val engineDebateVcF3a = AgentEngines.current(applicationContext)
             for ((ag, slot, auth) in jobs) {
                 Thread {
                     runOnUiThread { typingAdd(ag.name) }
                     try {
-                        val client = SlotClient(applicationContext, slot, auth.first, auth.second)
-                        val (answer, _) = client.chatSync(prompts[ag.id] ?: question, false, false)
+                        val answer = if (engineDebateVcF3a == "openai") {
+                            LlmEngineChat.chatSyncForEngine(applicationContext, prompts[ag.id] ?: question, LlmCallKind.ROOM)
+                        } else {
+                            val client = SlotClient(applicationContext, slot, auth.first, auth.second)
+                            client.chatSync(prompts[ag.id] ?: question, false, false).first
+                        }
                         val (visible, toolObj) = AgentPrompt.extractToolCall(answer)
                         if (visible.trim() == "LEWATI" && toolObj == null) {
                             results[slot] = Triple(ag.name, "LEWATI", "")
@@ -16369,6 +16469,9 @@ internal fun showApiTokenDialog() {
         // ronde tool SAFE per pekerja, failover maks 2 alih) -> agen utama
         // sintesis + LAPORAN AKHIR. Papan live di prefs coordDiv_.
         fun dispatchCoordinator(text: String, sessId: String) {
+            // F3a B6: engine dibaca SEKALI — openai lewat helper Models API;
+            // deepseek tetap jalur lama (SlotClient slot utama/pekerja).
+            val engineCoordVcF3a = AgentEngines.current(applicationContext)
             val sess = Automation.sessionById(room, sessId) ?: return
             val roomNow = Automation.roomById(this, roomId) ?: room
             val primaryId = sess.optString("primaryAgent", "").ifBlank { "mandor" }
@@ -16415,7 +16518,6 @@ internal fun showApiTokenDialog() {
                     val taskLines = StringBuilder()
                     for (i in 0 until sessTasks.length()) { val t = sessTasks.optJSONObject(i) ?: continue; taskLines.append("- [").append(t.optString("status")).append("] ").append(t.optString("text")).append("\n") }
                     val divPrompt = "Kamu " + primary.name + " (" + agentRole(primary.id, primary.engine) + "), koordinator sesi automation \"" + sess.optString("title") + "\". Tugas user: " + text + "\nPapan tugas sesi:\n" + taskLines.toString() + "Bagi tugas ini menjadi sub-tugas untuk " + workers.size + " pekerja (slot " + workers.joinToString(", ") + "). Jawab HANYA dengan baris-baris berbentuk: SUBTUGAS 1: <isi sub-tugas>. Maksimal " + workers.size + " sub-tugas. Jangan teks lain."
-                    val pClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
                     // vc240 M17: koordinator memakai blok graph ber-scope
                     // room (memoryCandidates + memoryBlock, sama seperti
                     // buildRoomPrompt) — sebelumnya tidak punya blok graph
@@ -16427,7 +16529,12 @@ internal fun showApiTokenDialog() {
                         if (blkVc240.isNotBlank()) divPrompt + "\nKonteks graph room:\n" + blkVc240 else divPrompt
                     } catch (e: Exception) { divPrompt }
                     val divPromptVc244 = if (memCtxVc244.isNotBlank()) divPromptVc240 + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else divPromptVc240
-                    val (divAnswer, _) = pClient.chatSync(divPromptVc244, false, false)
+                    val divAnswer = if (engineCoordVcF3a == "openai") {
+                        LlmEngineChat.chatSyncForEngine(applicationContext, divPromptVc244, LlmCallKind.ROOM)
+                    } else {
+                        val pClient = SlotClient(applicationContext, pSlot, pAuth.first, pAuth.second)
+                        pClient.chatSync(divPromptVc244, false, false).first
+                    }
                     for (line in divAnswer.lines()) {
                         val lt = line.trim()
                         if (lt.startsWith("SUBTUGAS", true) && lt.contains(":")) subs.add(lt.substringAfter(":").trim())
@@ -16470,10 +16577,18 @@ internal fun showApiTokenDialog() {
                             tried.add(attemptSlot)
                             try {
                                 val auth = AccountPool.slotAuth(applicationContext, attemptSlot) ?: throw Exception("slot $attemptSlot belum login")
-                                val client = SlotClient(applicationContext, attemptSlot, auth.first, auth.second)
+                                // F3a B6: satu panggilan LLM pekerja — openai
+                                // lewat helper Models API; deepseek tetap
+                                // SlotClient lama (sesi slot pekerja).
+                                val askWorkerVcF3a: (String) -> String = if (engineCoordVcF3a == "openai") {
+                                    { p -> LlmEngineChat.chatSyncForEngine(applicationContext, p, LlmCallKind.ROOM) }
+                                } else {
+                                    val client = SlotClient(applicationContext, attemptSlot, auth.first, auth.second)
+                                    { p -> client.chatSync(p, false, false).first }
+                                }
                                 val wPrompt = "Kamu Pekerja sub-agen (slot " + attemptSlot + ") dalam Room Automation sesi \"" + sess.optString("title") + "\". Kerjakan BAGIAN tugas berikut saja: " + subText + ". Konteks room: " + roomNow.optString("task") + ". Bila tugas ini menghasilkan file/laporan dan user tidak memberi arahan lokasi output, tulis ke " + Automation.outputDirFor(this, roomNow, sess) + ". Jawab ringkas + bukti."
                                 val wPromptVc244 = if (memCtxVc244.isNotBlank()) wPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else wPrompt
-                                val (ans1, _) = client.chatSync(wPromptVc244, false, false)
+                                val ans1 = askWorkerVcF3a(wPromptVc244)
                                 val (vis1, tool1) = AgentPrompt.extractToolCall(ans1)
                                 if (tool1 != null) {
                                     val tool = tool1.optString("tool")
@@ -16486,7 +16601,7 @@ internal fun showApiTokenDialog() {
                                     } else when (ToolGate.level(tool)) {
                                         RiskLevel.SAFE -> {
                                             val res = try { Tools.execute(this, tool, args, tool1.optString("id")) } catch (e: Exception) { "Gagal: ${e.message}" }
-                                            val (ans2, _) = client.chatSync("Hasil tool " + tool + ": " + res.take(4000) + "\nSimpulkan jawaban akhir ringkas + bukti.", false, false)
+                                            val ans2 = askWorkerVcF3a("Hasil tool " + tool + ": " + res.take(4000) + "\nSimpulkan jawaban akhir ringkas + bukti.")
                                             val (vis2, _) = AgentPrompt.extractToolCall(ans2)
                                             finalText = if (vis2.isNotBlank()) vis2 else ans2
                                         }
@@ -16526,9 +16641,13 @@ internal fun showApiTokenDialog() {
                                         "⚠️ Temuan penting: MAKSIMAL 3 butir, masing-masing diawali emoji severity 🔴 (kritis), 🟡 (perhatian), atau 🟢 (aman)\n" +
                                         "➡️ Langkah lanjut: saran + satu pertanyaan penutup untuk user\n" +
                                         "Tabel pipa BOLEH dipakai bila memang membantu (mis. ringkasan per pekerja) — chat kini menampilkan tabel sebagai view tabel; jaga tetap ringkas (maks ~20 baris) dan jangan pakai tabel untuk teks narasi. Hasil pekerja:\n" + results.toString()
-                                    val synthClient = SlotClient(applicationContext, pSlot, pAuth2.first, pAuth2.second)
                                     val synthPromptVc244 = if (memCtxVc244.isNotBlank()) synthPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else synthPrompt
-                                    val (synth, _) = synthClient.chatSync(synthPromptVc244, false, false)
+                                    val synth = if (engineCoordVcF3a == "openai") {
+                                        LlmEngineChat.chatSyncForEngine(applicationContext, synthPromptVc244, LlmCallKind.ROOM)
+                                    } else {
+                                        val synthClient = SlotClient(applicationContext, pSlot, pAuth2.first, pAuth2.second)
+                                        synthClient.chatSync(synthPromptVc244, false, false).first
+                                    }
                                     val (synthVis, _) = AgentPrompt.extractToolCall(synth)
                                     val idx = Automation.rebuildSessionIndex(roomNow, sess)
                                     val synthBody = (if (synthVis.isNotBlank()) synthVis else synth).trim()
@@ -16568,11 +16687,20 @@ internal fun showApiTokenDialog() {
                 val numbered = StringBuilder()
                 for (i in cands.indices) numbered.append(i).append(". ").append(cands[i].factText).append("\n")
                 val prompt = "Urutkan fakta berikut dari paling relevan ke paling tidak relevan dengan pesan user. Kembalikan JSON SATU BARIS saja: {\"order\":[0,1,2]}. Hanya JSON, tanpa teks lain.\n\nPESAN USER:\n" + text + "\n\nFAKTA:\n" + numbered.toString()
-                val latch = java.util.concurrent.CountDownLatch(1)
-                val out = java.util.concurrent.atomic.AtomicReference<String?>(null)
-                apiClient?.chat(prompt, false, false, { _: String -> }, { t, _ -> out.set(t); latch.countDown() }, { _ -> latch.countDown() }, bgMode = true)
-                latch.await(45, java.util.concurrent.TimeUnit.SECONDS)
-                val ans = out.get() ?: return null
+                // F3b B7: engine dibaca SEKALI — openai lewat helper
+                // (kind GRAPH, timeout 45 dtk seperti latch lama); gagal/
+                // kosong -> null (fallback FTS, perilaku lama). Deepseek
+                // tetap blok lama persis (latch + bgMode).
+                val ansRaw: String? = if (AgentEngines.current(this) == "openai") {
+                    try { LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH, timeoutMs = 45_000) } catch (e: Exception) { return null }
+                } else {
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    val out = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                    apiClient?.chat(prompt, false, false, { _: String -> }, { t, _ -> out.set(t); latch.countDown() }, { _ -> latch.countDown() }, bgMode = true)
+                    latch.await(45, java.util.concurrent.TimeUnit.SECONDS)
+                    out.get()
+                }
+                val ans = ansRaw ?: return null
                 val start = ans.indexOf("{"); val end = ans.lastIndexOf("}")
                 if (start < 0 || end <= start) return null
                 val obj = org.json.JSONObject(ans.substring(start, end + 1))
@@ -16630,7 +16758,9 @@ internal fun showApiTokenDialog() {
             if (sessArchivedNow()) return
             val roomNowR = try { Automation.roomById(this, room.optString("id")) ?: room } catch (e: Exception) { room }
             val rerankOn = roomNowR.optBoolean("rerank", false)
-            if (rerankOn && apiClient != null) {
+            // F3b B7: gerbang engine-aware — engine openai tidak punya
+            // apiClient (B13 lazy); rerank tetap jalan lewat helper.
+            if (rerankOn && (AgentEngines.current(this) == "openai" || apiClient != null)) {
                 Thread {
                     var ranked: List<Fact>? = null
                     try {
@@ -16660,7 +16790,27 @@ internal fun showApiTokenDialog() {
                 detCands = det.candBatch
                 appendSystem("🧠 Konsolidasi selesai: " + det.nodes + " node baru, " + det.edges + " edge baru, " + det.skipped + " dilewati (sudah diproses).")
             } catch (e: Exception) { appendSystem("Konsolidasi gagal: ${e.message}") }
-            if (apiClient != null) {
+            // F3b B7: engine dibaca SEKALI untuk seluruh konsolidasi.
+            // Pengirim LLM graph bersama (relations/verifier/adjudikasi):
+            // openai lewat helper sinkron kind GRAPH di Thread latar;
+            // deepseek tetap apiClient?.chat lama persis (tanpa bgMode —
+            // panggilan lama di sini memang tidak memakai bgMode).
+            // onOk/onErr dipanggil dari Thread latar (openai) atau thread
+            // callback DeepSeek; lambda pemanggil sudah runOnUiThread.
+            val engineF3b = AgentEngines.current(this)
+            fun chatGraphF3b(prompt: String, onOk: (String) -> Unit, onErr: (String) -> Unit) {
+                if (engineF3b == "openai") {
+                    Thread {
+                        try { onOk(LlmEngineChat.chatSyncForEngine(this, prompt, LlmCallKind.GRAPH)) }
+                        catch (e: Exception) { onErr(e.message ?: "error") }
+                    }.start()
+                } else {
+                    apiClient?.chat(prompt, false, false, { _: String -> },
+                        { t, _ -> onOk(t) },
+                        { e -> onErr(e) })
+                }
+            }
+            if (engineF3b == "openai" || apiClient != null) {
                 val newTail = ArrayList<String>()
                 for (i in skippedMsgs until msgs.length()) {
                     val m = msgs.optJSONObject(i) ?: continue
@@ -16674,8 +16824,8 @@ internal fun showApiTokenDialog() {
                     for (s in tail20) transcript.append(s).append("\n")
                     val prompt = GraphDb.get(this).relationsPrompt(transcript.toString())
                     try {
-                        apiClient?.chat(prompt, false, false, { _: String -> },
-                            { answer, _ ->
+                        chatGraphF3b(prompt,
+                            { answer ->
                                 runOnUiThread {
                                     try {
                                         val start = answer.indexOf("{"); val end = answer.lastIndexOf("}")
@@ -16706,8 +16856,8 @@ internal fun showApiTokenDialog() {
                                                     }
                                                     val oldList = g.activeEdgesTouching(involved).joinToString("\n") { "old:" + it.id + ": " + labOf(it.from) + " | " + it.rel + " | " + labOf(it.to) }
                                                     val vPrompt = g.verifierPrompt(newEdges, oldList, transcript.toString())
-                                                    apiClient?.chat(vPrompt, false, false, { _: String -> },
-                                                        { vAnswer, _ ->
+                                                    chatGraphF3b(vPrompt,
+                                                        { vAnswer ->
                                                             runOnUiThread {
                                                                 try {
                                                                     val summary = GraphDb.get(this).applyVerifier(vAnswer, newEdges)
@@ -16727,8 +16877,8 @@ internal fun showApiTokenDialog() {
                                             if (allCands.isNotEmpty()) {
                                                 try {
                                                     val aPrompt = g.adjudicationPrompt(allCands)
-                                                    apiClient?.chat(aPrompt, false, false, { _: String -> },
-                                                        { aAnswer, _ ->
+                                                    chatGraphF3b(aPrompt,
+                                                        { aAnswer ->
                                                             runOnUiThread {
                                                                 try {
                                                                     val aSummary = GraphDb.get(this).applyAdjudications(aAnswer, allCands)
@@ -17261,7 +17411,7 @@ internal fun showApiTokenDialog() {
         // bila engine belum siap (dulu hanya pesan "engine belum siap"
         // setelah diketuk).
         konsolBtn.isEnabled = apiClient != null
-        konsolBtn.setOnClickListener { if (apiClient == null) { Toast.makeText(this, "Engine belum siap — konsolidasi belum bisa jalan.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
+        konsolBtn.setOnClickListener { if (apiClient == null && AgentEngines.current(this) != "openai") { Toast.makeText(this, "Engine belum siap — konsolidasi belum bisa jalan.", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; consolidateRoomGraph() }
         petaBtn.setOnClickListener { showRoomMapDialog() }
 
         var dlgHolder: android.app.AlertDialog? = null

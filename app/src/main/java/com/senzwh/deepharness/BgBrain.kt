@@ -305,7 +305,13 @@ object BgBrain {
     fun summarizeOldHistory(ctx: Context, droppedText: String): String? {
         return try {
             if (droppedText.isBlank()) return null
-            if (Governor.overCapBg(ctx)) return null
+            // F3b B11: gerbang kuota engine-aware — openai cek counter
+            // Models API provider aktif (bucket bg) via overCapBgForEngine
+            // (pola yang sama dengan submitGateKotlin); provider tidak
+            // bisa di-resolve -> TIDAK early-return, helper menegakkan
+            // kuota saat eksekusi (callBgSync throw). Deepseek tetap
+            // perilaku lama (counter DeepSeek via overCapBg).
+            if (overCapBgForEngine(ctx)) return null
             val prompt = "Ringkas percakapan lama berikut dalam 1-2 kalimat per 10 pesan. WAJIB mempertahankan secara VERBATIM (tanpa parafrase, tanpa pembulatan, tanpa mengubah angka) field-field berikut bila ada di teks: semua angka, semua nama, semua tanggal, keputusan eksplisit user, serta penolakan dan persetujuan user. Bila suatu angka/nama/tanggal tidak yakin, tulis apa adanya dari teks atau hilangkan — jangan mengarang, jangan menambah informasi baru. Hanya fakta, keputusan, dan konteks penting yang masih relevan. Keluarkan HANYA ringkasannya, satu paragraf.\n\nPERCAKAPAN LAMA:\n" + cutAtMessageBoundary(droppedText, 6000)
             val out = callBgSync(ctx, prompt)
             val s = out.trim().take(8000)
