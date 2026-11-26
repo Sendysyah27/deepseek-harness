@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config — Harness.
+
+  Cleartext DIIZINKAN secara default: fitur inti memang butuh HTTP polos
+  ke host arbitrer / jaringan lokal:
+    - http_request (kontrol perangkat smart-home di LAN, mis. http://192.168.x.x)
+    - MCP OAuth loopback  http://127.0.0.1:8931
+    - oc/opencode serve   http://127.0.0.1:4097 / :4100 / :4199
+  Memblokir cleartext global akan mematikan fitur-fitur itu.
+
+  Hardening yang tetap dilakukan:
+    1. Host eksternal sensitif WAJIB HTTPS (mencegah downgrade tak sengaja).
+    2. Trust anchor: system + user — user CA diperlukan fitur MitmProxy
+       (MITM terkelola). Bila MitmProxy tidak dipakai, hapus baris user.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- API/layanan eksternal: paksa HTTPS. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">deepseek.com</domain>
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+        <domain includeSubdomains="true">google.com</domain>
+        <domain includeSubdomains="true">googleapis.com</domain>
+        <domain includeSubdomains="true">openai.com</domain>
+        <domain includeSubdomains="true">anthropic.com</domain>
+        <domain includeSubdomains="true">opencode.ai</domain>
+    </domain-config>
+</network-security-config>
