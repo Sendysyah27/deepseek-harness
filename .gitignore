@@ -8,6 +8,9 @@ build-manual/
 build/
 out/
 
+# Dependensi biner (diisi oleh tools/fetch_vendor.sh)
+vendor/
+
 # Signing & rahasia
 *.keystore
 *.jks

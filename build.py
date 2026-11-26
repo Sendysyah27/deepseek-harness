@@ -383,18 +383,27 @@ def main():
         "kotlinc GAGAL")
     print("  kotlinc ok")
 
-    print("== 4. strip MethodParameters di stdlib ==")
+    print("== 4. strip MethodParameters (stdlib + dependensi) ==")
+    # d8 (build-tools 34) NPE saat membaca atribut MethodParameters yang
+    # punya parameter name_index=0 (dihasilkan kotlinc, Bouncy Castle,
+    # xz, dst). Atribut ini tidak dipakai runtime, jadi dibuang dari
+    # SEMUA jar yang masuk d8 — bukan hanya stdlib/xz.
     sys.path.insert(0, f"{PROJ}/tools")
     import strip_methodparams as smp
-    stdlib_stripped = f"{BUILD}/kotlin-stdlib-stripped.jar"
-    shutil.copy(STDLIB, stdlib_stripped)
-    smp.process_jar(stdlib_stripped, stdlib_stripped + ".tmp")
-    os.replace(stdlib_stripped + ".tmp", stdlib_stripped)
-    # xz.jar (T4b2): MethodParameters bawaannya bikin d8 NPE — strip juga.
-    xz_stripped = f"{BUILD}/xz-stripped.jar"
-    shutil.copy(XZ_JAR, xz_stripped)
-    smp.process_jar(xz_stripped, xz_stripped + ".tmp")
-    os.replace(xz_stripped + ".tmp", xz_stripped)
+
+    def strip_jar(src, tag):
+        dst = f"{BUILD}/{tag}-stripped.jar"
+        shutil.copy(src, dst)
+        smp.process_jar(dst, dst + ".tmp")
+        os.replace(dst + ".tmp", dst)
+        return dst
+
+    stdlib_stripped = strip_jar(STDLIB, "kotlin-stdlib")
+    xz_stripped = strip_jar(XZ_JAR, "xz")
+    bc_stripped = strip_jar(BC_JAR, "bcprov")
+    ort_stripped = strip_jar(ORT_JAR, "ort")
+    conscrypt_stripped = strip_jar(CONSCRYPT_JAR, "conscrypt")
+    spake_stripped = [strip_jar(j, "spake-" + os.path.splitext(os.path.basename(j))[0]) for j in SPAKE_JARS]
 
     print("== 5. d8 ==")
     classes_jar = f"{BUILD}/app-classes.jar"
@@ -405,8 +414,8 @@ def main():
                     fp = os.path.join(dp, fn)
                     z.write(fp, os.path.relpath(fp, f"{BUILD}/classes"))
     run([f"{BT}/d8", "--lib", ANDROID_JAR, "--min-api", "26",
-         "--output", f"{BUILD}/dex", classes_jar, stdlib_stripped, ORT_JAR] +
-        [x if x != XZ_JAR else xz_stripped for x in EXTRA_JARS], "d8 GAGAL")
+         "--output", f"{BUILD}/dex", classes_jar, stdlib_stripped, ort_stripped,
+         bc_stripped, conscrypt_stripped, xz_stripped] + spake_stripped, "d8 GAGAL")
     print("  dex:", os.listdir(f"{BUILD}/dex"))
 
     print("== 6. package + sign ==")
@@ -423,8 +432,15 @@ def main():
         z.write(CONSCRYPT_SO, "lib/arm64-v8a/libconscrypt_jni.so")
         # proot Ubuntu (T4b2) — binary sebagai lib*.so agar diekstrak ke
         # nativeLibraryDir (lolos W^X targetSdk 34); dieksekusi dari sana.
-        for so in ("libproot.so", "libprootloader.so", "libtalloc.so", "libandroid-shmem.so"):
-            z.write(os.path.join(PROOT_JNI, so), f"lib/arm64-v8a/{so}")
+        # Bila vendor/proot belum disediakan (lihat tools/fetch_vendor.sh),
+        # lewati dengan peringatan — fitur proot mati, APK tetap dibangun.
+        proot_missing = [so for so in ("libproot.so", "libprootloader.so", "libtalloc.so", "libandroid-shmem.so")
+                         if not os.path.exists(os.path.join(PROOT_JNI, so))]
+        if proot_missing:
+            print(f"  WARN 6: vendor/proot belum lengkap (kurang: {', '.join(proot_missing)}) — dilewati")
+        else:
+            for so in ("libproot.so", "libprootloader.so", "libtalloc.so", "libandroid-shmem.so"):
+                z.write(os.path.join(PROOT_JNI, so), f"lib/arm64-v8a/{so}")
         # libharness_core.so (vc317 slice 0+1) — bila ada (fallback Kotlin bila absen).
         if RUST_SO:
             z.write(RUST_SO, "lib/arm64-v8a/libharness_core.so")
