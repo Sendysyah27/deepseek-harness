@@ -16584,7 +16584,11 @@ internal fun showApiTokenDialog() {
                                     { p -> LlmEngineChat.chatSyncForEngine(applicationContext, p, LlmCallKind.ROOM) }
                                 } else {
                                     val client = SlotClient(applicationContext, attemptSlot, auth.first, auth.second)
-                                    { p -> client.chatSync(p, false, false).first }
+                                    // JANGAN lambda mentah sebagai ekspresi terakhir blok — Kotlin
+                                    // membacanya sebagai trailing lambda dari pemanggilan SlotClient
+                                    // di baris atas (ronde 1 CI merah). Bungkus ke val dulu.
+                                    val workerFn: (String) -> String = { p -> client.chatSync(p, false, false).first }
+                                    workerFn
                                 }
                                 val wPrompt = "Kamu Pekerja sub-agen (slot " + attemptSlot + ") dalam Room Automation sesi \"" + sess.optString("title") + "\". Kerjakan BAGIAN tugas berikut saja: " + subText + ". Konteks room: " + roomNow.optString("task") + ". Bila tugas ini menghasilkan file/laporan dan user tidak memberi arahan lokasi output, tulis ke " + Automation.outputDirFor(this, roomNow, sess) + ". Jawab ringkas + bukti."
                                 val wPromptVc244 = if (memCtxVc244.isNotBlank()) wPrompt + "\nKonteks memori user (fakta/goals/skill ber-query, ber-cap):\n" + memCtxVc244 else wPrompt
