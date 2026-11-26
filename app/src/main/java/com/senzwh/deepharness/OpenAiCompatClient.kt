@@ -40,6 +40,7 @@ object OpenAiCompatClient {
     /** Chat streaming (OpenAI SSE) + fallback non-streaming bila gagal stream. */
     fun chat(baseUrl: String,
              apiKey: String,
+             model: String,
              prompt: String,
              thinkingEnabled: Boolean,
              onPartial: (String) -> Unit,
@@ -47,14 +48,14 @@ object OpenAiCompatClient {
              onError: (String) -> Unit) {
         try {
             chatInternal(endpoint = baseUrl.trimEnd('/') + "/chat/completions",
-                apiKey = apiKey, model = "", prompt = prompt, stream = true, thinking = thinkingEnabled,
+                apiKey = apiKey, model = model, prompt = prompt, stream = true, thinking = thinkingEnabled,
                 onPartial = onPartial, onDone = { content, think, _ -> onDone(content, think) },
                 onError = { throw RuntimeException(it) }, timeoutMs = 120000)
         } catch (e: Exception) {
             // Fallback non-streaming.
             try {
                 chatInternal(endpoint = baseUrl.trimEnd('/') + "/chat/completions",
-                    apiKey = apiKey, model = "", prompt = prompt, stream = false, thinking = thinkingEnabled,
+                    apiKey = apiKey, model = model, prompt = prompt, stream = false, thinking = thinkingEnabled,
                     onPartial = {}, onDone = { c, t, _ -> onDone(c, t) }, onError = { throw RuntimeException(it) },
                     timeoutMs = 120000)
             } catch (e2: Exception) {

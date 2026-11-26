@@ -123,7 +123,7 @@ object LlmProviders {
         if (key.isNullOrBlank()) { onError("API key provider '${provider.id}' belum ada."); return }
         try {
             OpenAiCompatClient.chat(
-                provider.baseUrl, key, prompt, thinkingEnabled = thinking,
+                provider.baseUrl, key, provider.model, prompt, thinkingEnabled = thinking,
                 onPartial = onPartial,
                 onDone = { content, think -> onDone(content, think) },
                 onError = onError
