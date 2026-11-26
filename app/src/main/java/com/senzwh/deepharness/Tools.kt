@@ -2932,6 +2932,76 @@ object Tools {
                 }
                 "api_read" -> ApiClients.execute(ctx, true, args)
                 "api_write" -> ApiClients.execute(ctx, false, args)
+                "llm_provider_list" -> {
+                    LlmProviderStore.hydrate(ctx)
+                    val active = LlmProviderStore.activeId(ctx)
+                    val all = LlmProviders.all()
+                    if (all.isEmpty()) {
+                        "Belum ada provider. Pakai llm_provider_set {id,label,base_url,model,api_key,active:true}."
+                    } else {
+                        val lines = mutableListOf<String>()
+                        lines.add("Provider aktif: $active")
+                        lines.add("Daftar:")
+                        all.forEach { p ->
+                            lines.add(
+                                "• ${p.id} — ${p.label} [${p.kind}] " +
+                                    "model=${p.model} enabled=${p.enabled} hasKey=${p.hasKey} " +
+                                    "configured=${p.configured}" + (if (p.id == active) " (AKTIF)" else "")
+                            )
+                        }
+                        lines.joinToString("\n")
+                    }
+                }
+                "llm_provider_set" -> {
+                    val id = args.optString("id").trim()
+                    val label = args.optString("label").trim()
+                    val baseUrl = args.optString("base_url", args.optString("baseUrl")).trim()
+                    val model = args.optString("model").trim()
+                    val apiKeyArg = args.optString("api_key", args.optString("apiKey")).trim().ifBlank { null }
+                    val active = args.optBoolean("active", false)
+                    if (id.isBlank()) "Harap isi 'id'."
+                    else if (label.isBlank()) "Harap isi 'label'."
+                    else if (baseUrl.isBlank()) "Harap isi 'base_url'."
+                    else if (model.isBlank()) "Harap isi 'model'."
+                    else {
+                        LlmProviderStore.hydrate(ctx)
+                        val existingKey = LlmProviderStore.apiKey(ctx, id) ?: LlmProviders.find(id)?.apiKey
+                        val effectiveKey = apiKeyArg ?: existingKey
+                        val p = LlmProviders.addCustom(id, label, baseUrl, effectiveKey, model, true)
+                        LlmProviderStore.save(ctx, p)
+                        if (active) {
+                            LlmProviderStore.setActive(ctx, p.id)
+                            LlmProviders.setActive(p.id)
+                        }
+                        "Provider '${p.id}' disimpan — ${if (p.hasKey) "ada API key" else "BELUM ada API key"} — " +
+                            if (active) "sekarang AKTIF." else "belum aktif (gunakan llm_provider_set active:true atau ganti via engine)."
+                    }
+                }
+                "llm_provider_ask" -> {
+                    val idRaw = args.optString("id").trim()
+                    val prompt = args.optString("prompt").trim()
+                    if (prompt.isBlank()) "Harap isi 'prompt'."
+                    else {
+                        LlmProviderStore.hydrate(ctx)
+                        val targetId = if (idRaw.isBlank()) LlmProviderStore.activeId(ctx) else idRaw
+                        val prov = LlmProviders.find(targetId)
+                            ?: return "Provider '$targetId' tidak dikenal. Daftar: llm_provider_list"
+                        val key = if (targetId == LlmProviders.ID_DEEPSEEK) null else LlmProviderStore.apiKey(ctx, targetId)
+                        if (prov.kind != LlmKind.OPENAI_COMPAT) {
+                            "Provider '${prov.id}' bukan OpenAI-compatible (ini jalur DeepSeek, pakai chat normal)."
+                        } else if (!prov.configured && (key == null || key.isBlank())) {
+                            "Provider '${prov.id}' belum dikonfigurasi lengkap (baseUrl/model/apiKey). Pakai llm_provider_set."
+                        } else {
+                            val usedKey = key ?: prov.apiKey
+                            try {
+                                val res = OpenAiCompatClient.ask(prov, usedKey, prompt)
+                                res.content
+                            } catch (e: Exception) {
+                                "Gagal memanggil provider '${prov.id}': ${e.message}"
+                            }
+                        }
+                    }
+                }
                 "create_subroom" -> createSubroom(ctx, args)
                 "transcribe_media" -> transcribeMedia(ctx, args.optString("path"))
                 "watch_screen" -> {

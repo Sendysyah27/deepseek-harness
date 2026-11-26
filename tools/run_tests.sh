@@ -53,10 +53,15 @@ echo "== kompilasi test Kotlin =="
 "$KOTLINC" -nowarn -cp "$JSON_JAR" -d "$OUT" \
   "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ToolRegistry.kt" \
-  "$PROJ/app/src/test/ToolRegistryTest.kt"
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviders.kt" \
+  "$PROJ/app/src/test/ToolRegistryTest.kt" \
+  "$PROJ/app/src/test/LlmProvidersTest.kt"
 
 echo "== jalankan ToolRegistryTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolRegistryTestKt
+
+echo "== jalankan LlmProvidersTest =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.LlmProvidersTestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"

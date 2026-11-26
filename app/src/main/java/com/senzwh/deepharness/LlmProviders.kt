@@ -1,0 +1,111 @@
+package com.senzwh.deepharness
+
+/**
+ * Registry provider LLM — otak model alternatif selain DeepSeek.
+ *
+ * Modul ini TIDAK bergantung Android (tidak ada Context/Android API), agar
+ * bisa diuji dengan `tools/run_tests.sh` (JVM murni). Persistensi ke prefs/
+ * SecureStore hidup di `LlmProviderStore` (Android-only).
+ *
+ * Provider bawaan DeepSeek tetap menjadi default; provider kustom bertipe
+ * OpenAI-compatible (OpenAI, OpenRouter, Groq, Ollama, vLLM, endpoint lain
+ * yang mengekspos /chat/completions).
+ */
+enum class LlmKind { DEEPSEEK, OPENAI_COMPAT }
+
+data class LlmProvider(
+    val id: String,
+    val label: String,
+    val kind: LlmKind,
+    val baseUrl: String,
+    val apiKey: String?,
+    val model: String,
+    val enabled: Boolean = true,
+    val builtIn: Boolean = false
+) {
+    val hasKey: Boolean get() = !apiKey.isNullOrBlank()
+    val configured: Boolean
+        get() = when (kind) {
+            LlmKind.DEEPSEEK -> true
+            LlmKind.OPENAI_COMPAT -> enabled && baseUrl.isNotBlank() && model.isNotBlank() && hasKey
+        }
+}
+
+object LlmProviders {
+    const val ID_DEEPSEEK = "deepseek"
+    const val ID_LOCAL = "local"
+    const val ID_OPENAI = "openai"
+
+    private val deepseek = LlmProvider(
+        ID_DEEPSEEK, "DeepSeek (API Internal / Web)", LlmKind.DEEPSEEK,
+        "https://chat.deepseek.com/api/v0", null, "deepseek-chat",
+        enabled = true, builtIn = true
+    )
+
+    private val custom = mutableListOf<LlmProvider>()
+    private var activeId: String = ID_DEEPSEEK
+
+    private val idRegex = Regex("[a-z0-9_]+")
+
+    fun all(): List<LlmProvider> = listOf(deepseek) + custom
+
+    fun find(id: String): LlmProvider? = all().firstOrNull { it.id == id }
+
+    fun validateId(id: String): Boolean = id.isNotBlank() && idRegex.matches(id)
+
+    @Throws(IllegalArgumentException::class)
+    fun addCustom(
+        id: String,
+        label: String,
+        baseUrl: String,
+        apiKey: String?,
+        model: String,
+        enabled: Boolean = true
+    ): LlmProvider {
+        val trimmedId = id.trim()
+        if (!validateId(trimmedId)) {
+            throw IllegalArgumentException("id provider tidak valid: '$id' (huruf kecil/angka/underscore, tanpa spasi)")
+        }
+        if (trimmedId == ID_DEEPSEEK || trimmedId == ID_LOCAL) {
+            throw IllegalArgumentException("id '$trimmedId' dicadangkan untuk provider bawaan")
+        }
+        val trimmedLabel = label.trim()
+        val trimmedBase = baseUrl.trim()
+        val trimmedModel = model.trim()
+        if (trimmedLabel.isBlank()) throw IllegalArgumentException("label provider tidak boleh kosong")
+        if (trimmedBase.isBlank()) throw IllegalArgumentException("baseUrl provider tidak boleh kosong")
+        if (trimmedModel.isBlank()) throw IllegalArgumentException("model provider tidak boleh kosong")
+
+        val provider = LlmProvider(
+            trimmedId, trimmedLabel, LlmKind.OPENAI_COMPAT,
+            trimmedBase, apiKey?.trim()?.ifBlank { null }, trimmedModel,
+            enabled = enabled, builtIn = false
+        )
+        val existing = custom.indexOfFirst { it.id == trimmedId }
+        if (existing >= 0) custom[existing] = provider else custom.add(provider)
+        return provider
+    }
+
+    fun removeCustom(id: String): Boolean {
+        val trimmed = id.trim()
+        val existing = custom.indexOfFirst { it.id == trimmed }
+        if (existing < 0) return false
+        custom.removeAt(existing)
+        if (activeId == trimmed) activeId = ID_DEEPSEEK
+        return true
+    }
+
+    @Throws(IllegalArgumentException::class)
+    fun setActive(id: String): String {
+        val trimmed = id.trim()
+        if (find(trimmed) == null) {
+            throw IllegalArgumentException("provider '$trimmed' tidak dikenal")
+        }
+        activeId = trimmed
+        return activeId
+    }
+
+    fun activeId(): String = activeId
+
+    fun activeProvider(): LlmProvider = find(activeId) ?: deepseek
+}
