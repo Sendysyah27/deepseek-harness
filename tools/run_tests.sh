@@ -12,15 +12,27 @@
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KOTLINC="${HARNESS_KOTLINC:-$(command -v kotlinc || true)}"
+
+# Prioritas: HARNESS_KOTLINC -> instalasi CI (~/kotlin-dist) -> PATH.
+# (`kotlinc` di PATH CI adalah wrapper /usr/bin yang tak punya stdlib.)
+if [ -n "${HARNESS_KOTLINC:-}" ]; then
+  KOTLINC="$HARNESS_KOTLINC"
+elif [ -x "$HOME/kotlin-dist/kotlinc/bin/kotlinc" ]; then
+  KOTLINC="$HOME/kotlin-dist/kotlinc/bin/kotlinc"
+else
+  KOTLINC="$(command -v kotlinc || true)"
+fi
 if [ -z "$KOTLINC" ] || [ ! -x "$KOTLINC" ]; then
   echo "kotlinc tidak ditemukan (set HARNESS_KOTLINC)" >&2
   exit 1
 fi
 KOTLIN_HOME="$(cd "$(dirname "$KOTLINC")/.." && pwd)"
 STDLIB="$KOTLIN_HOME/lib/kotlin-stdlib.jar"
+if [ ! -f "$STDLIB" ] && [ -f "$HOME/kotlin-dist/kotlinc/lib/kotlin-stdlib.jar" ]; then
+  STDLIB="$HOME/kotlin-dist/kotlinc/lib/kotlin-stdlib.jar"
+fi
 if [ ! -f "$STDLIB" ]; then
-  echo "kotlin-stdlib.jar tidak ada di $KOTLIN_HOME/lib" >&2
+  echo "kotlin-stdlib.jar tidak ada (cek KOTLINC=$KOTLINC)" >&2
   exit 1
 fi
 
