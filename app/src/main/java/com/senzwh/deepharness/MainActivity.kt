@@ -12745,7 +12745,7 @@ internal fun showLlmProviderDialog() {
         val lay = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val curAct = LlmProviderStore.activeId(ctx)
         lay.addView(tv("Otak aktif: $curAct", 12.5f, th.dim))
-        val provIdEt = EditText(ctx).apply { hint = "id (mis. openai, openrouter, ollama)"; setText(curAct == LlmProviders.ID_DEEPSEEK ? "openai" : curAct); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val provIdEt = EditText(ctx).apply { hint = "id (mis. openai, openrouter, ollama)"; setText(if (curAct == LlmProviders.ID_DEEPSEEK) "openai" else curAct); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
         val labelEt = EditText(ctx).apply { hint = "label (mis. OpenAI)"; setText(LlmProviders.find(curAct)?.label ?: "OpenAI"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
         val baseEt = EditText(ctx).apply { hint = "base_url (https://api.openai.com/v1)"; setText(LlmProviders.find(curAct)?.baseUrl ?: "https://api.openai.com/v1"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
         val modelEt = EditText(ctx).apply { hint = "model (gpt-4o-mini, llama3, ...)"; setText(LlmProviders.find(curAct)?.model ?: "gpt-4o-mini"); setTextColor(th.text); setHintTextColor(th.dim); setPadding(dp(16), dp(8), dp(16), dp(8)) }
