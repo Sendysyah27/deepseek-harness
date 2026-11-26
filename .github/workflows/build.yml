@@ -1,0 +1,52 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform + build-tools
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install Kotlin compiler
+        run: |
+          curl -fsSL -o /tmp/kotlin.zip \
+            "https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip"
+          mkdir -p "$HOME/kotlin-dist"
+          unzip -q /tmp/kotlin.zip -d "$HOME/kotlin-dist"
+          "$HOME/kotlin-dist/kotlinc/bin/kotlinc" -version
+
+      - name: Fetch vendor dependencies
+        run: bash tools/fetch_vendor.sh
+
+      - name: Run tests (katalog tool + flavor)
+        run: bash tools/run_tests.sh
+
+      - name: Build APK (senz)
+        run: python3 build.py
+
+      - name: Build APK (pure)
+        run: python3 build.py --flavor pure
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-apk
+          path: "*.apk"
+          if-no-files-found: error
