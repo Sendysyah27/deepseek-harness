@@ -825,8 +825,15 @@ import java.io.File
                 .show()
         }
         addBtn("12d. Bandingin Rekaman Browser DeepSeek (Mode Operator)") {
+            // F1 (B13 lazy): apiClient kini nullable — bila engine openai,
+            // klien DeepSeek tidak pernah dibuat dan tidak ada rekaman.
+            val dsClient = apiClient
+            if (dsClient == null) {
+                Toast.makeText(this, "Klien DeepSeek belum dibuat (engine Models API) — tidak ada rekaman browser.", Toast.LENGTH_LONG).show()
+                return@addBtn
+            }
             Toast.makeText(this, "Membaca rekaman browser…", Toast.LENGTH_SHORT).show()
-            apiClient.readDeepSeekCapture { msg ->
+            dsClient.readDeepSeekCapture { msg ->
                 android.app.AlertDialog.Builder(this)
                     .setTitle("Rekaman Browser DeepSeek")
                     .setMessage(msg)
