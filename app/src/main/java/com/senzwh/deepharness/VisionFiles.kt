@@ -23,6 +23,12 @@ object VisionFiles {
     /** Maks gambar per panggilan (§4.2 butir 1). */
     const val MAX_IMAGES = 4
 
+    /** vc335 R3 (D11): cap teks dokumen per file — 60.000 char.
+     *  Dipakai askWithFiles sebagai batas ATAS (provider.maxPromptChars
+     *  yang lebih kecil tetap menang). Menggantikan pemakaian
+     *  TurnMetrics.DEFAULT_CAP (200.000) untuk dokumen. */
+    const val DOC_TEXT_CAP = 60_000
+
     /** Maks ukuran satu gambar sesudah kompres (§4.2 butir 1). */
     const val MAX_IMAGE_BYTES_AFTER_COMPRESS = 1_000_000
 

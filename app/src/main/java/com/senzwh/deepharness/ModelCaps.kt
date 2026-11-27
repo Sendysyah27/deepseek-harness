@@ -29,6 +29,15 @@ object ModelCaps {
         else -> VisionSupport.UNKNOWN
     }
 
+    /**
+     * vc335 R3 (D5): opt-in prompt caching per provider — cache_control
+     * hanya dipasang bila record provider menyatakan mendukung
+     * (LlmProvider.supportsCacheControl). Default false: provider
+     * tanpa pernyataan eksplisit TIDAK mendapat cache_control.
+     */
+    fun supportsCacheControl(provider: LlmProvider): Boolean =
+        provider.supportsCacheControl
+
     /** Satu entri cache daftar model (id + vision mentah) — dipakai store + picker. */
     data class CachedModel(val id: String, val vision: String)
 

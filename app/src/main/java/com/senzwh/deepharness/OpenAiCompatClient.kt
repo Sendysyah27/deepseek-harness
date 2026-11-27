@@ -226,11 +226,18 @@ object OpenAiCompatClient {
 
     /** Overload chat beneran (§0.3 + §2.3): messages (system/riwayat/user),
      *  `tools` native (JSONArray skema OpenAI `{"type":"function",...}` —
-     *  lihat `ToolRegistry.toolsJson`), `toolChoice` opsional ("none" untuk
-     *  jawaban final tanpa tool; String "auto"/"none" atau JSONObject
-     *  `{"type":"function","function":{"name":...}}` untuk forced tool).
+     *  lihat `ToolRegistry.toolsJson`), `toolChoice` opsional (String
+     *  "auto" atau JSONObject `{"type":"function","function":{"name":...}}`
+     *  untuk forced tool — bila tools dikirim; tanpa tools, tool_choice
+     *  TIDAK PERNAH dikirim, vc335 R3 D7: call penutup pakai tools=null,
+     *  bukan tool_choice:"none").
      *  `thinkingEnabled` diteruskan apa adanya — gating per-provider ada di
      *  helper pemanggil (client terima boolean saja, §2.5).
+     *  `supportsCacheControl` (vc335 R3 D5): true HANYA bila record
+     *  provider menyatakan mendukung prompt caching — bila true,
+     *  pesan system pertama dikirim sebagai content parts dengan
+     *  cache_control ephemeral; bila false (default), body sama persis
+     *  seperti sebelumnya (tanpa cache_control di mana pun).
      *  JANGAN kirim `parallel_tool_calls` (default server sudah benar). */
     fun chatMessages(baseUrl: String,
                      apiKey: String,
@@ -246,11 +253,28 @@ object OpenAiCompatClient {
                      // vc334 R3 (P-4): timeout socket — diteruskan ke
                      // chatInternal (dulu: selalu CHAT_READ_TIMEOUT_MS
                      // 120 dtk, apa pun timeoutMs pemanggil).
-                     timeoutMs: Int = CHAT_READ_TIMEOUT_MS) {
+                     timeoutMs: Int = CHAT_READ_TIMEOUT_MS,
+                     // vc335 R3 (D5): opt-in prompt caching per provider
+                     // (default false — TIDAK dipasang global).
+                     supportsCacheControl: Boolean = false) {
         val endpoint = normalizeBaseUrl(baseUrl) + "/chat/completions"
+        // vc335 R3 (D3): fallback non-stream TERBATAS — hanya bila BELUM
+        // ADA BYTE diterima (fragmen content / tool delta sudah sampai
+        // ke pemanggil = ada byte). Tanpa ini, stream yang putus di
+        // tengah akan diulang penuh dan jawabannya ganda.
+        var receivedAnyVc335R3 = false
+        val onPartialWrapped: (String) -> Unit = { s ->
+            receivedAnyVc335R3 = true
+            onPartial(s)
+        }
+        val onDeltaWrapped: (NativeToolCall) -> Unit = { tc ->
+            receivedAnyVc335R3 = true
+            onDeltaToolCall(tc)
+        }
         try {
             val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
-                toolChoice, stream = true, onPartial, onDeltaToolCall, timeoutMs = timeoutMs)
+                toolChoice, stream = true, onPartialWrapped, onDeltaWrapped, timeoutMs = timeoutMs,
+                supportsCacheControl = supportsCacheControl)
             onDone(result)
         } catch (e: UserCancelledException) {
             // vc334 R1 (A1): dibatalkan user — JANGAN fallback non-stream
@@ -268,22 +292,23 @@ object OpenAiCompatClient {
                 onError(USER_CANCELLED_MARKER)
                 return
             }
-            // vc334 R3 (P-1): HTTP 4xx deterministik (auth ditolak /
-            // model tak ada / kuota 429) — mengulang request yang sama
-            // akan gagal sama; langsung error, tanpa POST ulang penuh
-            // non-stream. (Versi TERBATAS L6 — penghapusan total
-            // fallback = NEEDS-DECISION D3, jangan lakukan: 5xx +
-            // gagal transport tetap fallback sekali di bawah.)
+            // vc335 R3 (D3 — DIPUTUSKAN, bukan lagi NEEDS-DECISION):
+            // fallback non-stream versi TERBATAS dipertahankan, lewat
+            // Vc335R3Pure.shouldFallbackNonStreamVc335R3: HTTP 4xx
+            // deterministik (auth ditolak / model tak ada / kuota 429)
+            // langsung error tanpa POST ulang; begitu pula bila sudah
+            // ada byte diterima (stream putus di tengah). Hanya 5xx /
+            // gagal transport TANPA byte yang fallback sekali.
             val statusCode = (e as? HttpStatusException)?.code
-            if (statusCode != null && statusCode in 400..499) {
-                onError(sanitize(e.message ?: "HTTP $statusCode"))
+            if (!Vc335R3Pure.shouldFallbackNonStreamVc335R3(statusCode, receivedAnyVc335R3, cancelRequested)) {
+                onError(sanitize(e.message ?: "HTTP ${statusCode ?: "gagal terhubung"}"))
                 return
             }
             // Fallback non-streaming sekali (stream gagal karena jaringan/HTTP).
             try {
                 val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
                     toolChoice, stream = false, onPartial = {}, onDeltaToolCall = {},
-                    timeoutMs = timeoutMs)
+                    timeoutMs = timeoutMs, supportsCacheControl = supportsCacheControl)
                 onDone(result)
             } catch (e2: Exception) {
                 onError(sanitize(e2.message ?: e.message ?: "gagal terhubung ke provider"))
@@ -303,8 +328,10 @@ object OpenAiCompatClient {
                              stream: Boolean,
                              onPartial: (String) -> Unit,
                              onDeltaToolCall: (NativeToolCall) -> Unit,
-                             timeoutMs: Int): ChatResult {
-        val body = buildChatBody(model, messages, tools, thinking, toolChoice, stream)
+                             timeoutMs: Int,
+                             // vc335 R3 (D5): opt-in prompt caching.
+                             supportsCacheControl: Boolean = false): ChatResult {
+        val body = buildChatBody(model, messages, tools, thinking, toolChoice, stream, supportsCacheControl)
         // vc334 R1 (A1): tiap panggilan mulai dengan flag cancel bersih;
         // conn disimpan agar cancelCurrentChat() bisa disconnect().
         cancelRequested = false
@@ -364,10 +391,18 @@ object OpenAiCompatClient {
                               tools: JSONArray?,
                               thinking: Boolean,
                               toolChoice: Any?,
-                              stream: Boolean): String {
+                              stream: Boolean,
+                              // vc335 R3 (D5): opt-in prompt caching.
+                              supportsCacheControl: Boolean = false): String {
         val body = JSONObject()
         body.putIfNotBlank("model", model) // model opsional di sisi ini; dipakai oleh beberapa endpoint
         val msgs = JSONArray()
+        // vc335 R3 (D5): cache_control hanya untuk provider opt-in, dan
+        // hanya pada pesan system PERTAMA (format Anthropic-style
+        // ephemeral — yang dipakai gateway OpenAI-compatible yang
+        // mendukung prompt caching). Provider tanpa opt-in: body
+        // byte-identik dengan sebelum R3.
+        var cacheControlApplied = false
         for (m in messages) {
             val o = JSONObject().put("role", m.role)
             if (m.role == "user" && m.imageUrl != null) {
@@ -376,6 +411,12 @@ object OpenAiCompatClient {
                 parts.put(JSONObject().put("type", "image_url")
                     .put("image_url", JSONObject().put("url", m.imageUrl)))
                 o.put("content", parts)
+            } else if (supportsCacheControl && m.role == "system" && !cacheControlApplied) {
+                val parts = JSONArray()
+                parts.put(JSONObject().put("type", "text").put("text", m.content)
+                    .put("cache_control", JSONObject().put("type", "ephemeral")))
+                o.put("content", parts)
+                cacheControlApplied = true
             } else {
                 o.put("content", m.content)
             }
@@ -398,9 +439,12 @@ object OpenAiCompatClient {
                 is JSONObject -> body.put("tool_choice", toolChoice)
                 else -> body.put("tool_choice", "auto")
             }
-        } else if (toolChoice == "none") {
-            body.put("tool_choice", "none")
         }
+        // vc335 R3 (D7): TANPA tools, tool_choice TIDAK PERNAH dikirim —
+        // cabang lama yang mengirim tool_choice none saat tools kosong
+        // DICABUT. Call penutup = tools=null saja; pemanggil yang masih
+        // mengoper toolChoice="none" tetap menghasilkan body tanpa
+        // tool_choice.
         body.put("stream", stream)
         if (thinking) body.put("thinking_enabled", thinking) // beberapa kompatibel melewati field tak dikenal
         return body.toString()

@@ -574,8 +574,14 @@ fun main() {
         "perubahan key tidak mengotori cache")
 
     // ---- P-1 wiring: 4xx fail-fast di client.
+    // vc335 R3 (D3): keputusan fail-fast TIDAK LAGI inline di client —
+    // pindah ke Vc335R3Pure.shouldFallbackNonStreamVc335R3 (tabel
+    // keputusan diuji murni di Vc335R3Test). Cek ini menegaskan client
+    // memakai helper itu (bukan fallback buta); rentang 400..499
+    // sendiri dijaga tes murni D3.
     checkR3("P-1 client: HttpStatusException 4xx langsung onError tanpa fallback",
-        client.contains("in 400..499") && client.contains("HttpStatusException"),
+        client.contains("shouldFallbackNonStreamVc335R3(statusCode, receivedAnyVc335R3, cancelRequested)") &&
+            client.contains("HttpStatusException"),
         "fallback non-stream masih jalan untuk 4xx")
 
     // ---- P-4 wiring: timeout diteruskan + pesan jujur.

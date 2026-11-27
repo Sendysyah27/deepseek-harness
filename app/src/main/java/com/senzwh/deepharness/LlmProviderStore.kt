@@ -78,7 +78,11 @@ object LlmProviderStore {
                 thinkingParam = obj.optString("thinkingParam", ""),
                 toolsSupport = LlmProviders.normalizeToolsSupport(obj.optString("toolsSupport", "unknown")),
                 vision = LlmProviders.normalizeVision(obj.optString("vision", "unknown")),
-                toolRoleFallback = obj.optBoolean("toolRoleFallback", false)
+                toolRoleFallback = obj.optBoolean("toolRoleFallback", false),
+                // vc335 R3 (D5): opt-in prompt caching (default false —
+                // cfg lama tanpa kunci ini tetap tidak mendapat
+                // cache_control).
+                supportsCacheControl = obj.optBoolean("supportsCacheControl", false)
             )
         } catch (e: Exception) {
             null
@@ -163,6 +167,7 @@ object LlmProviderStore {
                 put("toolsSupport", provider.toolsSupport)
                 put("vision", provider.vision)
                 put("toolRoleFallback", provider.toolRoleFallback)
+                put("supportsCacheControl", provider.supportsCacheControl)
             }
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
@@ -208,7 +213,7 @@ object LlmProviderStore {
                 updated.model, updated.enabled, updated.dailyCapUnits,
                 updated.maxPromptChars, updated.maxOutputTokens,
                 updated.thinkingParam, updated.toolsSupport, updated.vision,
-                updated.toolRoleFallback
+                updated.toolRoleFallback, updated.supportsCacheControl
             )
             val ok = save(ctx, updated)
             if (!ok) Log.w(TAG, "mark provider '${updated.id}': save gagal")
@@ -281,7 +286,8 @@ object LlmProviderStore {
                     LlmProviders.addCustom(
                         p.id, p.label, p.baseUrl, p.apiKey, p.model, p.enabled,
                         p.dailyCapUnits, p.maxPromptChars, p.maxOutputTokens,
-                        p.thinkingParam, p.toolsSupport, p.vision, p.toolRoleFallback
+                        p.thinkingParam, p.toolsSupport, p.vision, p.toolRoleFallback,
+                        p.supportsCacheControl
                     )
                 } catch (e: IllegalArgumentException) {
                     skipped.add(p.id)

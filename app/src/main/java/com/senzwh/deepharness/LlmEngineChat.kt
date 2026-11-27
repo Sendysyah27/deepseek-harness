@@ -269,7 +269,10 @@ object LlmEngineChat {
             // vc334 R3 (P-4): timeout helper diteruskan ke socket client
             // (dulu: socket selalu 120 dtk walau pemanggil minta lebih
             // kecil — latch bisa habis sementara socket masih menunggu).
-            timeoutMs = timeoutMs
+            timeoutMs = timeoutMs,
+            // vc335 R3 (D5): cache_control hanya bila record provider
+            // menyatakan mendukung (default false — tidak global).
+            supportsCacheControl = ModelCaps.supportsCacheControl(provider)
         )
         val done = try {
             latch.await(timeoutMs.toLong() + 30_000L, TimeUnit.MILLISECONDS)
@@ -341,9 +344,12 @@ object LlmEngineChat {
      *  b. gate vision bila ada file gambar (IMAGE atau PDF-jadi-gambar):
      *     UNSUPPORTED → VisionUnsupportedException, UNKNOWN/SUPPORTED lanjut;
      *  c. pilah file — IMAGE disiapkan, TEXT_DOC/DOCX diekstrak jadi teks
-     *     (cap provider.maxPromptChars ?: TurnMetrics.DEFAULT_CAP),
+     *     (cap dokumen VisionFiles.DOC_TEXT_CAP 60.000 char, vc335 R3
+     *     D11 — provider.maxPromptChars yang lebih kecil tetap menang),
      *     PDF dirender halaman 1 jadi gambar, UNSUPPORTED → gagal jujur;
-     *  d. maks 4 gambar (termasuk PDF-jadi-gambar);
+     *  d. maks 4 gambar (termasuk PDF-jadi-gambar) PER PANGGILAN, dan
+     *     maks 4 request vision KUMULATIF per giliran (vc335 R3 D13 —
+     *     VisionTurnBudgetVc335R3, kunci nomor giliran);
      *  e. tiap gambar disiapkan (pola analyzePhotoAndContinue: skala maks
      *     1280, JPEG q80; ulang q60 + skala 0.5 bila masih >1 MB);
      *  f. SATU ChatMessage user per gambar (ChatMessage hanya punya satu
@@ -379,14 +385,32 @@ object LlmEngineChat {
         // vc334 R4 (V-4): hitung calon gambar DULU — tolak sebelum satu
         // pun PDF dirender (dulu: semua PDF dirender dulu, baru dicek
         // >4 — 5 PDF = 5× render mahal sebelum ditolak).
-        if (Vc334R4Pure.prospectiveImageCount(files) > VisionFiles.MAX_IMAGES) {
+        val prospectiveVc335R3 = Vc334R4Pure.prospectiveImageCount(files)
+        if (prospectiveVc335R3 > VisionFiles.MAX_IMAGES) {
             throw IllegalArgumentException(
                 "Maks ${VisionFiles.MAX_IMAGES} gambar per panggilan — kirim sisanya terpisah."
             )
         }
+        // vc335 R3 (D13): anggaran vision KUMULATIF per giliran — maks 4
+        // gambar lintas panggilan askWithFiles dalam giliran yang sama
+        // (kunci = nomor giliran berjalan). Ditolak SEBELUM render/pilah
+        // — tanpa gambar yang dirender sia-sia.
+        if (!Vc335R3Pure.VisionTurnBudgetVc335R3.tryConsume(
+                TurnMetrics.currentTurnNo(), prospectiveVc335R3
+            )
+        ) {
+            throw IllegalArgumentException(
+                "Maks ${Vc335R3Pure.VisionTurnBudgetVc335R3.MAX_VISION_PER_TURN} request vision per giliran — giliran ini sudah memakai jatahnya. Kirim gambar berikutnya di giliran baru."
+            )
+        }
 
         // c. Pilah file.
-        val docCap = provider.maxPromptChars ?: TurnMetrics.DEFAULT_CAP
+        // vc335 R3 (D11): cap teks dokumen 60.000 char — provider
+        // .maxPromptChars yang lebih kecil tetap menang (coerceAtMost);
+        // DEFAULT_CAP 200.000 TIDAK LAGI dipakai untuk dokumen (itu cap
+        // prompt umum, bukan cap dokumen).
+        val docCap = provider.maxPromptChars?.coerceAtMost(VisionFiles.DOC_TEXT_CAP)
+            ?: VisionFiles.DOC_TEXT_CAP
         val docBlocks = StringBuilder()
         val pdfNotes = StringBuilder()
         val images = ArrayList<VisionFile>()

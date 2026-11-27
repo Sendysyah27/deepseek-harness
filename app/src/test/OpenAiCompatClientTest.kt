@@ -324,8 +324,12 @@ fun main() {
                 onDone = {}, onError = {},
                 toolChoice = "none")
             val body = JSONObject(captured)
-            check("request tool_choice none bila pemanggil minta",
-                body.optString("tool_choice") == "none", "body=$captured")
+            // vc335 R3 (D7 — DIPUTUSKAN, membatalkan ekspektasi lama di
+            // sini): call penutup pakai tools=null, BUKAN
+            // tool_choice:"none" — pemanggil yang masih mengoper "none"
+            // tanpa tools tetap menghasilkan body TANPA tool_choice.
+            check("D7: tool_choice none TANPA tools TIDAK dikirim",
+                !body.has("tool_choice"), "body=$captured")
             check("request thinking_enabled TIDAK dikirim bila false",
                 !body.has("thinking_enabled"), "body=$captured")
             check("request tanpa tools tidak kirim kunci tools", !body.has("tools"), "body=$captured")

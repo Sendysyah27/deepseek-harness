@@ -12563,10 +12563,17 @@ class MainActivity : Activity() {
                 // di pool baca dibiarkan selesai (keputusan R1), hasilnya
                 // dibuang lewat token giliran (blok runOnUiThread di
                 // bawah menolak continuation bila token sudah berubah).
-                if (stopRequestedVc306) {
+                // vc335 R3 (D6): cek token JUGA — endUserTurn sudah
+                // membersihkan stopRequestedVc306, jadi cek flag saja
+                // tidak cukup: call berikut TIDAK BOLEH mulai sesudah
+                // giliran berakhir (token 0 / berubah), walau flag stop
+                // sudah bersih. Pesan skipped dibedakan: stop eksplisit
+                // vs giliran sudah berakhir.
+                if (stopRequestedVc306 || tokenVc334 != turnTokenVc334) {
+                    val skipMsgVc335R3 = if (stopRequestedVc306) "Tidak dieksekusi — dihentikan user." else "Tidak dieksekusi — giliran sudah berakhir."
                     while (i < batch.size) {
                         val o = batch[i]
-                        outcomes.add(BatchOutcomeVc273(o.optString("tool"), o.optJSONObject("args") ?: JSONObject(), callIds[i], "Tidak dieksekusi — dihentikan user.", null, 0, false, "skipped", "", false, 0))
+                        outcomes.add(BatchOutcomeVc273(o.optString("tool"), o.optJSONObject("args") ?: JSONObject(), callIds[i], skipMsgVc335R3, null, 0, false, "skipped", "", false, 0))
                         i++
                     }
                     endTurnStopped()
@@ -12604,7 +12611,7 @@ class MainActivity : Activity() {
                     }
                     val groupOutcomes = runReadGroupVc273(group.map { batch[it] to callIds[it] })
                     for (oc in groupOutcomes) {
-                        val rec = recordBatchOutcomeVc273(oc)
+                        val rec = recordBatchOutcomeVc273(oc, tokenVc334)
                         outcomes.add(rec)
                         priorIds.add(rec.callId)
                         val wp = AgentPrompt.writtenPathOf(rec.tool, rec.args)
@@ -12624,7 +12631,7 @@ class MainActivity : Activity() {
                     continue
                 }
                 val oc = runSingleBatchCallVc273(tool, effArgs, callId, depReason)
-                val rec = recordBatchOutcomeVc273(oc)
+                val rec = recordBatchOutcomeVc273(oc, tokenVc334)
                 outcomes.add(rec)
                 priorIds.add(rec.callId)
                 val wp = AgentPrompt.writtenPathOf(tool, effArgs)
@@ -12794,8 +12801,19 @@ class MainActivity : Activity() {
     // call yang ditunda TIDAK memakan langkah dan TIDAK dihitung StuckDetector.
     // Dipanggil dari thread koordinator batch (single-flight: tidak ada jalur
     // tool lain yang berjalan bersamaan, jadi akses stuckMap aman di sini).
-    private fun recordBatchOutcomeVc273(oc: BatchOutcomeVc273): BatchOutcomeVc273 {
+    private fun recordBatchOutcomeVc273(oc: BatchOutcomeVc273, tokenVc334: Int): BatchOutcomeVc273 {
         if (oc.kind == "rejected" || oc.kind == "skipped" || oc.kind == "deferred") return oc
+        // vc335 R3 (D6): call batch yang selesai sesudah giliran berakhir
+        // (■ ditekan di tengah batch) — hasilnya DIBUANG: tanpa append
+        // ke riwayat (turnWork), tanpa StuckDetector / kunci-pola /
+        // metrik atas hasil yang dibuang. EventDb tetap ditulis (log
+        // audit, bukan riwayat). Tanpa ini, WorkItem yang ditambahkan
+        // sesudah endUserTurn mem-flush akan ikut ter-flush ke WorkNotes
+        // giliran BERIKUTNYA.
+        if (Vc335R3Pure.shouldDiscardToolResult(tokenVc334, turnTokenVc334)) {
+            try { EventDb.get(this).add("tool", packageName, oc.tool + " -> (hasil dibuang — giliran berakhir saat tool berjalan)") } catch (e: Exception) {}
+            return oc
+        }
         agentSteps++
         if (agentSteps == 1) emitPhase("act")
         turnUsedTools = true
@@ -12959,7 +12977,10 @@ class MainActivity : Activity() {
         // (reset hanya di endUserTurn); langkah berikutnya ditolak dan
         // giliran ditutup lewat jalur akhir-stop tunggal, TANPA
         // continuation "STOP DIMINTA" ke model.
-        if (stopRequestedVc306) {
+        // vc335 R3 (D6): token 0 = giliran sudah berakhir (endUserTurn
+        // menolkan token) — tool JANGAN mulai bila giliran sudah mati,
+        // walau flag stop sudah dibersihkan endUserTurn.
+        if (stopRequestedVc306 || turnTokenVc334 == 0) {
             endTurnStopped()
             return
         }
@@ -13016,8 +13037,17 @@ class MainActivity : Activity() {
             EventDb.get(this).add("tool", packageName, "$tool -> ${displayResult.take(200)}")
             val secs = String.format(java.util.Locale.US, "%.1f", (System.currentTimeMillis() - t0) / 1000.0).replace('.', ',')
             val durMsVc254 = System.currentTimeMillis() - t0
-            turnWork.add(WorkItem(tool, System.currentTimeMillis() - t0, !WorkLog.isFailed(result), displayResult.take(120), evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…" else displayResult, args = args.toString().take(4000), resultId = resultId ?: "", callId = callId, totalChars = resultTotal)) // VC303-P2-12 (CX-6): total char dibawa ke baris WorkNotes; v4.48.5 (P2): evidence 800 char/langkah + penanda vc230 R-07(a) — cap eksplisit — jalur PoW tanpa limit token; summary tetap 120 untuk UI/footer.
-        if (tool == "use_skill" && result.startsWith("PROSEDUR SKILL")) {
+            // vc335 R3 (D6): tool dibiarkan SELESAI (tidak dibatalkan
+            // kooperatif), tapi hasilnya DIBUANG bila giliran sudah
+            // berakhir saat tool kembali (token berubah — user menekan ■
+            // di tengah eksekusi, atau giliran baru sudah dimulai):
+            // JANGAN append ke riwayat (turnWork) — WorkItem yang
+            // ditambahkan sesudah endUserTurn mem-flush akan ikut
+            // ter-flush ke WorkNotes giliran BERIKUTNYA. EventDb di atas
+            // tetap ditulis (log audit, bukan riwayat).
+            val discardedVc335R3 = Vc335R3Pure.shouldDiscardToolResult(tokenVc334, turnTokenVc334)
+            if (!discardedVc335R3) turnWork.add(WorkItem(tool, System.currentTimeMillis() - t0, !WorkLog.isFailed(result), displayResult.take(120), evidence = if (displayResult.length > 4000) displayResult.take(4000) + "…(dipotong, sisa " + (displayResult.length - 4000) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…" else displayResult, args = args.toString().take(4000), resultId = resultId ?: "", callId = callId, totalChars = resultTotal)) // VC303-P2-12 (CX-6): total char dibawa ke baris WorkNotes; v4.48.5 (P2): evidence 800 char/langkah + penanda vc230 R-07(a) — cap eksplisit — jalur PoW tanpa limit token; summary tetap 120 untuk UI/footer.
+        if (!discardedVc335R3 && tool == "use_skill" && result.startsWith("PROSEDUR SKILL")) {
             val nmSk = Regex("PROSEDUR SKILL '([^']+)'").find(result)?.groupValues?.get(1) ?: ""
             addMsg("🧩 Skill '$nmSk' dimuat — prosedurnya diikuti untuk tugas ini.", "meta", turn = true)
         }
@@ -13026,6 +13056,13 @@ class MainActivity : Activity() {
                 // hasil); jejak tool tetap masuk journal seperti dulu.
                 rowVc254.status = ActivityTitle.statusText(durMsVc254, !WorkLog.isFailed(result))
                 rowVc254.detail = "Argumen: " + ActivityTitle.shortArgs(tool, args) + "\nHasil: " + ActivityTitle.resultTail(displayResult)
+                // vc335 R3 (D6): giliran sudah berakhir saat tool kembali
+                // (■ ditekan di tengah eksekusi) — berhenti di sini:
+                // baris aktivitas di atas sudah jujur ("selesai"), tapi
+                // kartu artifact / journal / continuation di bawah TIDAK
+                // boleh memakai hasil yang dibuang. (Pemeriksaan token
+                // yang sama tetap ada lebih bawah, sebelum continuation.)
+                if (tokenVc334 != turnTokenVc334) return@runOnUiThread
                 // vc267: hasil create/edit artifact membawa penanda
                 // ARTIFACT:<id> — render kartu artifact di chat.
                 try {

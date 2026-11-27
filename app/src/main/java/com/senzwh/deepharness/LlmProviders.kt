@@ -37,7 +37,11 @@ data class LlmProvider(
     val thinkingParam: String = "",
     val toolsSupport: String = "unknown",
     val vision: String = "unknown",
-    val toolRoleFallback: Boolean = false
+    val toolRoleFallback: Boolean = false,
+    // vc335 R3 (D5): opt-in prompt caching per provider — default
+    // false (cache_control TIDAK dipasang global; hanya provider yang
+    // record-nya menyatakan mendukung yang mendapatkannya).
+    val supportsCacheControl: Boolean = false
 ) {
     val hasKey: Boolean get() = !apiKey.isNullOrBlank()
     val configured: Boolean
@@ -137,7 +141,8 @@ object LlmProviders {
         thinkingParam: String = "",
         toolsSupport: String = "unknown",
         vision: String = "unknown",
-        toolRoleFallback: Boolean = false
+        toolRoleFallback: Boolean = false,
+        supportsCacheControl: Boolean = false
     ): LlmProvider {
         val trimmedId = id.trim()
         if (!validateId(trimmedId)) {
@@ -169,7 +174,8 @@ object LlmProviders {
             thinkingParam = thinkingParam.trim(),
             toolsSupport = normalizeToolsSupport(toolsSupport),
             vision = normalizeVision(vision),
-            toolRoleFallback = toolRoleFallback
+            toolRoleFallback = toolRoleFallback,
+            supportsCacheControl = supportsCacheControl
         )
         val existing = custom.indexOfFirst { it.id == trimmedId }
         if (existing >= 0) custom[existing] = provider else custom.add(provider)

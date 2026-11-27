@@ -82,7 +82,19 @@ object TeamRun {
         try { latch.await(7, TimeUnit.MINUTES) } catch (e: Exception) {}
         val done = results.mapIndexed { i, r -> r ?: "Ruang ${eff[i].agentName}: belum selesai dalam batas 7 menit — dicatat belum tuntas." }
         writeBoard(app, goal, eff, done.toTypedArray(), honestBoardStatus(done), laneRidsArr.toList())
-        val verify = verify(app, goal, eff, done)
+        // vc335 R3 (D14): bila SEMUA lane gagal, verify DILEWATI — cukup
+        // log ke EventDb, giliran TIDAK diblokir (tidak ada hasil yang
+        // layak diverifikasi; memanggil Mentor atas hasil gagal semua
+        // hanya membakar kuota + menunda jawaban jujur ke user).
+        val verify = if (Vc335R3Pure.allLanesFailedVc335R3(done)) {
+            try {
+                EventDb.get(app).add("team", app.packageName,
+                    "Verifikasi tim dilewati: semua ${done.size} ruang gagal — giliran tidak diblokir")
+            } catch (e: Exception) {}
+            "dilewati — semua ruang gagal, tidak ada hasil untuk diverifikasi (giliran tidak diblokir)."
+        } else {
+            verify(app, goal, eff, done)
+        }
         val sb = StringBuilder()
         sb.append("HASIL TIM (").append(eff.size).append(" ruang paralel, status papan: ").append(honestBoardStatus(done)).append(") — tujuan: ").append(goal).append("\n")
         eff.forEachIndexed { i, l ->
@@ -290,16 +302,19 @@ object TeamRun {
         )
 
     private fun verify(app: Context, goal: String, lanes: List<Lane>, results: List<String>): String {
-        // F3c (B9, K1): verifikasi silang via helper Models API (kind TEAM).
+        // vc335 R3 (D10): verifikasi silang via helper Models API kind
+        // REVIEWER — kuotanya dari bucket Governor REVIEWER (bukan TEAM),
+        // supaya verifikasi tidak memakan kuota kerja lane tim.
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
         sb.append(memoryBlockForTask(app, goal))
         sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
         sb.append("\n\n[MODE TIM — VERIFIKASI SILANG] Kamu Mentor, pemeriksa independen yang TIDAK ikut mengerjakan. Tujuan tim: ").append(goal).append("\nHasil tiap ruang:\n")
         lanes.forEachIndexed { i, l -> sb.append("— ").append(l.agentName).append(": ").append(results[i].take(4000)).append("\n") }
         sb.append("\nNilai dengan tegas & singkat TANPA tool: mana yang konsisten, mana yang bertentangan atau belum terbukti, apa yang masih kurang untuk tujuan tim.")
-        // F3c (B9): helper kind TEAM. Pesan gagal yang sudah ada dipakai ulang.
+        // vc335 R3 (D10): helper kind REVIEWER (bucket Governor REVIEWER).
+        // Pesan gagal yang sudah ada dipakai ulang.
         return try {
-            LlmEngineChat.chatSyncForEngine(app, sb.toString(), LlmCallKind.TEAM).take(8000)
+            LlmEngineChat.chatSyncForEngine(app, sb.toString(), LlmCallKind.REVIEWER).take(8000)
         } catch (e: Exception) { "Verifikasi gagal: ${e.message}" }
     }
 
@@ -325,11 +340,10 @@ object TeamRun {
 
     // vc262 K-13: status papan JUJUR — "selesai" hanya bila tidak ada
     // lane yang gagal/sebagian; bila ada, statusnya "sebagian".
+    // vc335 R3 (D14): predikat gagal tinggal di Vc335R3Pure
+    // (satu definisi untuk papan + gerbang lewati-verify).
     private fun honestBoardStatus(done: List<String>): String {
-        val bad = done.any { d ->
-            val t = d.lowercase()
-            t.contains("gagal") || t.contains("belum selesai") || t.contains("tidak ada akun") || t.contains("berhenti:") || t.contains("dihentikan:")
-        }
+        val bad = done.any { d -> Vc335R3Pure.isLaneFailedVc335R3(d) }
         return if (bad) "sebagian" else "selesai"
     }
 
