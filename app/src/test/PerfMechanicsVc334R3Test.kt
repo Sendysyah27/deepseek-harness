@@ -448,9 +448,14 @@ fun main() {
     checkR3("B7 call-site sendContinuation: sendToAgent(finalTxt) tanpa delta",
         main.contains("sendToAgent(finalTxt)"),
         "call-site masih mengoper delta")
-    checkR3("B7 call-site ekstraksi: sendToAgent(fullExtractVc330) tanpa delta",
-        main.contains("sendToAgent(fullExtractVc330)"),
-        "call-site masih mengoper delta")
+    // vc335 R2 (D4): call-site ekstraksi via sendToAgent DICABUT —
+    // ekstraksi LEPAS dari endUserTurn dan jalan sebagai job latar
+    // terpisah (bucket BACKGROUND), bukan giliran internalTurn.
+    checkR3("B7 (vc335 R2 D4) call-site ekstraksi: TIDAK LAGI sendToAgent(fullExtractVc330) — job latar terpisah",
+        !main.contains("sendToAgent(fullExtractVc330)") &&
+            main.contains("private fun startExtractionJobVc335R2(") &&
+            main.contains("LlmCallKind.BACKGROUND"),
+        "ekstraksi masih lewat sendToAgent / job latar tidak ada")
     checkR3("B7 mesin delta dipertahankan (fungsi AgentPrompt TIDAK dihapus — keputusan D1)",
         agentPrompt.contains("fun deltaTurnPromptVc327(") &&
             agentPrompt.contains("fun deltaExtractPromptVc330("),
@@ -468,10 +473,14 @@ fun main() {
         "helper tidak ada / ganda")
     val helper = regionR3(main, "private fun finishFinalTurnVc334(",
         "\n    private fun ")
-    checkR3("B5 helper: menjalankan keputusan pendingExtract yang sama",
-        helper.contains("pendingExtract") && helper.contains("extractHasFactSignalVc241(hist)") &&
-            helper.contains("internalTurn = true"),
+    checkR3("B5 helper: menjalankan keputusan pendingExtract yang sama (vc335 R2 D4: gate + job latar)",
+        helper.contains("pendingExtract") && helper.contains("extractHasFactSignalVc241(histVc335R2)") &&
+            helper.contains("startExtractionJobVc335R2(histVc335R2)"),
         "helper tidak menangani ekstraksi latar")
+    checkR3("B5 helper (vc335 R2 D4): endUserTurn jalan SEBELUM job ekstraksi (follow-up tidak antre)",
+        helper.indexOf("endUserTurn()") < helper.indexOf("startExtractionJobVc335R2(") &&
+            helper.indexOf("endUserTurn()") >= 0,
+        "ekstraksi masih menahan akhir giliran")
     checkR3("B5 helper: menutup giliran via endUserTurn (checkpoint ikut bersih via R1)",
         helper.contains("endUserTurn()"),
         "helper tidak menutup giliran")
@@ -480,7 +489,7 @@ fun main() {
             stringFinal.contains("finishFinalTurnVc334(visible)"),
         "duplikasi blok ekstraksi (pelajaran R2: satu fungsi bersama)")
     checkR3("B5 keputusan pendingExtract hanya di SATU tempat (helper)",
-        main.split("extractHasFactSignalVc241(hist)").size - 1 == 1,
+        main.split("extractHasFactSignalVc241(histVc335R2)").size - 1 == 1,
         "keputusan ekstraksi tersebar di >1 tempat")
 
     // ---- L3: prompt dibangun sekali + checkpoint sinkron.

@@ -11,6 +11,12 @@
 # Butuh: kotlinc (+ kotlin-stdlib.jar), python3, curl/wget (unduh org.json).
 set -euo pipefail
 
+# vc335 R2: kotlinc kehabisan heap default (OutOfMemoryError: Java heap
+# space) sesudah daftar file kompilasi membesar — naikkan heap kompilasi
+# ke 3 GB (terverifikasi lolos di VM 6 GB; tanpa ini kompilasi gagal
+# sebelum satu pun tes jalan).
+export JAVA_OPTS="${JAVA_OPTS:-} -Xmx3g"
+
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Prioritas: HARNESS_KOTLINC -> instalasi CI (~/kotlin-dist) -> PATH.
@@ -107,6 +113,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/MinorsSweepVc334R6Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/SessionMessagesVc335.kt" \
   "$PROJ/app/src/test/PersistMessagesVc335R1Test.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/Vc335R2Pure.kt" \
+  "$PROJ/app/src/test/Vc335R2Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -178,6 +186,9 @@ java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt
 
 echo "== jalankan PersistMessagesVc335R1Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.PersistMessagesVc335R1TestKt
+
+echo "== jalankan Vc335R2Test =="
+java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.Vc335R2TestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"

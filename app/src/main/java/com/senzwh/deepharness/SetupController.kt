@@ -773,8 +773,7 @@ import java.io.File
                     prevTurnEvidence = ""
                     prevTurnEvidenceTs = 0
                     prevTurnEvidenceSessionId = -1 // vc234 K3: reset sesi digest ikut wipe
-                    prevTurnResultIdsVc286.clear() // vc286: jendela 2 giliran ikut wipe
-                    prevTurnResultIdsSessionVc286 = -1
+                    PrevTurnIndexVc335R2.clear() // vc286: jendela 2 giliran ikut wipe
                     WorkNotesVc301.clearSession(this, currentSessionId) // vc301 SF-D2: catatan kerja + status ikut wipe
                     try { SessionMessagesStore(filesDir).deleteAll() } catch (e: Exception) {} // vc335 R1 (D1): file messages semua sesi ikut wipe
                     TurnMetrics.clearSnapshot(this)

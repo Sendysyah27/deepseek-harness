@@ -90,7 +90,7 @@ object BatchToolVc274 {
     // menghasilkan id hasil, call ini DITUNDA (bukan dieksekusi dengan id
     // yang salah). Argumen lain tidak diubah.
     fun resolveArgs(tool: String, args: JSONObject, prior: List<Outcome>): Pair<JSONObject, String?> {
-        if (tool != "get_result" && tool != "grep_result") return Pair(args, null)
+        if (tool != "get_result" && tool != "grep_result" && tool != "read_previous_result") return Pair(args, null)
         if (args.optString("id").isBlank()) return Pair(args, null)
         val idArg = args.optString("id")
         if (!AgentPrompt.isValidCallId(idArg)) return Pair(args, null)

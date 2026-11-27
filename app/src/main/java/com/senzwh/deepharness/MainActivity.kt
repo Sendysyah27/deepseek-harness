@@ -247,6 +247,9 @@ class MainActivity : Activity() {
     private var voiceLoopActive = false
     private var internalTurn = false
     private var pendingExtract = false
+    // vc335 R2 (D4): gate single-flight job ekstraksi latar — hanya satu
+    // ekstraksi boleh jalan; pemicu saat job lama jalan dilewati.
+    private val extractGateVc335R2 = ExtractJobGateVc335R2()
     // vc228 R-03(e): usulan fakta ekstraksi latar yang dikumpulkan untuk
     // persetujuan batch (BELUM tersimpan); collectingExtract = true hanya
     // selama giliran ekstraksi latar berjalan.
@@ -274,9 +277,10 @@ class MainActivity : Activity() {
     // resultId giliran itu (bisa kosong bila giliran tanpa tool — slot
     // tetap dihitung agar jendela 2 giliran harfiah).
     // (Dulu dibaca claim-check + reviewer 1-1, keduanya dihapus vc333.)
+    // vc335 R2 (D12): penyimpanan PINDAH ke PrevTurnIndexVc335R2 (object
+    // mandiri, bisa diuji JVM) — jendela ini kini DIBACA konsumen nyata
+    // (tool read_previous_result di Tools.kt), bukan sekadar ditulis.
     // Dibuang bila pindah sesi atau wipe.
-    internal val prevTurnResultIdsVc286 = ArrayDeque<List<String>>()
-    internal var prevTurnResultIdsSessionVc286: Long = -1
     private var consecInvalid = 0 // v4.48.6 (Butir 1): invalid berturut-turut (reset tiap hasil bukan-unknown + tiap giliran baru)
     private val invalidNames = mutableListOf<String>() // v4.48.6: nama tool tak dikenal giliran ini (untuk laporan berhenti)
     private var pendingEndReason: String? = null // v4.48.6 (Butir 2): alasan akhir giliran untuk snapshot metrik
@@ -4821,6 +4825,8 @@ class MainActivity : Activity() {
         // lanjutan jadi epoch. Anggap giliran mulai saat dibuka.
         requestStartMs = System.currentTimeMillis()
         autoContinueCount = 0
+        plannerBudgetVc335R2.reset() // vc335 R2 (D8): anggaran planner baru tiap giliran
+        evictNoticeShownVc335R2 = false // vc335 R2 (D2): meta pangkas boleh tampil lagi
         malformedRetry = 0
         refusalRetryVc251 = 0
         pendingAskVc229 = null
@@ -4920,14 +4926,9 @@ class MainActivity : Activity() {
         // Jendela harfiah 2 giliran: tiap giliran (termasuk yang tanpa tool)
         // menggeser antrean; giliran sesi lain membuang antrean.
         val prevIdsVc286 = synchronized(turnWork) { turnWork.mapNotNull { it.resultId.takeIf { r -> r.isNotBlank() } } }
-        if (prevTurnSessionVc234 != currentSessionId) {
-            prevTurnResultIdsVc286.clear()
-            prevTurnResultIdsSessionVc286 = -1
-        } else {
-            prevTurnResultIdsVc286.addLast(prevIdsVc286)
-            while (prevTurnResultIdsVc286.size > 2) prevTurnResultIdsVc286.removeFirst()
-            prevTurnResultIdsSessionVc286 = prevTurnSessionVc234
-        }
+        // vc335 R2 (D12): dorong ke PrevTurnIndexVc335R2 — jendela 2
+        // giliran yang sama (giliran sesi lain membuang jendela).
+        PrevTurnIndexVc335R2.pushTurn(prevIdsVc286, prevTurnSessionVc234, currentSessionId)
         // vc301 SF-D2 + SF-C6: simpan catatan kerja + status giliran lama
         // SEBELUM turnWork.clear() (cermin digestEvidence di atas).
         // VC303-P2-8 (CX-1): diekstrak ke flushTurnWork (idempotent) —
@@ -5478,8 +5479,7 @@ class MainActivity : Activity() {
         prevTurnEvidence = ""
         prevTurnEvidenceTs = 0
         prevTurnEvidenceSessionId = -1
-        prevTurnResultIdsVc286.clear() // vc286: pindah sesi membuang jendela 2 giliran
-        prevTurnResultIdsSessionVc286 = -1
+        PrevTurnIndexVc335R2.clear() // vc286: pindah sesi membuang jendela 2 giliran
         nativeOldestHistId = Long.MAX_VALUE
         Thread {
             val mdb = MemoryDb.get(this)
@@ -10109,6 +10109,31 @@ class MainActivity : Activity() {
         return disp.take(cap) + "…(dipotong, sisa " + (disp.length - cap) + " char" + (if ((resultId ?: "").isNotBlank()) ", pakai get_result[" + resultId + "] untuk sisanya" else "") + ")…"
     }
 
+    /** vc335 R2 (D2) — EVICT jendela kirim dalam-giliran: pesan user
+     *  PERTAMA (anchor prompt penuh giliran pertama) + 40 TERAKHIR,
+     *  pasangan assistant<->tool TIDAK PERNAH dipisah (logika di
+     *  SessionMessagesVc335.trimD2 — reuse R1, bukan trim kedua yang bisa
+     *  drift). Dipanggil TIAP langkah tool SEBELUM kirim (continueOpenai*)
+     *  — daftar in-memory ikut terpangkas karena msgs yang sama disimpan
+     *  kembali ke openaiTurnMessagesVc5b sesudah sukses; store yang
+     *  dipersist endUserTurn memakai trim yang sama di
+     *  SessionMessagesStore.save. Meta "dipangkas" hanya sekali per
+     *  giliran (flag direset resetTurnStateVc334).
+     *  Mengembalikan true bila ada pesan yang dibuang. */
+    private fun evictWindowVc335R2(msgs: MutableList<ChatMessage>): Boolean {
+        if (msgs.size <= SessionMessagesVc335.KEEP_LAST + 1) return false
+        val trimmed = SessionMessagesVc335.trimD2(msgs)
+        if (trimmed.size >= msgs.size) return false
+        val dropped = msgs.size - trimmed.size
+        msgs.clear()
+        msgs.addAll(trimmed)
+        if (!evictNoticeShownVc335R2) {
+            evictNoticeShownVc335R2 = true
+            try { addMsg("ℹ️ Riwayat giliran dipangkas ke pesan pertama + 40 terakhir ($dropped pesan lama tidak lagi terlihat model; JEJAK ringkas + rencana aktif tetap dikirim tiap lanjutan).", "meta", turn = true) } catch (e: Exception) {}
+        }
+        return true
+    }
+
     /** F5b: lanjutan engine openai — append messages lalu helper (BUKAN
      *  kirim ulang prompt penuh). toolMsgs = hasil tool (role:tool);
      *  instruction = instruksi lanjut (pesan user, didahului konteks
@@ -10130,6 +10155,8 @@ class MainActivity : Activity() {
                 val ctxVc5b = openaiTurnContextVc5b()
                 val instrVc5b = (if (ctxVc5b.isNotBlank()) ctxVc5b + "\n" else "") + instruction
                 if (instrVc5b.isNotBlank()) msgs.add(ChatMessage("user", instrVc5b))
+                // vc335 R2 (D2): jendela kirim = anchor + 40 terakhir.
+                evictWindowVc335R2(msgs)
                 // tool_choice forced tetap dipasang selama repair
                 // forced-tool berjalan (forcedToolVc282 masih terpasang);
                 // sesudah model memanggilnya / repair habis, flag sudah
@@ -10189,6 +10216,8 @@ class MainActivity : Activity() {
                 val ctxVc5b = openaiTurnContextVc5b()
                 val instrVc5b = (if (ctxVc5b.isNotBlank()) ctxVc5b + "\n" else "") + instruction
                 if (instrVc5b.isNotBlank()) msgs.add(ChatMessage("user", instrVc5b))
+                // vc335 R2 (D2): jendela kirim = anchor + 40 terakhir.
+                evictWindowVc335R2(msgs)
                 beginStreamBubble()
                 val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, if (closingVc334) null else ToolRegistry.ALL, null)
                 if (tokenVc334 != turnTokenVc334) return@Thread
@@ -10301,39 +10330,88 @@ class MainActivity : Activity() {
     /** vc334 R3 (B5): finalisasi SATU definisi untuk jawaban final teks —
      *  dipakai cabang JSON-teks native (handleAgentResponse ChatResult)
      *  DAN overload String. Keputusan yang sama di kedua jalur (pelajaran
-     *  R2: satu definisi, jangan blok inline ganda):
-     *  - pendingExtract menyala → gate sinyal fakta atas transkrip penuh
-     *    (40/40.000): tanpa sinyal → endUserTurn(); ada sinyal → mulai
-     *    ekstraksi internalTurn (prompt penuh 40/40.000; varian delta
-     *    vc330 TIDAK dipakai sejak B7 — lihat AgentPrompt).
-     *  - pendingExtract mati → endUserTurn() langsung.
+     *  R2: satu definisi, jangan blok inline ganda).
+     *  vc335 R2 (D4): ekstraksi latar LEPAS dari endUserTurn — endUserTurn()
+     *  jalan SEKARANG (follow-up tidak antre menunggu ekstraksi, wake lock
+     *  dilepas, antrean follow-up dikonsumsi); ekstraksi jalan sebagai job
+     *  latar terpisah (bucket BACKGROUND, bukan INTERACTIVE) sesudahnya.
+     *  Gate sinyal fakta tetap di sini (baca transkrip lokal 40/40.000 —
+     *  murah, bukan round-trip LLM). Dialog batch vc228 tetap tampil saat
+     *  ekstraksi selesai (atau proposal diparkir ke Setup 65 bila sesi
+     *  sudah pindah — logika parkir sudah ada di
+     *  vc228ShowExtractionBatchDialog). Job memakai HANYA data lokal yang
+     *  ditangkap di sini (transkrip) + gate single-flight — TIDAK menyentuh
+     *  state giliran (tanpa internalTurn, tanpa endUserTurn di dalam job),
+     *  jadi pesan baru user saat ekstraksi jalan tidak menimbulkan race:
+     *  giliran baru jalan normal, ekstraksi lama tetap selesai dan
+     *  dialognya tetap tampil.
      *  pendingEndReason diisi ("pertanyaan-user"/"final") bila masih null,
      *  sebelum endUserTurn() — sama seperti blok inline lama. */
     private fun finishFinalTurnVc334(visible: String) {
-        if (pendingExtract) {
-            pendingExtract = false
-            // vc241 O7: jendela 13 pesan (10 sejak ekstraksi terakhir +
-            // overlap 3, dulu 16); pemicu per-sesi vc235 tidak diubah.
-            // Tanpa sinyal fakta di pesan user, lewati panggilan LLM
-            // ekstraksi sama sekali.
-            // vc235 M2: ekstraksi memakai transkrip Vc230 atas sesi
-            // pemilik giliran (dulu: tanpa argumen sesi sehingga default
-            // sesi 1, padahal sesi aktif bisa bukan 1).
-            val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
-            if (!extractHasFactSignalVc241(hist)) {
-                if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final"
-                endUserTurn()
-            } else {
-                internalTurn = true
-                collectingExtract = true
-                pendingExtractProposals.clear()
-                val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
-                sendToAgent(fullExtractVc330)
-            }
-        } else {
-            if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
-            endUserTurn()
+        if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
+        // vc241 O7 / vc235 M2: gate sinyal fakta atas transkrip penuh
+        // (40/40.000) sesi pemilik giliran; tanpa sinyal -> tidak ada job.
+        val wantExtractVc335R2 = pendingExtract
+        pendingExtract = false
+        val histVc335R2 = if (wantExtractVc335R2) {
+            try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
+        } else ""
+        endUserTurn()
+        if (wantExtractVc335R2 && extractHasFactSignalVc241(histVc335R2)) {
+            startExtractionJobVc335R2(histVc335R2)
         }
+    }
+
+    /** vc335 R2 (D4): job ekstraksi latar — jalan di thread latar sendiri,
+     *  LEPAS dari lifecycle giliran. Satu panggilan LLM bucket BACKGROUND
+     *  (tools HANYA remember_fact/learn_rule, tanpa thinking, tanpa
+     *  streaming ke bubble — onPartial kosong). Gagal apa pun (provider
+     *  tidak ada / kuota latar habis / timeout) = ekstraksi DILEWATI
+     *  dengan meta jujur, BUKAN giliran gagal (fakta tetap di riwayat
+     *  untuk pemicu berikut). Sukses + ada proposal -> dialog batch vc228
+     *  (runOnUiThread; parkir ke Setup 65 bila sesi sudah pindah).
+     *  TurnMetrics: panggilan ini membuka giliran metrik SEMU bila tidak
+     *  ada giliran aktif (chatMessagesForEngine beginTurn bila belum
+     *  begun) — ditutup di finally HANYA bila job ini yang membukanya
+     *  (turnNo naik tepat 1; bila giliran user baru ikut membuka di tengah
+     *  jalan, turnNo naik 2 dan finish TIDAK dipanggil — metrik giliran
+     *  user tidak disentuh). */
+    private fun startExtractionJobVc335R2(hist: String) {
+        if (!extractGateVc335R2.tryStart()) return // job lama masih jalan
+        Thread {
+            try {
+                val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
+                val toolsVc335R2 = ToolRegistry.ALL.filter { it.name == "remember_fact" || it.name == "learn_rule" }
+                val callsRefVc335R2 = java.util.concurrent.atomic.AtomicReference<List<NativeToolCall>>(emptyList())
+                val begunBeforeVc335R2 = TurnMetrics.isBegun()
+                val turnNoBeforeVc335R2 = TurnMetrics.currentTurnNo()
+                try {
+                    LlmEngineChat.chatMessagesForEngine(
+                        this, listOf(ChatMessage("user", fullExtractVc330)), LlmCallKind.BACKGROUND,
+                        tools = toolsVc335R2, thinking = false,
+                        onPartial = {},
+                        onToolCalls = { calls -> callsRefVc335R2.set(calls) }
+                    )
+                } catch (e: Exception) {
+                    try { addMsg("🧠 Ekstraksi latar dilewati: " + RedactSecrets.redact(e.message ?: e.toString()).take(200), "meta", turn = true) } catch (e2: Exception) {}
+                    return@Thread
+                } finally {
+                    // Tutup giliran metrik semu HANYA bila job ini yang membukanya.
+                    if (!begunBeforeVc335R2 && TurnMetrics.isBegun() && TurnMetrics.currentTurnNo() == turnNoBeforeVc335R2 + 1) {
+                        try { TurnMetrics.finish(this, "ekstraksi-latar") } catch (e: Exception) {}
+                    }
+                }
+                val propsVc335R2 = ExtractProposalsVc335R2.fromToolCalls(callsRefVc335R2.get())
+                if (propsVc335R2.isNotEmpty()) {
+                    runOnUiThread { vc228ShowExtractionBatchDialog(propsVc335R2) }
+                }
+            } catch (e: Exception) {
+                // Job latar tidak boleh mematikan apa pun.
+                try { addMsg("🧠 Ekstraksi latar dilewati: " + RedactSecrets.redact(e.message ?: e.toString()).take(200), "meta", turn = true) } catch (e2: Exception) {}
+            } finally {
+                extractGateVc335R2.finish()
+            }
+        }.start()
     }
 
     private fun handleAgentResponse(resp: ChatResult) {
@@ -10373,6 +10451,16 @@ class MainActivity : Activity() {
             openaiTurnMessagesVc5b.add(ChatMessage("assistant", resp.content, toolCalls = resp.toolCalls))
         } else if (resp.toolCalls.isNotEmpty()) {
             openaiTurnMessagesVc5b.add(ChatMessage("assistant", "", toolCalls = resp.toolCalls))
+        }
+        // vc335 R2 (D2): daftar in-memory ikut terpangkas di sini (tanpa
+        // meta — meta tampil di titik kirim). Anchor + 40 terakhir
+        // dipertahankan, pasangan assistant<->tool tetap utuh.
+        run {
+            val trimmedVc335R2 = SessionMessagesVc335.trimD2(openaiTurnMessagesVc5b)
+            if (trimmedVc335R2.size < openaiTurnMessagesVc5b.size) {
+                openaiTurnMessagesVc5b.clear()
+                openaiTurnMessagesVc5b.addAll(trimmedVc335R2)
+            }
         }
         val cleanedVc5b = AgentPrompt.stripRawToolMarkupForDisplay(resp.content)
         // tool_choice native: tugas menuntut tool tertentu (forcedToolVc282
@@ -10906,9 +10994,10 @@ class MainActivity : Activity() {
         }
     }
 
-    // vc334 R2 (B4): SATU-SATUNYA alur cap-langkah — dipakai proceedTool
-    // DAN handlePlannerTool (planner = 1 langkah penuh di bawah plafon
-    // yang sama). Jangan salin blok ini ke tempat lain. Isi = tawaran
+    // vc334 R2 (B4): SATU-SATUNYA alur cap-langkah — dipakai proceedTool.
+    // vc335 R2 (D8): handlePlannerTool TIDAK LAGI lewat sini (planner
+    // punya anggaran sendiri maks 3/giliran). Jangan salin blok ini ke
+    // tempat lain. Isi = tawaran
     // +10 (bila syarat terpenuhi) / cap-stop jujur sekali per giliran /
     // terminal keras bila model tetap memanggil tool.
     private fun handleStepCapVc334(tool: String, args: JSONObject, callId: String) {
@@ -11206,36 +11295,54 @@ class MainActivity : Activity() {
         }
     }
 
-    // vc334 R2 (B4): SATU-SATUNYA penghitung langkah planner — dipanggil
-    // sekali per panggilan planner yang BENAR-BENAR dieksekusi.
-    // make_plan/update_plan = 1 langkah penuh di bawah plafon
-    // maxToolSteps yang sama (agentSteps++ + cap + TurnMetrics +
-    // StuckDetector), sama seperti tool lain. Anggaran planner TERPISAH
-    // TIDAK dibuat (NEEDS-DECISION D8 — belum diputuskan).
+    // vc335 R2 (D8): SATU-SATUNYA penghitung planner — dipanggil sekali
+    // per panggilan planner yang BENAR-BENAR dieksekusi. make_plan /
+    // update_plan TIDAK LAGI 1 langkah penuh di bawah plafon maxToolSteps
+    // (tanpa agentSteps++, tanpa handleStepCapVc334) — sebagai gantinya
+    // anggaran SENDIRI maks 3 panggilan/giliran (PlannerBudgetVc335R2).
+    // TurnMetrics.recordStep TETAP dicatat (metrik laporan giliran, bukan
+    // cap) + StuckDetector tetap mencatat (tanpa cap, loop planner
+    // dibatasi anggaran 3 + guard T15).
     // Mengembalikan teks StuckDetector ("" bila tidak ada) atau null bila
-    // cap tercapai (alur cap sudah dijalankan, pemanggil harus return).
+    // anggaran habis (alur penolakan sudah dijalankan, pemanggil harus
+    // return — JANGAN lanjut mutasi rencana).
     // Penolakan (validasi / guard T15 / index di luar rentang) TIDAK
-    // memanggil fungsi ini — penolakan tidak memakan langkah, sama
-    // seperti validasi di proceedTool.
-    private fun countPlannerStepVc334(tool: String, args: JSONObject, result: String): String? {
-        agentSteps++
-        if (agentSteps == 1) emitPhase("act")
+    // memanggil fungsi ini — penolakan tidak memakan anggaran, sama
+    // seperti dulu penolakan tidak memakan langkah.
+    private fun consumePlannerBudgetVc335R2(tool: String, args: JSONObject, result: String): String? {
+        when (plannerBudgetVc335R2.tryConsume(tool)) {
+            is PlannerBudgetVc335R2.Outcome.Denied -> {
+                try { addMsg("⛔ Anggaran planner habis (3/3 per giliran) — make_plan/update_plan ditolak, giliran lanjut tanpa rencana baru.", "meta", turn = true) } catch (e: Exception) {}
+                runOnUiThread { sendContinuation(plannerBudgetVc335R2.denialMessage()) }
+                return null
+            }
+            is PlannerBudgetVc335R2.Outcome.DeniedRepeat -> {
+                // Model tetap memanggil planner sesudah ditolak sekali —
+                // tutup giliran dengan jujur (tanpa continuation lagi,
+                // supaya tidak ada loop tolak -> lanjut -> panggil lagi).
+                addBubble("⛔ Dihentikan: anggaran planner habis (3/3 per giliran) dan model tetap memanggil make_plan/update_plan — giliran ditutup. Rencana yang sudah ada tetap tersimpan; lanjutkan dari sana di giliran berikutnya.", false, turn = true)
+                pendingEndReason = "anggaran-planner"
+                endUserTurn()
+                return null
+            }
+            is PlannerBudgetVc335R2.Outcome.Allowed -> { /* lanjut di bawah */ }
+        }
+        if (!turnUsedTools) emitPhase("act")
         turnUsedTools = true
-        if (agentSteps > stepBudget) { handleStepCapVc334(tool, args, ""); return null }
         TurnMetrics.recordStep(tool, false, 0, argsHash(args), false)
-        val stuckVc334 = stuckSuffix(tool, args, result)
-        if (stuckVc334.contains("🛑")) {
+        val stuckVc335R2 = stuckSuffix(tool, args, result)
+        if (stuckVc335R2.contains("🛑")) {
             turnStuckBlocked = true
             try { recordLockedPatternVc303(tool, args) } catch (e: Exception) {}
         }
-        return stuckVc334
+        return stuckVc335R2
     }
 
     private fun handlePlannerTool(tool: String, args: JSONObject) {
         // vc282: validasi skema O3 menutup celah bypass — jalur 1-1 ini
         // dipanggil SEBELUM proceedTool, jadi validateArgs di sana tidak
         // pernah menyentuh make_plan/update_plan. Penolakan tidak memakan
-        // langkah; model diminta perbaiki dan panggil ulang.
+        // anggaran planner; model diminta perbaiki dan panggil ulang.
         val validationVc282 = Tools.validateArgs(this, tool, args)
         if (validationVc282 != null) {
             runOnUiThread { sendContinuation("Hasil tool $tool DITOLAK SISTEM:\n$validationVc282\n\nPERINTAH SISTEM — WAJIB DIPATUHI PADA GILIRAN INI: keluarkan ULANG blok json tool '$tool' yang sama, kali ini dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas. DILARANG menjawab dengan prosa, rencana, atau pertanyaan klarifikasi pada giliran ini.") }
@@ -11243,7 +11350,12 @@ class MainActivity : Activity() {
         }
         if (tool == "make_plan") {
             // v4.35.3 (T15): di giliran auto-lanjut JANGAN hapus rencana aktif.
-            if (planItems.isNotEmpty() && autoContinueCount > 0) {
+            // vc335 R2 (D8): guard DIHIDUPKAN di jalur native — dulu
+            // bersyarat autoContinueCount > 0 (hanya naik sesudah jawaban
+            // final teks, sementara make_plan ulang datang SEBELUM jawaban
+            // final, jadi guard tidak pernah menyala); kini bersyarat
+            // counter make_plan giliran ini sendiri (canRemakePlan).
+            if (!plannerBudgetVc335R2.canRemakePlan(planItems.isNotEmpty())) {
                 val doneT15 = planItems.count { it.startsWith("☑") }
                 runOnUiThread {
                     setPlanCardVc254()
@@ -11254,9 +11366,9 @@ class MainActivity : Activity() {
             val stepsVc334 = ArrayList<String>()
             val arr = args.optJSONArray("steps")
             if (arr != null) for (i in 0 until arr.length()) stepsVc334.add(arr.optString(i))
-            // vc334 R2 (B4): planner dihitung 1 langkah penuh SEBELUM
-            // mutasi — cap tercapai = alur cap, bukan rencana gratis.
-            val stuckVc334 = countPlannerStepVc334(tool, args, "Rencana tercatat (${stepsVc334.size} langkah): " + stepsVc334.joinToString("; ")) ?: return
+            // vc335 R2 (D8): anggaran planner dipakai SEBELUM mutasi —
+            // anggaran habis = penolakan, bukan rencana gratis.
+            val stuckVc334 = consumePlannerBudgetVc335R2(tool, args, "Rencana tercatat (${stepsVc334.size} langkah): " + stepsVc334.joinToString("; ")) ?: return
             emitPhase("plan")
             planItems.clear()
             for (s in stepsVc334) planItems.add("☐ " + s)
@@ -11274,9 +11386,9 @@ class MainActivity : Activity() {
                 runOnUiThread { sendContinuation("Hasil tool update_plan DITOLAK SISTEM: index $idx di luar rencana (${planItems.size} langkah, indeks sah 0..${planItems.size - 1}). Tidak ada langkah yang ditandai. Panggil ulang update_plan dengan index yang ada di rencana aktif.") }
                 return
             }
-            // vc334 R2 (B4): planner dihitung 1 langkah penuh SEBELUM
-            // mutasi — cap tercapai = alur cap, bukan centang gratis.
-            val stuckVc334 = countPlannerStepVc334(tool, args, "Langkah ${idx + 1} ditandai selesai.") ?: return
+            // vc335 R2 (D8): anggaran planner dipakai SEBELUM mutasi —
+            // anggaran habis = penolakan, bukan centang gratis.
+            val stuckVc334 = consumePlannerBudgetVc335R2(tool, args, "Langkah ${idx + 1} ditandai selesai.") ?: return
             planItems[idx] = planItems[idx].replace("☐", "☑")
             persistPlan()
             runOnUiThread {
@@ -11327,6 +11439,10 @@ class MainActivity : Activity() {
 
     // v4.48.5 (P6-terbatas): hitungan auto-lanjut per giliran — maks 2 bila rencana ☐ terbuka, maks 1 bila hanya frasa janji.
     private var autoContinueCount = 0
+    // vc335 R2 (D8): anggaran planner TERPISAH per giliran (maks 3
+    // panggilan make_plan/update_plan) — BUKAN lagi 1 langkah penuh di
+    // bawah plafon maxToolSteps. Reset di resetTurnStateVc334.
+    private val plannerBudgetVc335R2 = PlannerBudgetVc335R2()
     private var forcedToolVc282: String? = null // vc282: pseudo tool_choice — tool yang dituntut tugas ini (dari detectForcedTool), null bila tidak ada
     private var toolChoiceRepairVc282 = 0 // vc282: repair terarah pseudo tool_choice sudah dipakai (maks 1x per giliran)
     // F5b (K2, loop tool native): state giliran engine openai.
@@ -11344,6 +11460,8 @@ class MainActivity : Activity() {
     //   fallback "Hasil tool <nama> ...", karena ChatMessage tool tidak
     //   membawa nama).
     private var openaiTurnMessagesVc5b: MutableList<ChatMessage> = ArrayList()
+    // vc335 R2 (D2): meta "riwayat dipangkas" hanya sekali per giliran.
+    private var evictNoticeShownVc335R2: Boolean = false
     // vc335 R1 (D1): true bila giliran ini berjalan native 1-1 dan daftar
     // messages-nya BOLEH dipersist di endUserTurn (hanya giliran native
     // non-internal; dialek teks + ekstraksi internal TIDAK dipersist —
@@ -12575,9 +12693,9 @@ class MainActivity : Activity() {
     // menghasilkan id hasil, call ini DITUNDA (bukan dieksekusi dengan id
     // yang salah). Argumen lain tidak diubah.
     private fun resolveBatchArgsVc273(tool: String, args: JSONObject, priorOutcomes: List<BatchOutcomeVc273>): Pair<JSONObject, String?> {
-        // Hanya get_result/grep_result yang memakai id hasil — argumen id
+        // Hanya get_result/grep_result/read_previous_result yang memakai id hasil — argumen id
         // tool lain tidak boleh di-resolve ke resultId.
-        if (tool != "get_result" && tool != "grep_result") return Pair(args, null)
+        if (tool != "get_result" && tool != "grep_result" && tool != "read_previous_result") return Pair(args, null)
         if (args.optString("id").isBlank()) return Pair(args, null)
         val idArg = args.optString("id")
         if (!AgentPrompt.isValidCallId(idArg)) return Pair(args, null)
@@ -12736,6 +12854,7 @@ class MainActivity : Activity() {
     private val READ_FAST_TOOLS_VC278 = setOf(
         "read_file", "list_files", "recall_search", "otak_read",
         "storage_info", "list_tools", "get_result", "grep_result",
+        "read_previous_result", // vc335 R2 (D12): baca ulang seperti get_result
         "list_sessions", "list_goals", "list_rooms", "list_workers",
         "list_artifacts", "list_skills", "list_tasks"
     )
@@ -18248,7 +18367,7 @@ object ChatCardsVc306 {
         "read_skill_version", "list_skill_versions", "list_artifacts", "list_goals",
         "list_reminders", "list_schedules", "list_fact_candidates",
         "list_rule_triggers", "list_geofences", "graph_neighbors", "graph_overview",
-        "graph_path", "get_result", "wait_change", "wait_for_app", "wait_confirm",
+        "graph_path", "get_result", "read_previous_result", "wait_change", "wait_for_app", "wait_confirm",
         "watch_screen", "take_screenshot", "priv_capture", "browser_tabs",
         "rote_status", "preview_worker_result"
     )

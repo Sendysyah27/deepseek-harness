@@ -401,6 +401,8 @@ object AgentPrompt {
         if (!result.startsWith("[DATA TIDAK TEPERCAYA")) return false
         return when (tool) {
             "get_result" -> result.contains("potongan hasil tool ")
+            // vc335 R2 (D12): format hasil SAMA dengan get_result.
+            "read_previous_result" -> result.contains("potongan hasil tool ")
             "grep_result" -> result.contains("pattern ditemukan ")
             else -> false
         }
@@ -417,7 +419,7 @@ object AgentPrompt {
     // Ambang 3/4/5 TETAP. Atribusi stop 13:19/13:46 ke SF-C1 butuh tes
     // perangkat (gelembung 🛑 / TurnMetrics) — tidak diklaim dari source.
     fun isPagingErrorVc301(tool: String, result: String): Boolean {
-        if (tool != "get_result" && tool != "grep_result" && tool != "read_file") return false
+        if (tool != "get_result" && tool != "grep_result" && tool != "read_previous_result" && tool != "read_file") return false
         return result.contains("id tidak ditemukan") || result.contains("di luar total") ||
             result.contains("di luar file") || result.contains("tersimpan terpotong") ||
             result.contains("Segmen di luar file")
@@ -447,7 +449,7 @@ object AgentPrompt {
     // tetap dihitung normal; pelonggaran umum detektor TIDAK dilakukan.
     // Ambang 3/4/5 TETAP.
     fun isSearchNotFoundVc301(tool: String, result: String): Boolean {
-        if (tool != "list_files" && tool != "recall_search" && tool != "grep_result" && tool != "get_result" && tool != "run_terminal") return false
+        if (tool != "list_files" && tool != "recall_search" && tool != "grep_result" && tool != "get_result" && tool != "read_previous_result" && tool != "run_terminal") return false
         return result.lowercase().contains("tidak ditemukan")
     }
 
@@ -1826,8 +1828,8 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
     ): String? {
         val s = try { args.toString() } catch (e: Exception) { "" }
         val low = s.lowercase()
-        if (low.contains("get_result") || low.contains("grep_result")) {
-            return "argumen memakai get_result/grep_result (butuh hasil tool sebelumnya)"
+        if (low.contains("get_result") || low.contains("grep_result") || low.contains("read_previous_result")) {
+            return "argumen memakai get_result/grep_result/read_previous_result (butuh hasil tool sebelumnya)"
         }
         for (id in priorCallIds) {
             if (id.isNotBlank() && s.contains(id)) return "argumen menyebut hasil $id"
@@ -1841,7 +1843,7 @@ Cek-cek terminal digabung dalam SATU run_terminal (ls + wc + md5sum + diff + gre
     // vc273 O7: path yang ditulis sebuah call (bila ada argumen path) —
     // dipakai mendeteksi call berikutnya yang memakai file itu.
     fun writtenPathOf(tool: String, args: JSONObject): String {
-        if (tool == "get_result" || tool == "grep_result") return ""
+        if (tool == "get_result" || tool == "grep_result" || tool == "read_previous_result") return ""
         return try { args.optString("path").trim() } catch (e: Exception) { "" }
     }
 }

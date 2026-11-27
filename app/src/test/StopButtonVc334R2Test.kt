@@ -277,28 +277,45 @@ fun main() {
         !cont.contains("\"none\"") && !contText.contains("\"none\""),
         "keputusan D7 belum diambil — jangan tambah tool_choice none")
 
-    // ---- B4: planner = 1 langkah penuh di bawah plafon + StuckDetector.
-    checkR2("B4 countPlannerStepVc334() ada",
-        main.contains("private fun countPlannerStepVc334("))
-    val countPlanner = regionR2(main, "private fun countPlannerStepVc334(",
+    // ---- B4 (vc335 R2 D8): planner TIDAK LAGI 1 langkah penuh di bawah
+    // plafon — anggaran SENDIRI maks 3 panggilan/giliran
+    // (PlannerBudgetVc335R2). Blok vc334 R2 ini DIGANTI: D8 membatalkan
+    // keputusan "planner = 1 langkah penuh" secara eksplisit, jadi cek
+    // lama (agentSteps++ / handleStepCapVc334 di penghitung planner)
+    // kini menegaskan KETIADAANNYA, bukan keberadaannya.
+    checkR2("B4/D8 consumePlannerBudgetVc335R2() ada (pengganti countPlannerStepVc334)",
+        main.contains("private fun consumePlannerBudgetVc335R2(") &&
+            !main.contains("private fun countPlannerStepVc334("))
+    val consumePlanner = regionR2(main, "private fun consumePlannerBudgetVc335R2(",
         "private fun handlePlannerTool(")
-    checkR2("B4 planner: agentSteps++ (1 langkah penuh)",
-        countPlanner.contains("agentSteps++"), "planner tidak dihitung")
-    checkR2("B4 planner: kena cap via handleStepCapVc334",
-        countPlanner.contains("handleStepCapVc334(tool, args, \"\")"),
-        "planner lolos plafon")
-    checkR2("B4 planner: TurnMetrics.recordStep dicatat",
-        countPlanner.contains("TurnMetrics.recordStep(tool, false, 0, argsHash(args), false)"),
+    checkR2("B4/D8 planner: TIDAK agentSteps++ (bukan 1 langkah penuh di bawah plafon)",
+        !consumePlanner.contains("agentSteps++"), "planner masih dihitung ke plafon")
+    checkR2("B4/D8 planner: TIDAK kena cap via handleStepCapVc334 (anggaran sendiri)",
+        !consumePlanner.contains("handleStepCapVc334"),
+        "planner masih lewat alur cap langkah")
+    checkR2("B4/D8 planner: anggaran 3/giliran dipakai (tryConsume) + penolakan jelas",
+        consumePlanner.contains("plannerBudgetVc335R2.tryConsume(tool)") &&
+            consumePlanner.contains("plannerBudgetVc335R2.denialMessage()"),
+        "anggaran planner tidak dipakai / tanpa pesan penolakan")
+    checkR2("B4/D8 planner: penolakan berulang menutup giliran (tanpa loop continuation)",
+        consumePlanner.contains("Outcome.DeniedRepeat") &&
+            consumePlanner.contains("pendingEndReason = \"anggaran-planner\""),
+        "model bandel bisa loop tolak-lanjut tanpa batas")
+    checkR2("B4/D8 planner: TurnMetrics.recordStep TETAP dicatat (metrik, bukan cap)",
+        consumePlanner.contains("TurnMetrics.recordStep(tool, false, 0, argsHash(args), false)"),
         "planner tidak masuk metrik langkah")
-    checkR2("B4 planner: masuk StuckDetector (stuckSuffix + kunci)",
-        countPlanner.contains("stuckSuffix(tool, args, result)") &&
-            countPlanner.contains("turnStuckBlocked = true"),
+    checkR2("B4/D8 planner: masuk StuckDetector (stuckSuffix + kunci)",
+        consumePlanner.contains("stuckSuffix(tool, args, result)") &&
+            consumePlanner.contains("turnStuckBlocked = true"),
         "planner lolos StuckDetector")
-    checkR2("B4 handlePlannerTool: kedua cabang memakai penghitung yang sama",
-        planner.split("countPlannerStepVc334(tool, args,").size - 1 == 2,
+    checkR2("B4/D8 handlePlannerTool: kedua cabang memakai penghitung yang sama",
+        planner.split("consumePlannerBudgetVc335R2(tool, args,").size - 1 == 2,
         "make_plan/update_plan tidak sama-sama dihitung")
-    checkR2("B4 handlePlannerTool: TIDAK ada agentSteps++ kedua (satu penghitung)",
+    checkR2("B4/D8 handlePlannerTool: TIDAK ada agentSteps++ kedua (satu penghitung)",
         !planner.contains("agentSteps++"), "penghitung planner ganda")
+    checkR2("B4/D8 handlePlannerTool: guard T15 memakai canRemakePlan (hidup di native)",
+        planner.contains("canRemakePlan(planItems.isNotEmpty())"),
+        "guard T15 masih mati (autoContinueCount)")
     checkR2("B4 handleStepCapVc334: satu-satunya alur cap, dipakai proceedTool",
         regionR2(main, "private fun proceedTool(",
             "private fun handlePlannerTool(").contains("handleStepCapVc334(tool, args, callId)") &&
