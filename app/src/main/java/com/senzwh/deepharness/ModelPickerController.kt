@@ -1,11 +1,13 @@
 package com.senzwh.deepharness
 
 import android.content.Context
+import java.net.HttpURLConnection
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * §5.10.1–2 (Fase 0b) — SATU komponen bersama auto-fetch daftar model.
@@ -18,8 +20,12 @@ import java.util.concurrent.atomic.AtomicLong
  *  - Debounce 600 ms saat mengetik base URL; fetch segera saat focus loss,
  *    saat layar dibuka, dan saat tombol ⟳ manual ditekan.
  *  - Single-flight: hanya satu fetch berjalan; fetch baru membatalkan
- *    (mengabaikan hasil) fetch lama — hasil terlambat DIBUANG bila
- *    URL-nya sudah berubah.
+ *    fetch lama — koneksi HTTP-nya diputus (F1-5, R6) dan hasil terlambat
+ *    DIBUANG bila URL-nya sudah berubah.
+ *  - TTL cache 10 menit (F1-1, R6): buka dialog tidak fetch ulang bila
+ *    cache segar (juga menutup fetch ulang sesudah ganti id, F1-2);
+ *    tombol ⟳ tetap memaksa fetch. Id kosong tidak membaca/menulis
+ *    cache (F1-3, R6).
  *  - Cache via LlmProviderStore (models_<id>): tampilkan cache dulu
  *    sambil fetch baru jalan — picker tidak pernah kosong bila pernah
  *    sukses sekali.
@@ -51,12 +57,19 @@ class ModelPickerController(
     private val ctx: Context,
     private val providerId: String,
     private val onStateChanged: (ModelPickerState) -> Unit,
-    private val listModelsFn: (baseUrl: String, apiKey: String?) -> ModelsResult =
-        { url, key -> OpenAiCompatClient.listModels(url, key) }
+    listModelsFnOverride: ((baseUrl: String, apiKey: String?) -> ModelsResult)? = null
 ) {
 
     companion object {
         const val DEBOUNCE_MS = 600L
+
+        /** F1-1 (R6): cache daftar model dianggap segar 10 menit — di
+         *  bawah TTL ini onOpened / focus-loss tidak fetch ulang. */
+        const val CACHE_TTL_MS = 10 * 60 * 1000L
+
+        /** Murni: true bila fetchedAt masih di dalam TTL (0 = tak ada cache). */
+        fun isCacheFresh(fetchedAtMs: Long, nowMs: Long = System.currentTimeMillis()): Boolean =
+            fetchedAtMs > 0L && nowMs - fetchedAtMs < CACHE_TTL_MS
 
         /**
          * Validasi base URL (murni): harus http(s):// + host (mengandung
@@ -76,6 +89,23 @@ class ModelPickerController(
     private val lock = Any()
     private val generation = AtomicLong(0)
 
+    // F1-5 (R6): koneksi HTTP fetch model yang sedang berjalan — diputus
+    // saat generasi naik (fetch baru supersede fetch lama) / close().
+    private val activeModelsConn = AtomicReference<HttpURLConnection?>()
+
+    // Default: listModels asli dengan hook koneksi (F1-5) — koneksi aktif
+    // disimpan supaya bisa diputus saat generasi naik.
+    private val listModelsFn: (baseUrl: String, apiKey: String?) -> ModelsResult =
+        listModelsFnOverride ?: { url, key ->
+            OpenAiCompatClient.listModels(url, key) { conn -> activeModelsConn.set(conn) }
+        }
+
+    /** Putus koneksi fetch model yang sedang berjalan (bila ada). */
+    private fun disconnectActiveFetch() {
+        val conn = activeModelsConn.getAndSet(null) ?: return
+        try { conn.disconnect() } catch (e: Exception) { /* abaikan */ }
+    }
+
     private var currentBaseUrl: String = ""
     private var currentApiKey: String? = null
     private var lastFetchedOkUrl: String? = null
@@ -92,15 +122,17 @@ class ModelPickerController(
 
     fun currentState(): ModelPickerState = synchronized(lock) { lastState }
 
-    /** Layar dibuka: tampilkan cache dulu, lalu fetch otomatis sekali bila URL valid. */
+    /** Layar dibuka: tampilkan cache dulu, lalu fetch otomatis sekali bila URL valid
+     *  dan cache tidak segar (F1-1, R6 — TTL [CACHE_TTL_MS]; tombol ⟳ tetap memaksa fetch). */
     fun onOpened(baseUrl: String, apiKey: String?) {
         synchronized(lock) {
             currentBaseUrl = baseUrl.trim()
             currentApiKey = apiKey?.ifBlank { null }
         }
-        showCacheFirst()
-        if (isValidBaseUrl(currentBaseUrl)) fetchNow()
-        else emit(ModelPickerState(ModelPickerKind.IDLE, message = "Isi base URL dulu — daftar model akan muncul otomatis."))
+        val fetchedAt = showCacheFirst()
+        if (isValidBaseUrl(currentBaseUrl)) {
+            if (!isCacheFresh(fetchedAt)) fetchNow()
+        } else emit(ModelPickerState(ModelPickerKind.IDLE, message = "Isi base URL dulu — daftar model akan muncul otomatis."))
     }
 
     /** Mengetik di field base URL → debounce 600 ms, lalu fetch bila valid. */
@@ -123,7 +155,10 @@ class ModelPickerController(
         emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, selectedModel = lastState.selectedModel, message = "Memuat daftar model…"))
     }
 
-    /** Field base URL kehilangan fokus → fetch segera bila belum pernah sukses untuk URL ini. */
+    /** Field base URL kehilangan fokus → fetch segera bila belum pernah sukses untuk URL ini.
+     *  (R6: TIDAK ada guard TTL di sini — cache diikat ke id, bukan URL;
+     *  URL yang diganti user berarti server lain, cache lama bisa salah.
+     *  F1-2 tertutup TTL di onOpened, jalur controller baru sesudah ganti id.) */
     fun onBaseUrlFocusLost(url: String) {
         val u = url.trim()
         synchronized(lock) { currentBaseUrl = u }
@@ -163,6 +198,7 @@ class ModelPickerController(
             debounceFuture = null
             generation.incrementAndGet()
         }
+        disconnectActiveFetch()
         val prev = lastState
         emit(
             ModelPickerState(
@@ -189,10 +225,15 @@ class ModelPickerController(
             debounceFuture = null
             generation.incrementAndGet()
         }
+        disconnectActiveFetch()
         executor.shutdownNow()
     }
 
-    private fun showCacheFirst() {
+    /** Tampilkan cache dulu; mengembalikan fetchedAtMs cache (0 bila tak ada
+     *  cache). F1-3 (R6): id kosong tidak membaca cache (dua form provider
+     *  baru tidak boleh saling membaca/menimpa cache `models_` yang sama). */
+    private fun showCacheFirst(): Long {
+        if (providerId.isBlank()) return 0L
         val cached: List<ModelInfo> = try {
             LlmProviderStore.loadModels(ctx, providerId).map {
                 ModelInfo(it.id, ModelCaps.parseVisionSupport(it.vision))
@@ -200,7 +241,7 @@ class ModelPickerController(
         } catch (e: Exception) {
             emptyList()
         }
-        if (cached.isEmpty()) return
+        if (cached.isEmpty()) return 0L
         val fetchedAt = try { LlmProviderStore.loadModelsFetchedAt(ctx, providerId) } catch (e: Exception) { 0L }
         val prevSelected = lastState.selectedModel
         val selected = if (prevSelected != null && cached.any { it.id == prevSelected }) prevSelected
@@ -216,6 +257,7 @@ class ModelPickerController(
                 fromCache = true
             )
         )
+        return fetchedAt
     }
 
     private fun fetchNow() {
@@ -231,6 +273,11 @@ class ModelPickerController(
             gen = generation.incrementAndGet()
         }
         if (!isValidBaseUrl(url)) return
+        // F1-5 (R6): generasi naik = fetch lama superseded — putus koneksi
+        // HTTP-nya supaya tidak menahan antrean executor sampai timeout
+        // 15 dtk. (Bila koneksi belum tersimpan saat ini — fetch baru saja
+        // dijadwalkan — pemutusan tidak terjadi; itu batasan yang diterima.)
+        disconnectActiveFetch()
         // F1: pertahankan pilihan lama selama LOADING (lihat onBaseUrlChanged).
         emit(ModelPickerState(ModelPickerKind.LOADING, models = lastState.models, selectedModel = lastState.selectedModel, message = "Memuat daftar model…"))
         executor.execute {
@@ -262,13 +309,16 @@ class ModelPickerController(
                     )
                     return
                 }
-                try {
-                    LlmProviderStore.saveModels(
-                        ctx, providerId,
-                        result.models.map { ModelCaps.CachedModel(it.id, it.vision.name.lowercase()) },
-                        result.fetchedAtMs
-                    )
-                } catch (e: Exception) { /* cache gagal tidak boleh menggagalkan picker */ }
+                // F1-3 (R6): id kosong tidak menulis cache (jangan menimpa `models_`).
+                if (providerId.isNotBlank()) {
+                    try {
+                        LlmProviderStore.saveModels(
+                            ctx, providerId,
+                            result.models.map { ModelCaps.CachedModel(it.id, it.vision.name.lowercase()) },
+                            result.fetchedAtMs
+                        )
+                    } catch (e: Exception) { /* cache gagal tidak boleh menggagalkan picker */ }
+                }
                 synchronized(lock) { lastFetchedOkUrl = url }
                 val prevSelected = lastState.selectedModel
                 val selected = if (prevSelected != null && result.models.any { it.id == prevSelected }) prevSelected

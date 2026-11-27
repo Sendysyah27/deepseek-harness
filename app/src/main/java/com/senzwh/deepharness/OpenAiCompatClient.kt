@@ -224,23 +224,6 @@ object OpenAiCompatClient {
 
     // ---------------------------------------------------------------- chat
 
-    /** Chat streaming (OpenAI SSE) + fallback non-streaming bila gagal stream.
-     *  Wrapper tipis atas [chatMessages]: satu pesan user, tanpa tools.
-     *  `onDone(content, thinking)` — dipertahankan untuk pemanggil lama
-     *  (A1/A2 via `LlmProviders.chat`). */
-    fun chat(baseUrl: String,
-             apiKey: String,
-             model: String,
-             prompt: String,
-             thinkingEnabled: Boolean,
-             onPartial: (String) -> Unit,
-             onDone: (String, String) -> Unit,
-             onError: (String) -> Unit) {
-        chatMessages(baseUrl, apiKey, model, listOf(ChatMessage("user", prompt)), null,
-            thinkingEnabled, onPartial = onPartial, onDeltaToolCall = {},
-            onDone = { r -> onDone(r.content, r.thinking) }, onError = onError)
-    }
-
     /** Overload chat beneran (§0.3 + §2.3): messages (system/riwayat/user),
      *  `tools` native (JSONArray skema OpenAI `{"type":"function",...}` —
      *  lihat `ToolRegistry.toolsJson`), `toolChoice` opsional ("none" untuk
@@ -626,8 +609,11 @@ object OpenAiCompatClient {
 
     /** GET {base}/v1/models (K6, §5.10). Key dikirim bila ada; tanpa key pun
      *  dicoba dulu (Ollama/vLLM lokal mengizinkan tanpa auth). Key TIDAK
-     *  PERNAH masuk log/pesan error. */
-    fun listModels(baseUrl: String, apiKey: String?): ModelsResult {
+     *  PERNAH masuk log/pesan error.
+     *  @param onConnection (F1-5, R6) dipanggil dengan koneksi yang baru
+     *  dibuat — pemanggil boleh menyimpannya untuk diputus saat fetch
+     *  sudah tidak dibutuhkan lagi. */
+    fun listModels(baseUrl: String, apiKey: String?, onConnection: ((HttpURLConnection) -> Unit)? = null): ModelsResult {
         if (baseUrl.isBlank()) {
             return ModelsResult.Err(ModelsErrorKind.UNREACHABLE, "Base URL kosong — isi base URL dulu.")
         }
@@ -643,6 +629,7 @@ object OpenAiCompatClient {
         } catch (e: Exception) {
             return ModelsResult.Err(ModelsErrorKind.UNREACHABLE, "Base URL tidak terjangkau — periksa alamat / internet.")
         }
+        try { onConnection?.invoke(conn) } catch (e: Exception) { /* hook tidak boleh menggagalkan fetch */ }
         conn.requestMethod = "GET"
         conn.connectTimeout = MODELS_CONNECT_TIMEOUT_MS
         conn.readTimeout = MODELS_READ_TIMEOUT_MS

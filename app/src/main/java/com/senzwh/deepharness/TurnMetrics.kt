@@ -20,6 +20,9 @@ object TurnMetrics {
     // 4.48.9 giliran_ke: counter persisten (tidak pernah di-reset Setup 17 —
     // clearSnapshot hanya menghapus KEY_LAST), naik tiap beginTurn.
     private const val KEY_TURN = "giliran_ke"
+    // L11 (R6): pembersihan daily_* >30 hari JANGAN tiap giliran (iterasi
+    // prefs.all penuh) — cukup sekali sehari, ditandai kunci ini.
+    private const val KEY_PRUNE_DAY = "daily_prune_day"
     // vc316 IXL: 200.000 char ≈ 58.800 token (@3,4 char/token).
     // Cap lama 400.000 char (≈117.600 token) berada DI ATAS batas
     // konteks provider, jadi guard lokal tidak pernah bisa mencegah
@@ -228,8 +231,13 @@ object TurnMetrics {
             val np = cur.optInt("p", 0) + total
             val ns = cur.optInt("s", 0) + steps
             val ed = prefs.edit().putString("daily_$day", JSONObject().put("p", np).put("s", ns).toString())
-            val cutoff = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000))
-            for (k in prefs.all.keys) if (k.startsWith("daily_") && k.substring(6) < cutoff) ed.remove(k)
+            // L11 (R6): iterasi prefs.all untuk bersih-bersih hanya sekali
+            // sehari — giliran lain di hari yang sama melewatinya.
+            if (prefs.getString(KEY_PRUNE_DAY, null) != day) {
+                val cutoff = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000))
+                for (k in prefs.all.keys) if (k.startsWith("daily_") && k.substring(6) < cutoff) ed.remove(k)
+                ed.putString(KEY_PRUNE_DAY, day)
+            }
             ed.apply()
         } catch (e: Exception) { }
     }

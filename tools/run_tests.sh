@@ -104,6 +104,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/PerfMechanicsVc334R3Test.kt" \
   "$PROJ/app/src/test/VisionPathsVc334R4Test.kt" \
   "$PROJ/app/src/test/SkillsVc334R5Test.kt" \
+  "$PROJ/app/src/test/MinorsSweepVc334R6Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -163,6 +164,12 @@ java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.Visi
 
 echo "== jalankan SkillsVc334R5Test =="
 java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.SkillsVc334R5TestKt
+
+echo "== jalankan MinorsSweepVc334R6Test =="
+# -Djava.net.preferIPv6Addresses=true: tes live F1-5 memakai
+# http://localhost (lolos isValidBaseUrl) ke server ::1 — IPv4 loopback
+# di VM ini diintersep proxy egress, jadi localhost harus ke ::1.
+java -Dproj.dir="$PROJ" -Djava.net.preferIPv6Addresses=true -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.MinorsSweepVc334R6TestKt
 
 echo "== jalankan BrainBackupG7Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt

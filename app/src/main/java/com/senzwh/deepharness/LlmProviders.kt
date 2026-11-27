@@ -207,31 +207,4 @@ object LlmProviders {
 
     /** Provider aktif, atau null bila belum ada provider aktif (K1, Fase 6). */
     fun activeProvider(): LlmProvider? = find(activeId)
-
-    /** Memanggil provider aktif (OpenAI-compatible) via OpenAiCompatClient.
-     *  onPartial dipanggil tiap ada fragmen jawaban baru (streaming).
-     *  onDone dipanggil sekali saat selesai: (content, thinking).
-     *  onError dipanggil bila gagal. */
-    fun chat(apiKey: String?, provider: LlmProvider?, prompt: String,
-             thinking: Boolean,
-             onPartial: (String) -> Unit,
-             onDone: (String, String) -> Unit,
-             onError: (String) -> Unit) {
-        if (provider == null) { onError("Provider LLM aktif belum dikonfigurasi."); return }
-        val key = apiKey?.takeIf { it.isNotBlank() }
-        if (key.isNullOrBlank() && !isLocalBaseUrl(provider.baseUrl)) { onError("API key provider '${provider.id}' belum ada."); return }
-        try {
-            OpenAiCompatClient.chat(
-                provider.baseUrl, key ?: "", provider.model, prompt, thinkingEnabled = thinking,
-                onPartial = onPartial,
-                onDone = { content, think -> onDone(content, think) },
-                onError = onError
-            )
-        } catch (e: Exception) {
-            onError(sanitize(e.message ?: e.toString()))
-        }
-    }
-
-    private fun sanitize(s: String): String =
-        s.replace(Regex("(?i)Bearer\\s+\\S+"), "Bearer <redacted>")
 }

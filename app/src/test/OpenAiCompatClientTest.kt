@@ -564,7 +564,9 @@ fun main() {
         }
     }
     run {
-        // chat() lama tetap jalan sebagai wrapper tipis (satu pesan user).
+        // chat() lama DIHAPUS R6 (P-2: jalur pintas tanpa Governor/D4) —
+        // pemanggil harus lewat chatMessages (dipakai helper LlmEngineChat).
+        // Satu pesan user via chatMessages tetap jalan sama.
         val server = startServer { ex ->
             respondSse(ex, listOf(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"ok-lama\"}}]}\n",
@@ -573,10 +575,13 @@ fun main() {
             ))
         }
         try {
-            var done: Pair<String, String>? = null
-            OpenAiCompatClient.chat(baseUrl(server), FAKE_KEY, "m1", "hai", false,
-                onPartial = {}, onDone = { c, t -> done = c to t }, onError = {})
-            check("chat() lama wrapper tetap jalan", done?.first == "ok-lama", "done=$done")
+            var done: ChatResult? = null
+            OpenAiCompatClient.chatMessages(baseUrl(server), FAKE_KEY, "m1",
+                listOf(ChatMessage("user", "hai")), null, false,
+                onPartial = {}, onDeltaToolCall = {},
+                onDone = { done = it }, onError = {})
+            check("chatMessages satu pesan user tetap jalan (pengganti chat() lama)",
+                done?.content == "ok-lama", "done=$done")
         } finally {
             server.stop(0)
         }

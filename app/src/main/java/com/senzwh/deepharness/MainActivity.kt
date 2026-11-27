@@ -3122,10 +3122,12 @@ class MainActivity : Activity() {
             // vc306 Worker C: hitung pesan asisten giliran berjalan (untuk
             // ringkasan "Completed · N tool calls · M messages").
             if (turn && kind == "assistant") turnMsgCountVc306++
-            // vc306 Worker C (C12): label claim-check + pesan berhenti
-            // StuckDetector jadi KARTU tone (visual saja — teks + logika sama).
-            if (kind == "meta" && (ChatCardsVc306.isClaimWarningText(text) || ChatCardsVc306.isStuckStoppedText(text))) {
-                val card = buildToneCardVc306(text, if (ChatCardsVc306.isClaimWarningText(text)) "warning" else "danger")
+            // vc306 Worker C (C12): pesan berhenti StuckDetector jadi
+            // KARTU tone danger (visual saja — teks + logika sama).
+            // (R6: kartu tone warning claim-check dihapus — produsen teks
+            // peringatan klaim sudah tidak ada sejak vc333.)
+            if (kind == "meta" && ChatCardsVc306.isStuckStoppedText(text)) {
+                val card = buildToneCardVc306(text)
                 val wrapTone = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.START
@@ -3339,16 +3341,16 @@ class MainActivity : Activity() {
         android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
     } catch (e: Exception) { false }
 
-    // C12: kartu tone attention (claim-check) / danger (StuckDetector).
+    // C12: kartu tone danger (StuckDetector) — satu-satunya kartu tone
+    // yang tersisa; kartu warning claim-check dihapus R6 (tanpa produsen).
     // VISUAL SAJA — teks sama persis, tetap di alur pesan, bukan popup.
     // Teks minimal 12sp (skill #15 F3: 11sp hanya metadata non-interaktif;
     // label ini informasi penting). Hairline tone α0.45, radius md 14, padding 12/8.
-    private fun buildToneCardVc306(text: String, toneKind: String): LinearLayout {
+    private fun buildToneCardVc306(text: String): LinearLayout {
         val dark = isDarkTheme()
         val bf = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("chatFontPx", 16).toFloat()
-        val danger = toneKind == "danger"
-        val bgHex = if (danger) ChatCardsVc306.stuckContainerHex(dark) else ChatCardsVc306.claimContainerHex(dark)
-        val fgHex = if (danger) ChatCardsVc306.stuckTextHex(dark) else ChatCardsVc306.claimTextHex(dark)
+        val bgHex = ChatCardsVc306.stuckContainerHex(dark)
+        val fgHex = ChatCardsVc306.stuckTextHex(dark)
         val fg = ChatCardsVc306.hexToArgb(fgHex)
         val hairline = Color.argb(115, Color.red(fg), Color.green(fg), Color.blue(fg))
         val card = LinearLayout(this).apply {
@@ -3357,12 +3359,11 @@ class MainActivity : Activity() {
             background = roundedS(ChatCardsVc306.hexToArgb(bgHex), 14, hairline)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             contentDescription = text
-            accessibilityLiveRegion = if (danger) View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
-                else View.ACCESSIBILITY_LIVE_REGION_POLITE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE
         }
         // vc307: "✕"/"⚠" (glyph teks) diganti ImageView ikon Path "x"/"warn".
         card.addView(android.widget.ImageView(this).apply {
-            setImageDrawable(pathIconVc306(if (danger) "x" else "warn", fg, ChatThemeVc306.iconXs))
+            setImageDrawable(pathIconVc306("x", fg, ChatThemeVc306.iconXs))
             layoutParams = LinearLayout.LayoutParams(dp(ChatThemeVc306.iconXs), dp(ChatThemeVc306.iconXs)).apply { setMargins(0, 0, dp(8), 0) }
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         })
@@ -13790,8 +13791,15 @@ class MainActivity : Activity() {
                     manualEt.visibility = View.GONE
                 }
                 ModelPickerKind.LOADING -> {
-                    spinnerModels = emptyList()
-                    setSpinnerItems(listOf("Memuat daftar model…"), enabled = false)
+                    // F1-4 (R6): pertahankan daftar model lama di spinner
+                    // selama LOADING (controller sudah membawa models lama
+                    // di state) — tampilkan nonaktif + status "Memuat…".
+                    spinnerModels = state.models
+                    if (state.models.isNotEmpty()) {
+                        setSpinnerItems(state.models.map { m -> m.id + "  " + visionBadge(m.vision) }, enabled = false, selectedId = state.selectedModel)
+                    } else {
+                        setSpinnerItems(listOf("Memuat daftar model…"), enabled = false)
+                    }
                     pickerStatusTv.text = state.message ?: "Memuat daftar model…"
                     pickerStatusTv.setTextColor(th.dim)
                     retryBtn.visibility = View.GONE; manualBtn.visibility = View.GONE; reloadBtn.visibility = View.GONE
@@ -18287,14 +18295,11 @@ object ChatCardsVc306 {
         else -> if (dark) "#B6BBC5" else "#4F5562"
     }
 
-    // Container kartu claim-check / StuckDetector (C12).
-    // Light dari spek: warning #F9E9CE, danger #FFE2E0. Dark TIDAK ada di
-    // spek — dipakai container gelap hangat (#33291A warning, #33201F danger)
-    // supaya teks semantik dark tetap >= 4.5:1 (terukur, lihat tes (a)).
-    // PENYIMPANGAN SKILL-MENANG: teks warning light spek (#936123) di atas
-    // container #F9E9CE hanya 4.42:1 (GAGAL AA) — dipakai #7A4E1B (5.99:1).
-    fun claimContainerHex(dark: Boolean): String = if (dark) "#33291A" else "#F9E9CE"
-    fun claimTextHex(dark: Boolean): String = if (dark) "#E6BD7C" else "#7A4E1B"
+    // Container kartu StuckDetector (C12) — satu-satunya kartu tone yang
+    // tersisa (R6: container + teks warning claim-check dihapus).
+    // Light dari spek: danger #FFE2E0. Dark TIDAK ada di spek — dipakai
+    // container gelap hangat (#33201F danger) supaya teks semantik dark
+    // tetap >= 4.5:1 (terukur, lihat tes (a)).
     fun stuckContainerHex(dark: Boolean): String = if (dark) "#33201F" else "#FFE2E0"
     fun stuckTextHex(dark: Boolean): String = if (dark) "#E69089" else "#A54743"
 
@@ -18387,12 +18392,8 @@ object ChatCardsVc306 {
     }
 
     // Predikat kartu tone (C12) — dipakai addMsg supaya call-site tidak berubah.
-    fun isClaimWarningText(text: String): Boolean {
-        val t = text.trimStart()
-        return t.startsWith("⚠️ Peringatan sistem: klaim") ||
-            t.contains("JAWABAN INI TIDAK DIDUKUNG HASIL TOOL")
-    }
-
+    // (R6: predikat kartu warning claim-check dihapus — produsen teksnya
+    // sudah tidak ada sejak vc333; hanya kartu StuckDetector yang hidup.)
     fun isStuckStoppedText(text: String): Boolean {
         val t = text.trimStart()
         return t.startsWith("⛔ Dihentikan:") && t.contains("StuckDetector")

@@ -101,19 +101,19 @@ fun main() {
     }
     LlmProviders.setActive("nokey")
 
-    // chat() — validasi gagal tanpa jaringan (onError dipanggil)
-    var err: String? = null
-    LlmProviders.chat(null, null, "x", false, { }, { _, _ -> }, { err = it })
-    check("chat provider null → error", err?.contains("belum dikonfigurasi", ignoreCase = true) == true, "err=$err")
-
-    err = null
-    // Preset deepseek-platform (Models API, §8.2-1) tanpa key → error key.
-    LlmProviders.chat(null, LlmProviders.preset("deepseek-platform"), "x", false, { }, { _, _ -> }, { err = it })
-    check("chat preset deepseek-platform tanpa key → error", err?.contains("belum ada", ignoreCase = true) == true, "err=$err")
-
-    err = null
-    LlmProviders.chat(null, LlmProviders.addCustom("nokey2", "X", "https://a.b/v1", null, "m", true), "x", false, { }, { _, _ -> }, { err = it })
-    check("chat tanpa key → error", err?.contains("belum ada", ignoreCase = true) == true, "err=$err")
+    // P-2 (R6): jalur pintas LlmProviders.chat DIHAPUS — pemanggil harus
+    // lewat helper LlmEngineChat (Governor + D4). Tanpa provider siap,
+    // helper melempar IllegalStateException yang jelas, tanpa jaringan.
+    var helperErr: String? = null
+    try {
+        LlmEngineChat.chatSyncForEngine(FakeContext(), "hai", LlmCallKind.INTERACTIVE)
+    } catch (e: IllegalStateException) {
+        helperErr = e.message
+    }
+    check("helper tanpa provider siap → IllegalStateException jelas",
+        helperErr?.contains("belum diatur", ignoreCase = true) == true ||
+            helperErr?.contains("belum siap", ignoreCase = true) == true,
+        "err=$helperErr")
 
     // ---- T11 (Fase 0b, §3.1/§0.5/C3) ----
     // "openai" TIDAK dicadangkan + field guard baru tersimpan di registry.

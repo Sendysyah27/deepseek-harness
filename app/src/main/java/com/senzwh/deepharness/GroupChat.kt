@@ -309,7 +309,6 @@ object GroupChat {
                         var toolIter = 0
                         var proseBeforeTool = ""
                         val roundToolsVc249 = ArrayList<String>()
-                        val roundCorpusVc249 = StringBuilder()
                         // vc263 (N-m21): detektor putaran per ronde anggota.
                         val stuckWatchGrpVc263 = AgentPrompt.StuckWatch()
                         // vc277 O17(c): pengunci giliran grup — sekali 🛑, tool
@@ -319,12 +318,12 @@ object GroupChat {
                         fun honestCapStopGrpVc277(): String = honestCapStopGroup(roundToolsVc249, userText)
                         // vc274 O6+O7: eksekusi batch multi-tool grup (per
                         // anggota). Fungsi lokal agar bisa memakai var ronde
-                        // (toolIter, prompt, roundTools, roundCorpus) lewat
+                        // (toolIter, prompt, roundTools) lewat
                         // closure. Mengembalikan true bila ronde anggota
                         // harus BERHENTI sekarang (StuckDetector —
                         // finalText sudah diisi di sini).
                         // Hasil per call dicatat seperti jalur tunggal
-                        // (pesan tool + korpus per call), lalu
+                        // (pesan tool), lalu
                         // SATU continuation gabungan (combinedMessage)
                         // ditempel ke prompt berikutnya.
                         fun execBatchGrpVc274(calls: List<JSONObject>, visibleGrpVc274: String): Boolean {
@@ -341,7 +340,6 @@ object GroupChat {
                                     roundToolsVc249.add(oc.tool)
                                     // VC303-P2-11 (CX-4): kumpulkan jejak tool grup (jalur batch).
                                     roundWorkVc303.add(WorkItem(oc.tool, oc.ms, oc.ok, RedactSecrets.redact(oc.result).take(120), evidence = oc.result, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", totalChars = oc.resultTotal, callId = oc.callId))
-                                    roundCorpusVc249.append("🔧 ").append(if (oc.callId.isNotBlank()) "[" + oc.callId + "] " else "").append(oc.tool).append(": ").append(RedactSecrets.redact(oc.result).take(4000)).append("\n")
                                     val toolTextGrpVc274 = ActivityTitle.formatText(oc.tool, oc.args, RedactSecrets.redact(oc.result), oc.ms, !WorkLog.isFailed(oc.result))
                                     try { mdb.addGroupMsg("tool", m.name, toolTextGrpVc274) } catch (e: Exception) {}
                                     try { listener.onTool(m.name, m.accent, toolTextGrpVc274) } catch (e: Exception) {}
@@ -413,7 +411,6 @@ object GroupChat {
                             val result = runGroupTool(app, tool, args, listener, callIdGrpVc272)
                             val msGrpVc254 = System.currentTimeMillis() - t0GrpVc254
                             roundToolsVc249.add(tool)
-                            roundCorpusVc249.append("🔧 ").append(if (callIdGrpVc272.isNotBlank()) "[" + callIdGrpVc272 + "] " else "").append(tool).append(": ").append(RedactSecrets.redact(result).take(4000)).append("\n")
                             // vc263 (N-m21): putaran terdeteksi = suffix ke
                             // prompt lanjutan (peringatan) atau hentikan
                             // ronde ini (tanda berhenti) — tanpa retry.
