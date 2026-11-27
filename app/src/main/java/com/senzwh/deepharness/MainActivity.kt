@@ -88,6 +88,19 @@ class MainActivity : Activity() {
     private var stripLongPressedVc306 = false
     private var stripLongPressRunnableVc306: Runnable? = null
     @Volatile private var stopRequestedVc306 = false
+    // vc334 R1: pengaman ganda endTurnStopped() — abort jaringan + gate
+    // tool bisa memanggilnya bersamaan; hanya satu yang menutup giliran.
+    @Volatile private var endTurnStoppedInFlightVc334 = false
+    // vc334 R1: generasi giliran — naik tiap giliran baru dibuka di
+    // onUserMessage; thread basi dari giliran lama dikenali lewat ini.
+    @Volatile private var turnGenerationVc334 = 0
+    // vc334 R1: token giliran HIDUP — = generasi giliran yang sedang
+    // berjalan, 0 bila tidak ada giliran hidup. Pekerjaan async
+    // (thread LLM, tool, analyze_photo) menangkap token saat mulai dan
+    // membuang hasilnya bila token berubah (giliran berakhir / giliran
+    // baru dibuka). Token 0 = idle (regen / lampiran di luar giliran) —
+    // pekerjaan yang dimulai saat idle lolos selama masih idle.
+    @Volatile private var turnTokenVc334 = 0
     private val stripTimerHandlerVc306 = android.os.Handler(android.os.Looper.getMainLooper())
     private val stripTimerRunnableVc306 = object : Runnable {
         override fun run() {
@@ -2160,9 +2173,11 @@ class MainActivity : Activity() {
             sendBtnBgVc306(),
             "Kirim"
         ) {
-            // Berjalan + draft kosong + tanpa lampiran = tombol ini tampil
-            // sebagai ■ Berhenti (lihat refreshComposerButtonsVc306).
-            if (turnActive && chatInput.text.toString().trim().isEmpty() && pendingAttachesVc212.isEmpty()) {
+            // vc334 R1 (B1): giliran aktif = tombol ini ■ Berhenti, apa
+            // pun isi draft/lampiran (lihat refreshComposerButtonsVc306).
+            // Draft dipertahankan — user bisa mengirimnya sesudah giliran
+            // selesai.
+            if (turnActive) {
                 requestStopTurnVc306()
                 return@iconBtnVc306
             }
@@ -4626,10 +4641,13 @@ class MainActivity : Activity() {
     // VC303-P2-8 (CX-1): alasan abnormal giliran ini — SATU sumber
     // kebenaran untuk flush (onUserMessage) dan tawaran lanjut (CX-9).
     // null = giliran normal.
+    // vc334 R1 (B3): giliran yang DIHENTIKAN USER bukan giliran yang
+    // "terputus" — jangan ditawari resume (offerResumeVc303) dan jangan
+    // dicatat sebagai status "lanjut" di flushTurnWork.
     private fun abnormalStopReasonVc303(): String? = when {
         turnStuckBlocked -> "kunci-putaran"
         capStopSentVc277 -> "anggaran-langkah"
-        turnStoppedReason != null -> turnStoppedReason
+        turnStoppedReason != null && turnStoppedReason != "dihentikan user dari composer" && turnStoppedReason != "dihentikan paksa user" -> turnStoppedReason
         else -> null
     }
 
@@ -4726,6 +4744,11 @@ class MainActivity : Activity() {
         if (turnActive && !drainingFollow) { enqueueFollowUp(text); return }
         turnActive = true
         userTurnActive = true
+        // vc334 R1: generasi giliran naik tiap giliran baru dibuka —
+        // thread basi dari giliran lama (catch/continuation) dikenali
+        // lewat gen ini dan tidak boleh menutup giliran baru.
+        turnGenerationVc334++
+        turnTokenVc334 = turnGenerationVc334
         // vc306 Worker B: giliran baru = stop lama hangus; composer pindah
         // ke state berjalan (hint "Membuat…", tombol ■, pill otomasi ke strip).
         stopRequestedVc306 = false
@@ -7987,13 +8010,13 @@ class MainActivity : Activity() {
                     running -> {
                         spin?.visibility = View.GONE; mic.visibility = View.GONE; send.visibility = View.VISIBLE
                         send.background = sendBtnBgVc306()
-                        if (!hasDraft && !hasAttach) {
-                            send.setCompoundDrawables(pathIconVc306("stop", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconSm)), null, null, null)
-                            send.contentDescription = "Berhenti"
-                        } else {
-                            send.setCompoundDrawables(pathIconVc306("up", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconMd)), null, null, null)
-                            send.contentDescription = "Kirim"
-                        }
+                        // vc334 R1 (B1): selama giliran aktif tombol ini
+                        // SELALU ■ Berhenti — apa pun isi draft/lampiran.
+                        // Draft dipertahankan di input (tidak dihapus);
+                        // kirim follow-up tetap bisa sesudah giliran
+                        // selesai, atau lewat antrean yang sudah ada.
+                        send.setCompoundDrawables(pathIconVc306("stop", Color.WHITE, chatIconSizeVc307(ChatThemeVc306.iconSm)), null, null, null)
+                        send.contentDescription = "Berhenti"
                         send.isEnabled = true; send.alpha = 1f
                     }
                     hasDraft || hasAttach -> {
@@ -8022,15 +8045,89 @@ class MainActivity : Activity() {
 
     private fun requestStopTurnVc306() {
         if (!turnActive) return
+        // vc334 R1 (B1): tap kedua saat status sudah "Menghentikan…" =
+        // force-stop — tutup giliran segera, tanpa menunggu abort
+        // jaringan terkonfirmasi.
+        if (stopRequestedVc306) { endTurnStopped(true); return }
         stopRequestedVc306 = true
+        // vc334 R1 (A1/A4): putus request LLM yang sedang streaming di
+        // lapisan HTTP (best-effort — lihat probe di cancelCurrentChat).
+        try { OpenAiCompatClient.cancelCurrentChat() } catch (e: Exception) {}
         // Satu-satunya hook stop yang sudah ada (tugas panel OC + tolak
-        // izin parkir); giliran 1-1 sendiri berhenti di batas tool-call
-        // berikut lewat flag di execToolAndContinue/execBatchAndContinue.
+        // izin parkir).
         try { uiOcStop() } catch (e: Exception) {}
+        // vc334 R1 (A1 — PROBE 27 Nov): disconnect() TIDAK menginterupsi
+        // readLine chunked yang sedang blokir di JDK, jadi menunggu
+        // "abort terkonfirmasi" dari jaringan berarti menunggu sampai
+        // server selesai / read-timeout 120 dtk — persis bug yang
+        // diperbaiki. Karena itu giliran DITUTUP SEKARANG, bukan sesudah
+        // jaringan kembali: pill "⛔ Dihentikan" di endTurnStopped jujur
+        // soal giliran (tidak ada tool/lanjutan lagi sesudah ini),
+        // dan hasil model yang tiba belakangan dibuang lewat token
+        // giliran (turnTokenVc334) di semua jalur hasil — bukan
+        // dieksekusi. Satu-satunya yang mungkin telat adalah socket
+        // yang ditinggalkan, yang mati saat server selesai / timeout.
+        endTurnStopped()
         try { stripTitleTvVc306?.text = "Menghentikan…" } catch (e: Exception) {}
-        refreshComposerButtonsVc306()
-        refreshLiveCard()
-        try { stripCapsuleVc306?.announceForAccessibility("Permintaan berhenti dikirim. Giliran berhenti di langkah tool berikutnya.") } catch (e: Exception) {}
+        try { stripCapsuleVc306?.announceForAccessibility("Giliran dihentikan.") } catch (e: Exception) {}
+    }
+
+    // vc334 R1 — jalur akhir-stop TUNGGAL (A1/A2/A4/B1/B3): dipanggil dari
+    // requestStopTurnVc306 (tap ■ / force-stop), dari gerbang tool saat
+    // state stop aktif, dan dari catch UserCancelledException di semua
+    // jalur LLM. `genVc334` = generasi giliran saat thread/request
+    // dimulai (default: generasi berjalan) — thread basi dari giliran
+    // yang sudah berakhir tidak boleh menutup giliran baru (mis. sesudah
+    // force-stop + antrean follow-up memulai giliran berikut).
+    // Urutan: putus koneksi (best-effort) → pill "⛔ Dihentikan" →
+    // clearTurnCheckpoint() → endUserTurn() TANPA verifikasi/ekstraksi/
+    // auto-lanjut/continuation. Pill ini jujur soal GILIRAN (tidak ada
+    // tool/lanjutan lagi sesudah titik ini — hasil telat dibuang lewat
+    // token); ia TIDAK mengklaim socket sudah mati (probe 27 Nov:
+    // disconnect() tidak menginterupsi read chunked yang blokir di JDK).
+    // Bubble stream terpotong dipertahankan + penanda. pendingExtract
+    // dilewati DENGAN SENGAJA (giliran dihentikan, bukan selesai) +
+    // dicatat di EventDb. Idempotent per giliran lewat
+    // endTurnStoppedInFlightVc334 (abort + gate bisa tiba bersamaan).
+    private fun endTurnStopped(forced: Boolean = false, genVc334: Int = turnGenerationVc334) {
+        if (genVc334 != turnGenerationVc334) return
+        if (!turnActive || endTurnStoppedInFlightVc334) return
+        endTurnStoppedInFlightVc334 = true
+        try { OpenAiCompatClient.cancelCurrentChat() } catch (e: Exception) {}
+        pendingEndReason = "user-stop"
+        turnStoppedReason = if (forced) "dihentikan paksa user" else "dihentikan user dari composer"
+        if (pendingExtract) {
+            pendingExtract = false
+            try { EventDb.get(this).add("turn", packageName, "ekstraksi latar dilewati dengan sengaja: giliran dihentikan user (user-stop)") } catch (e: Exception) {}
+        }
+        runOnUiThread {
+            try {
+                // Bubble stream terpotong dipertahankan: JANGAN
+                // endStreamBubble() (itu MENGHAPUS view) — lepas saja
+                // referensinya + tempel penanda jujur.
+                val tv = streamTv
+                if (tv != null) {
+                    val cur = tv.text?.toString() ?: ""
+                    if (cur.isNotBlank()) tv.text = cur + "\n(jawaban terpotong — dihentikan user)"
+                }
+                streamTv = null; streamWrap = null
+                stopTypingVc306(); hideStallDotVc306()
+            } catch (e: Exception) {}
+            try { addMsg("⛔ Dihentikan: $turnStoppedReason", "meta", turn = true) } catch (e: Exception) {}
+        }
+        clearTurnCheckpoint()
+        endUserTurn()
+    }
+
+    // vc334 R1 (B2): akhir giliran karena error terminal — hanya bila
+    // masih giliran yang sama (genVc334 = generasi saat thread/request
+    // dimulai). Tanpa ini, thread basi dari giliran yang sudah berakhir
+    // bisa menutup giliran baru yang dimulai antrean follow-up.
+    private fun endTurnErrorVc334(genVc334: Int, reason: String) {
+        if (genVc334 != turnGenerationVc334) return
+        if (!turnActive) return
+        pendingEndReason = reason
+        endUserTurn()
     }
 
     // ---- Activity strip (C10) ----
@@ -9035,22 +9132,39 @@ class MainActivity : Activity() {
             turnSource = "Models API"
             dumpPromptLast(prompt)
             recordSendPoint(prompt)
+            // vc334 R1: generasi giliran saat thread ini dimulai — catch
+            // di bawah hanya boleh menutup giliran ini, bukan giliran baru.
+            val genVc334 = turnGenerationVc334
+            // vc334 R1: token giliran saat thread ini dimulai — hasil
+            // yang tiba sesudah token berubah (giliran berakhir / giliran
+            // baru dibuka) dibuang, bukan diproses. Token 0 = idle
+            // (regen) — lolos selama masih idle.
+            val tokenVc334 = turnTokenVc334
             Thread {
                 try {
                     if (nativeVc5b) {
                         val result = callNativeVc5b(messagesVc5b, LlmCallKind.INTERACTIVE, wantThink, toolsVc5b, toolChoiceVc5b)
+                        // vc334 R1: hasil telat (giliran sudah ditutup
+                        // user / diganti giliran baru) dibuang di sini —
+                        // JANGAN handleAgentResponse (itu mengeksekusi tool).
+                        if (tokenVc334 != turnTokenVc334) return@Thread
                         turnThinking = result.thinking
                         endStreamBubble()
                         runOnUiThread { statusTv.text = "Models API: AKTIF — asisten siap." }
                         handleAgentResponse(result)
                     } else {
                         val text = callTextVc5b(messagesVc5b, wantThink)
+                        if (tokenVc334 != turnTokenVc334) return@Thread
                         turnThinking = ""
                         endStreamBubble()
                         runOnUiThread { statusTv.text = "Models API: AKTIF — asisten siap." }
                         handleAgentResponse(text)
                     }
                 } catch (e: Exception) {
+                    // vc334 R1 (A1/B2): user-cancel masuk jalur akhir-stop
+                    // (tanpa endStreamBubble dulu — endTurnStopped yang
+                    // mempertahankan bubble stream terpotong).
+                    if (e is UserCancelledException) { endTurnStopped(genVc334 = genVc334); return@Thread }
                     val err = RedactSecrets.redact(e.message ?: e.toString())
                     // F5b §2.5.1(b) + §8.2 butir 3: 400 menyebut tools →
                     // dialek teks (retry mengurus bubble + lanjutannya
@@ -9060,6 +9174,9 @@ class MainActivity : Activity() {
                     if (!tryOfflineFallback(err, "Models API (" + prov.label + ")")) {
                         addBubble("⚠️ $err", false, turn = true)
                     }
+                    // vc334 R1 (B2): error terminal menutup giliran —
+                    // tanpa ini turnActive tetap true selamanya (chat macet).
+                    endTurnErrorVc334(genVc334, "error-jaringan")
                 }
             }.start()
             return
@@ -9071,6 +9188,10 @@ class MainActivity : Activity() {
         if (!tryOfflineFallback("network unreachable", "Lokal")) {
             addBubble("📴 Mode offline lokal — hanya reminder/fakta/buka-app.", false, turn = true)
         }
+        // vc334 R1 (B2): jalur lokal juga terminal — tutup giliran (hanya
+        // bila memang ada giliran berjalan; tombol regen memanggil
+        // sendToAgent saat idle dan tidak boleh menutup apa pun).
+        endTurnErrorVc334(turnGenerationVc334, "error-jaringan")
     }
 
     /** J1: mesin agen untuk giliran ini adalah Models API (jalur bawaan). */
@@ -9228,6 +9349,11 @@ class MainActivity : Activity() {
             openaiToolRepairVc5b = 0
             openaiRoleFallbackArmedVc5b = false
             openaiToolNamesVc5b.clear()
+            // vc334 R1: resume = giliran hidup untuk token — tanpa ini
+            // lanjutan resume dibuang penjaga token (turnActive=false
+            // saat resume, B8 — R2; satu baris ini hanya menjaga resume
+            // tetap jalan di bawah aturan token).
+            turnTokenVc334 = turnGenerationVc334
             sendContinuation("Sesi terputus di tengah jalan (app ditutup / proses dibunuh sistem) saat mengerjakan perintah user: \"$user\". Lanjutkan tugas itu dari keadaan terakhir: cek jejak tool & rencana di konteks, jangan mengulang langkah yang sudah selesai, lalu selesaikan dan laporkan hasilnya." + trail)
         } catch (e: Exception) {}
     }
@@ -9737,6 +9863,10 @@ class MainActivity : Activity() {
         // sini karena pembangun prompt inline di onUserMessage; lihat
         // laporan F5b.)
         val firstPrompt = openaiTurnMessagesVc5b.firstOrNull()?.content ?: lastUserText
+        // vc334 R1: generasi giliran saat thread retry ini dimulai.
+        val genVc334 = turnGenerationVc334
+        // vc334 R1: token giliran saat thread retry ini dimulai — hasil telat dibuang.
+        val tokenVc334 = turnTokenVc334
         Thread {
             try {
                 val retryMessages = listOf(
@@ -9744,14 +9874,18 @@ class MainActivity : Activity() {
                     ChatMessage("user", "SISTEM (dialek teks — provider ini tidak mendukung function calling native): pakai format teks berikut untuk memanggil tool, BUKAN function calling. Instruksi 'function calling native' di pesan sebelumnya TIDAK berlaku.\n" + AgentPrompt.toolCatalogText(this))
                 )
                 val text = callTextVc5b(retryMessages, false)
+                if (tokenVc334 != turnTokenVc334) return@Thread
                 turnThinking = ""
                 endStreamBubble()
                 runOnUiThread { statusTv.text = "Models API: AKTIF — asisten siap." }
                 handleAgentResponse(text)
             } catch (e2: Exception) {
+                // vc334 R1 (A1/B2): batal di tengah retry teks = akhir-stop.
+                if (e2 is UserCancelledException) { endTurnStopped(genVc334 = genVc334); return@Thread }
                 val err2 = RedactSecrets.redact(e2.message ?: e2.toString())
                 endStreamBubble()
                 if (!tryOfflineFallback(err2, "Models API")) addBubble("⚠️ $err2", false, turn = true)
+                endTurnErrorVc334(genVc334, "error-jaringan")
             }
         }.start()
         return true
@@ -9801,6 +9935,10 @@ class MainActivity : Activity() {
      *  format teks hasil tool (§2.5.3); 400 menyebut tools → dialek teks
      *  (§2.5.1b + §8.2-3). */
     private fun continueOpenaiVc5b(toolMsgs: List<ChatMessage>, instruction: String) {
+        // vc334 R1: generasi giliran saat lanjutan ini dimulai.
+        val genVc334 = turnGenerationVc334
+        // vc334 R1: token giliran saat lanjutan ini dimulai — hasil telat dibuang.
+        val tokenVc334 = turnTokenVc334
         Thread {
             try {
                 val msgs = ArrayList(openaiTurnMessagesVc5b)
@@ -9816,12 +9954,16 @@ class MainActivity : Activity() {
                     .put("function", JSONObject().put("name", forcedToolVc282)) else null
                 beginStreamBubble()
                 val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, ToolRegistry.ALL, toolChoiceVc5b)
+                if (tokenVc334 != turnTokenVc334) return@Thread
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.addAll(msgs)
                 turnThinking = result.thinking
                 endStreamBubble()
                 handleAgentResponse(result)
             } catch (e: Exception) {
+                // vc334 R1 (A1/B2): user-cancel = akhir-stop, tanpa
+                // fallback role-teks / retry teks sesudahnya.
+                if (e is UserCancelledException) { endTurnStopped(genVc334 = genVc334); return@Thread }
                 val err = RedactSecrets.redact(e.message ?: e.toString())
                 // §2.5.3: 400 menyebut role/tool → SEKALI format teks.
                 if (!openaiRoleFallbackArmedVc5b && toolMsgs.isNotEmpty() && isRoleToolErrorVc5b(err)) {
@@ -9839,6 +9981,7 @@ class MainActivity : Activity() {
                 if (retryTextFallbackVc5b(err)) return@Thread
                 endStreamBubble()
                 if (!tryOfflineFallback(err, "Models API")) addBubble("⚠️ $err", false, turn = true)
+                endTurnErrorVc334(genVc334, "error-jaringan")
             }
         }.start()
     }
@@ -9847,6 +9990,10 @@ class MainActivity : Activity() {
      *  menolak role:tool). tools tetap dikirim (model boleh lanjut
      *  native); hanya HASIL yang berbentuk pesan user teks. */
     private fun continueOpenaiTextResultsVc5b(textMsgs: List<ChatMessage>, instruction: String) {
+        // vc334 R1: generasi giliran saat lanjutan ini dimulai.
+        val genVc334 = turnGenerationVc334
+        // vc334 R1: token giliran saat lanjutan ini dimulai — hasil telat dibuang.
+        val tokenVc334 = turnTokenVc334
         Thread {
             try {
                 val msgs = ArrayList(openaiTurnMessagesVc5b)
@@ -9856,16 +10003,20 @@ class MainActivity : Activity() {
                 if (instrVc5b.isNotBlank()) msgs.add(ChatMessage("user", instrVc5b))
                 beginStreamBubble()
                 val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, ToolRegistry.ALL, null)
+                if (tokenVc334 != turnTokenVc334) return@Thread
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.addAll(msgs)
                 turnThinking = result.thinking
                 endStreamBubble()
                 handleAgentResponse(result)
             } catch (e: Exception) {
+                // vc334 R1 (A1/B2): user-cancel = akhir-stop.
+                if (e is UserCancelledException) { endTurnStopped(genVc334 = genVc334); return@Thread }
                 val err = RedactSecrets.redact(e.message ?: e.toString())
                 if (retryTextFallbackVc5b(err)) return@Thread
                 endStreamBubble()
                 if (!tryOfflineFallback(err, "Models API")) addBubble("⚠️ $err", false, turn = true)
+                endTurnErrorVc334(genVc334, "error-jaringan")
             }
         }.start()
     }
@@ -9953,6 +10104,11 @@ class MainActivity : Activity() {
      *    giliran (agentSteps naik di proceedTool/recordBatchOutcomeVc273
      *    seperti biasa — tidak ada penghitung baru). */
     private fun handleAgentResponse(resp: ChatResult) {
+        // vc334 R1: hasil model yang tiba sesudah stop diminta dibuang —
+        // tanpa eksekusi tool, tanpa bubble, tanpa dialog. (Jalur utama
+        // sudah dijaga token di thread pemanggil; ini jaring pengaman
+        // untuk pemanggil langsung.)
+        if (stopRequestedVc306) { endTurnStopped(); return }
         // Giliran internal (ekstraksi fakta): request dikirim HANYA tools
         // remember_fact/learn_rule + auto (keputusan koordinator merge).
         // Tool call native di sini diubah jadi proposal batch (sama seperti
@@ -10079,6 +10235,9 @@ class MainActivity : Activity() {
     }
 
     private fun handleAgentResponse(respRaw: String) {
+        // vc334 R1: hasil model yang tiba sesudah stop diminta dibuang —
+        // tanpa eksekusi tool, tanpa bubble, tanpa dialog.
+        if (stopRequestedVc306) { endTurnStopped(); return }
         val resp = AgentPrompt.stripSafetyTags(respRaw)
         var (visible, obj) = extractTool(resp)
         // vc271 O1: tool call rusak yang berhasil diperbaiki parser tetap
@@ -10467,6 +10626,9 @@ class MainActivity : Activity() {
     // (parkir ditangani pemanggil proceedTool), TAPI callback float tetap
     // dijaga: float bisa diketuk SESUDAH user pindah sesi.
     private fun offerExtendStepsVc304() {
+        // vc334 R1: generasi giliran saat tawaran ini dibuat — cabang
+        // tolak yang diketuk belakangan tidak boleh menutup giliran baru.
+        val genVc334 = turnGenerationVc334
         runOnUiThread {
             var floatHandledS = false
             if (!activityResumed) {
@@ -10496,7 +10658,8 @@ class MainActivity : Activity() {
                         } else {
                             pendingTool = null
                             addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user dari popup melayang). Hasil sementara ada di kartu-kartu tool di atas.", false, turn = true)
-                            TurnMetrics.finish(this, "anggaran-langkah")
+                            // vc334 R1 (B2): tolak +10 menutup giliran.
+                            endTurnErrorVc334(genVc334, "anggaran-langkah")
                         }
                     },
                     onOpenApp = {})
@@ -10505,7 +10668,8 @@ class MainActivity : Activity() {
                 } else {
                     pendingTool = null
                     addBubble("⛔ Dihentikan: batas $stepBudget langkah (app tidak di depan). Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true) // vc232 S5
-                    TurnMetrics.finish(this, "anggaran-langkah")
+                    // vc334 R1 (B2): float gagal tampil = tolak → tutup giliran.
+                    endTurnErrorVc334(genVc334, "anggaran-langkah")
                     floatHandledS = true
                 }
             }
@@ -10526,7 +10690,8 @@ class MainActivity : Activity() {
                     extendDialogVc304 = null
                     pendingTool = null
                     addBubble("⛔ Dihentikan: batas $stepBudget langkah (pilihan user). Hasil sementara ada di kartu-kartu tool di atas.", false, turn = true)
-                    TurnMetrics.finish(this, "anggaran-langkah")
+                    // vc334 R1 (B2): tolak +10 menutup giliran.
+                    endTurnErrorVc334(genVc334, "anggaran-langkah")
                 }
                 .show()
             }
@@ -10534,6 +10699,10 @@ class MainActivity : Activity() {
     }
 
     private fun proceedTool(tool: String, args: JSONObject, counted: Boolean, callId: String = "") {
+        // vc334 R1 (A2): state stop = gerbang PALING ATAS — tool apa pun
+        // ditolak tanpa eksekusi selama stop diminta, tanpa bertanya ke
+        // model. State TIDAK di-clear di sini (reset hanya di endUserTurn).
+        if (stopRequestedVc306) { endTurnStopped(); return }
         // v4.48.3: pengunci giliran StuckDetector — detektor bukan lagi
         // sekadar tempelan teks. Begitu kunci aktif, panggilan tool
         // berikutnya di giliran ini DITOLAK tanpa dieksekusi dan tanpa
@@ -10626,7 +10795,9 @@ class MainActivity : Activity() {
                 } else {
                     pendingTool = null
                     addBubble("⛔ Dihentikan: batas $stepBudget langkah tool per perintah tercapai dan app tidak di depan. Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true)
-                    TurnMetrics.finish(this, "anggaran-langkah")
+                    // vc334 R1 (B2): cap-stop terminal menutup giliran
+                    // (endUserTurn menutup TurnMetrics sendiri).
+                    endTurnErrorVc334(turnGenerationVc334, "anggaran-langkah")
                 }
                 return
             }
@@ -11000,6 +11171,10 @@ class MainActivity : Activity() {
 
     /** Akhir giliran user: lepas gerbang, antrean otomatis dulu, lalu follow-up. */
     private fun endUserTurn() {
+        // vc334 R1: giliran ditutup dulu sebagai token — pekerjaan async
+        // yang masih berjalan (thread LLM/tool telat) melihat token 0 /
+        // berubah dan membuang hasilnya, bukan melanjutkan giliran mati.
+        turnTokenVc334 = 0
         TurnMetrics.finish(this, pendingEndReason ?: "final")
         pendingEndReason = null
         // vc304 B2: giliran berakhir -> keputusan yang diparkir (bila ada)
@@ -11013,6 +11188,11 @@ class MainActivity : Activity() {
         // Idempotent: bila clearTurnCheckpoint sudah flush lebih dulu,
         // panggilan ini no-op.
         flushTurnWork(currentSessionId)
+        // vc334 R1 (B3): SEMUA pintu keluar giliran membersihkan
+        // checkpoint — giliran yang berakhir (normal/gagal/dihentikan)
+        // tidak boleh di-resume. Idempotent (clearTurnCheckpoint flush
+        // dulu; bila sudah bersih, no-op).
+        clearTurnCheckpoint()
         // VC303-P2-14 (CX-9): tawaran lanjut hanya bila TIDAK ada giliran
         // antrean yang akan jalan (auto/follow-up) — dicek SEBELUM antrean
         // dikonsumsi, karena consumeAutoQueue jalan async via UI thread.
@@ -11022,6 +11202,7 @@ class MainActivity : Activity() {
         // vc306 Worker B: giliran selesai = stop hangus; composer kembali
         // ke state idle (hint asal, tombol mic, pill otomasi ke baris atas).
         stopRequestedVc306 = false
+        endTurnStoppedInFlightVc334 = false
         refreshComposerButtonsVc306()
         refreshLiveCard()
         refreshQueueChips()
@@ -11471,7 +11652,19 @@ class MainActivity : Activity() {
     // (execToolAndContinue) — baris aktivitas + bubble-nya di-gate ke sesi
     // pemilik. Jalur lampiran user (handleAttachment/fallback) memakai
     // default false: itu output UI sesi aktif, bukan output giliran.
+    // vc334 R1: lanjutan HANYA bila token giliran saat pekerjaan dimulai
+    // masih sama dengan token giliran berjalan — hasil async yang tiba
+    // sesudah giliran berakhir (stop) atau sesudah giliran baru dibuka
+    // dibuang, bukan dikirim ke model. Token 0 = idle (regen / lampiran
+    // di luar giliran) — lolos selama masih idle.
+    private fun sendContinuationIfTurnAlive(tokenVc334: Int, text: String, hasToolResult: Boolean = false) {
+        if (tokenVc334 != turnTokenVc334) return
+        sendContinuation(text, hasToolResult)
+    }
+
     private fun analyzePhotoAndContinue(args: JSONObject, turn: Boolean = false) {
+        // vc334 R1: token giliran saat analisa ini dimulai.
+        val tokenPhotoVc334 = turnTokenVc334
         // F5c §5.7 NO_PROVIDER: vision ditolak dengan pesan §5.7 (bukan
         // §4.4 model-unsupported) + buka dialog 73.
         if (isNoProviderState()) {
@@ -11486,7 +11679,7 @@ class MainActivity : Activity() {
         // Argumen app-built selalu valid, jadi perilaku lama tak berubah.
         val validationVc282 = Tools.validateArgs(this, "analyze_photo", args)
         if (validationVc282 != null) {
-            runOnUiThread { sendContinuation("Hasil tool analyze_photo DITOLAK SISTEM:\n$validationVc282\n\nPERINTAH SISTEM — keluarkan ULANG blok json tool 'analyze_photo' dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas.") }
+            runOnUiThread { sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo DITOLAK SISTEM:\n$validationVc282\n\nPERINTAH SISTEM — keluarkan ULANG blok json tool 'analyze_photo' dengan argumen yang sudah DIPERBAIKI sesuai pesan di atas.") }
             return
         }
         val path = args.optString("path")
@@ -11532,7 +11725,7 @@ class MainActivity : Activity() {
                             // (formatLine memakai path bila ada).
                             val ridPhotoVc303 = try { ResultStore.put(this@MainActivity, "analyze_photo", answer) } catch (e: Exception) { "" }
                             turnWork.add(WorkItem("analyze_photo", msPhotoVc254, true, answer.take(120), evidence = answer.take(600), args = args.toString().take(4000), resultId = ridPhotoVc303, totalChars = answer.length))
-                            sendContinuation("Hasil tool analyze_photo (via Models API vision):\n" + answer + "\n\nSampaikan hasil analisa ini ke user dan lanjutkan tugasmu.")
+                            sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo (via Models API vision):\n" + answer + "\n\nSampaikan hasil analisa ini ke user dan lanjutkan tugasmu.")
                         }
                     } catch (e: VisionUnsupportedException) {
                         runOnUiThread {
@@ -11549,7 +11742,7 @@ class MainActivity : Activity() {
                             photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — " + (e.message ?: "")
                             turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — " + (e.message ?: ""), args = args.toString().take(4000)))
                             try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — ${e.message}, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-                            sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                            sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
                         }
                     } catch (e: Exception) {
                         runOnUiThread {
@@ -11560,7 +11753,7 @@ class MainActivity : Activity() {
                             photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — " + (e.message ?: "")
                             turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — " + (e.message ?: ""), args = args.toString().take(4000)))
                             try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — ${e.message}, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-                            sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                            sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
                         }
                     }
                 } else {
@@ -11575,7 +11768,7 @@ class MainActivity : Activity() {
                         photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — $errLocal"
                         turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — $errLocal", args = args.toString().take(4000)))
                         try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — $errLocal, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-                        sendContinuation("Hasil tool analyze_photo: GAGAL — $errLocal. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                        sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo: GAGAL — $errLocal. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
                     }
                 }
             } catch (e: Exception) {
@@ -11587,7 +11780,7 @@ class MainActivity : Activity() {
                     photoRowVc254.detail = "Argumen: " + ActivityTitle.shortArgs("analyze_photo", args) + "\nHasil: GAGAL — " + (e.message ?: "")
                     turnWork.add(WorkItem("analyze_photo", msPhotoVc254, false, "Foto gagal dianalisis", evidence = "GAGAL — " + (e.message ?: ""), args = args.toString().take(4000)))
                     try { GraphDb.get(applicationContext).getOrCreateEpisode(currentSessionId.toString(), "observasi", "analyze_photo GAGAL — ${e.message}, tidak teramati", "analyze_photo") } catch (e2: Exception) {}
-                    sendContinuation("Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
+                    sendContinuationIfTurnAlive(tokenPhotoVc334, "Hasil tool analyze_photo: GAGAL — ${e.message}. Beri tahu user: tulis persis 'foto belum berhasil dianalisis', jangan mendeskripsikan tebakan.")
                 }
             }
         }.start()
@@ -11922,15 +12115,14 @@ class MainActivity : Activity() {
     //   kegagalan dilaporkan di blok gabungan dan model yang memutuskan
     //   strategi berikutnya — retry di dalam batch akan mengacaukan urutan.
     private fun execBatchAndContinueVc273(calls: List<JSONObject>) {
-        // vc306 Worker B: stop dari tombol ■ composer (lihat
-        // execToolAndContinue) — batch tidak jalan bila stop diminta.
+        // vc334 R1: token giliran saat batch ini dimulai — hasil batch
+        // yang selesai sesudah giliran berakhir (stop) dibuang di bawah.
+        val tokenVc334 = turnTokenVc334
+        // vc334 R1 (A2): stop = STATE giliran, bukan flag sekali-pakai —
+        // TIDAK di-clear di sini; batch tidak jalan bila stop diminta,
+        // langsung ke jalur akhir-stop tunggal.
         if (stopRequestedVc306) {
-            stopRequestedVc306 = false
-            runOnUiThread { addMsg("⛔ Dihentikan: dihentikan user dari composer", "meta", turn = true) }
-            pendingEndReason = "user-stop"
-            turnStoppedReason = "dihentikan user dari composer"
-            sendContinuation("⛔ STOP DIMINTA oleh user dari composer. HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh user.")
-            refreshComposerButtonsVc306()
+            endTurnStopped()
             return
         }
         // F1.0: kill switch — sama seperti execToolAndContinue.
@@ -12052,6 +12244,10 @@ class MainActivity : Activity() {
             runOnUiThread {
                 try { rowBatchVc273.status = "selesai" } catch (e: Exception) {}
                 renderPendingAskVc229()
+                // vc334 R1: batch selesai sesudah giliran berakhir (user
+                // menekan ■ di tengah batch) — hasilnya dibuang, tanpa
+                // continuation ke model.
+                if (tokenVc334 != turnTokenVc334) return@runOnUiThread
                 if (unknownStop) {
                     val tried = invalidNames.joinToString(", ")
                     pendingEndReason = "berhenti-invalid-ke-3"
@@ -12327,17 +12523,16 @@ class MainActivity : Activity() {
     }
 
     private fun execToolAndContinue(tool: String, args: JSONObject, callId: String = "") {
-        // vc306 Worker B: stop dari tombol ■ composer — pola sama seperti
-        // kill switch F1 di bawah: langkah berikutnya ditolak, model diminta
-        // menutup giliran. Berlakunya di batas tool-call berikut (panggilan
-        // jaringan yang sedang berjalan tidak bisa dibatalkan dari sini).
+        // vc334 R1: token giliran saat tool ini dimulai — hasil tool yang
+        // selesai sesudah giliran berakhir (stop) dibuang di bawah,
+        // sesuai keputusan R1 (tool dibiarkan selesai, hasilnya dibuang).
+        val tokenVc334 = turnTokenVc334
+        // vc334 R1 (A2): stop = STATE giliran — TIDAK di-clear di sini
+        // (reset hanya di endUserTurn); langkah berikutnya ditolak dan
+        // giliran ditutup lewat jalur akhir-stop tunggal, TANPA
+        // continuation "STOP DIMINTA" ke model.
         if (stopRequestedVc306) {
-            stopRequestedVc306 = false
-            runOnUiThread { addMsg("⛔ Dihentikan: dihentikan user dari composer", "meta", turn = true) }
-            pendingEndReason = "user-stop"
-            turnStoppedReason = "dihentikan user dari composer"
-            sendContinuation("⛔ STOP DIMINTA oleh user dari composer. HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh user.")
-            refreshComposerButtonsVc306()
+            endTurnStopped()
             return
         }
         // F1.0: kill switch — langkah berikutnya ditolak, giliran berakhir.
@@ -12420,6 +12615,11 @@ class MainActivity : Activity() {
                 journalTrace(ActivityTitle.title(tool, args) + " — " + rowVc254.status)
                 // vc229 R-05(e): tool sudah dieksekusi -> sekarang render ask yang se-respons tadi.
                 renderPendingAskVc229()
+                // vc334 R1: tool selesai sesudah giliran berakhir (user
+                // menekan ■ saat tool berjalan) — hasilnya dibuang: tanpa
+                // continuation, tanpa endUserTurn susulan. Baris aktivitas
+                // + jejak di atas sudah diperbarui, itu saja yang tersisa.
+                if (tokenVc334 != turnTokenVc334) return@runOnUiThread
                 // v4.48.9.24 (vc190): tawaran jadikan room — HANYA dari chat 1-1.
                 // Jalur ini (proceedTool/handleAgentResponse) tidak dipakai grup,
                 // room, TeamRun, maupun BgBrain — mereka punya eksekutor sendiri.

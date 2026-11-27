@@ -273,8 +273,19 @@ object LlmEngineChat {
             Thread.currentThread().interrupt()
             false
         }
-        if (!done) throw RuntimeException("Provider '${provider.id}' timeout (${timeoutMs} ms) — tidak ada jawaban.")
+        if (!done) {
+            // vc334 R1 (A1): latch tak terbangun karena user membatalkan —
+            // itu BUKAN timeout provider; jangan lempar pesan menyesatkan.
+            if (OpenAiCompatClient.isChatCancelled()) throw UserCancelledException()
+            throw RuntimeException("Provider '${provider.id}' timeout (${timeoutMs} ms) — tidak ada jawaban.")
+        }
         errRef.get()?.let { rawErr ->
+            // vc334 R1 (A1): user-cancel diteruskan sebagai
+            // UserCancelledException — pemanggil masuk jalur akhir-stop,
+            // bukan bubble ⚠️ / fallback.
+            if (rawErr.startsWith(OpenAiCompatClient.USER_CANCELLED_MARKER)) {
+                throw UserCancelledException(rawErr)
+            }
             val clean = RedactSecrets.redact(rawErr)
             // §2.5 (Fase 5a): 400 penolakan tools dicatat di cfg_<id>,
             // bukan diam-diam — hanya bila request ini memang mengirim

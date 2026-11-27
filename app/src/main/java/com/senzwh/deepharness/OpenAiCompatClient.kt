@@ -108,7 +108,53 @@ class ModelsParseException(val kind: ModelsErrorKind, message: String) : Excepti
  *  dilewati (bukan JSON / tanpa choices[0]) + jumlah baris `data:` total. */
 data class SseParseOutcome(val result: ChatResult, val skippedLines: Int, val dataLines: Int)
 
+/** Dibatalkan user (tombol ■) — BUKAN error jaringan. Pemanggil WAJIB
+ *  membedakannya: tanpa retry/fallback non-stream, tanpa bubble ⚠️,
+ *  masuk jalur akhir-stop ([MainActivity.endTurnStopped]). */
+class UserCancelledException(message: String = "Dibatalkan user") : Exception(message)
+
 object OpenAiCompatClient {
+
+    /** Penanda onError untuk pembatalan user — dibawa sebagai String
+     *  karena chatMessages berbasis callback; [LlmEngineChat] mengubahnya
+     *  kembali menjadi [UserCancelledException]. */
+    const val USER_CANCELLED_MARKER = "USER_CANCELLED: dibatalkan user"
+
+    // vc334 R1 (A1/A4): handle pembatalan request chat yang sedang
+    // berjalan. SATU-SATUNYA klien LLM adalah HttpURLConnection (bukan
+    // OkHttp) — batal = flag + disconnect() + tutup InputStream.
+    // PROBE 27 Nov 2026 (/tmp/cancel-probe, Temurin JDK 21): disconnect()
+    // — bahkan tutup InputStream dari thread lain — TIDAK menginterupsi
+    // readLine() yang sedang blokir pada respons chunked; klien baru
+    // kembali saat server mengirim [DONE]/selesai (t=5154/5176 dari
+    // server tahan 5 dtk). Karena itu promptness R1 TIDAK bergantung
+    // pada interupsi socket: giliran ditutup segera di UI
+    // (MainActivity.requestStopTurnVc306 → endTurnStopped) dan hasil
+    // telat dibuang lewat token generasi; disconnect/close di sini
+    // adalah best-effort (efektif bila read sedang di antara baris /
+    // koneksi idle, dan mencegah fallback). Di Android, disconnect()
+    // HttpURLConnection (berbasis OkHttp) umumnya menginterupsi read
+    // lebih cepat — perilaku itu bonus, bukan tumpuan.
+    @Volatile var currentChatConn: HttpURLConnection? = null
+        private set
+    @Volatile private var currentChatStream: InputStream? = null
+    @Volatile private var cancelRequested = false
+
+    /** Minta batal request chat yang sedang berjalan (atau yang akan
+     *  dibaca berikutnya di parseSse): set flag + tutup stream + putus
+     *  socket. */
+    fun cancelCurrentChat() {
+        cancelRequested = true
+        try { currentChatStream?.close() } catch (e: Exception) {}
+        try { currentChatConn?.disconnect() } catch (e: Exception) {}
+    }
+
+    fun isChatCancelled(): Boolean = cancelRequested
+
+    /** Reset flag cancel (dipakai tes + awal tiap chatInternal). */
+    fun resetCancelFlag() {
+        cancelRequested = false
+    }
 
 
 
@@ -219,11 +265,22 @@ object OpenAiCompatClient {
             val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
                 toolChoice, stream = true, onPartial, onDeltaToolCall, timeoutMs = CHAT_READ_TIMEOUT_MS)
             onDone(result)
+        } catch (e: UserCancelledException) {
+            // vc334 R1 (A1): dibatalkan user — JANGAN fallback non-stream
+            // (itu akan menembak request penuh kedua) dan JANGAN bubble ⚠️.
+            onError(USER_CANCELLED_MARKER)
         } catch (e: NoFallbackException) {
             // Format tak dikenal / jawaban kosong: langsung onError, jangan
             // fallback buta ke non-stream (§0.3 butir 3, §0.4).
             onError(sanitize(e.message ?: "format respons tidak dikenal"))
         } catch (e: Exception) {
+            // vc334 R1 (A1): batal yang tiba lewat IOException sesudah
+            // disconnect() (bukan lewat parseSse) tetap user-cancel —
+            // jangan fallback non-stream.
+            if (cancelRequested) {
+                onError(USER_CANCELLED_MARKER)
+                return
+            }
             // Fallback non-streaming sekali (stream gagal karena jaringan/HTTP).
             try {
                 val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
@@ -250,7 +307,11 @@ object OpenAiCompatClient {
                              onDeltaToolCall: (NativeToolCall) -> Unit,
                              timeoutMs: Int): ChatResult {
         val body = buildChatBody(model, messages, tools, thinking, toolChoice, stream)
+        // vc334 R1 (A1): tiap panggilan mulai dengan flag cancel bersih;
+        // conn disimpan agar cancelCurrentChat() bisa disconnect().
+        cancelRequested = false
         val conn = URL(endpoint).openConnection() as HttpURLConnection
+        currentChatConn = conn
         conn.requestMethod = "POST"
         conn.connectTimeout = CHAT_CONNECT_TIMEOUT_MS
         conn.readTimeout = timeoutMs
@@ -266,22 +327,36 @@ object OpenAiCompatClient {
                 val raw = readLimited(if (code in 200..299) conn.inputStream else conn.errorStream, 8192)
                 throw HttpStatusException(code, httpErrorMessage(code, raw))
             }
+            if (cancelRequested) throw UserCancelledException()
             if (stream) {
                 // Streaming beneran: baca baris demi baris, panggil callback
                 // per baris data: — BUKAN readText() dulu (§0.3 butir 3).
-                conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                val stream = conn.inputStream
+                currentChatStream = stream
+                stream.bufferedReader(Charsets.UTF_8).use { reader ->
                     val outcome = parseSse(reader, onPartial, onDeltaToolCall)
                     val r = outcome.result
+                    if (cancelRequested) throw UserCancelledException()
                     if (r.content.isBlank() && r.thinking.isBlank() && r.toolCalls.isEmpty()) {
                         throw emptyAnswerError(r.finishReason, outcome.skippedLines, outcome.dataLines)
                     }
                     r
                 }
             } else {
-                val raw = readLimited(conn.inputStream, 1 shl 20)
+                val stream = conn.inputStream
+                currentChatStream = stream
+                val raw = readLimited(stream, 1 shl 20)
+                if (cancelRequested) throw UserCancelledException()
                 parseNonStream(raw, model)
             }
+        } catch (e: IOException) {
+            // vc334 R1 (A1): IOException sesudah disconnect() = batal user,
+            // bukan error jaringan — angkat sebagai UserCancelledException
+            // supaya ask() dan pemanggil lain tidak salah mengira timeout.
+            if (cancelRequested) throw UserCancelledException() else throw e
         } finally {
+            currentChatStream = null
+            if (currentChatConn === conn) currentChatConn = null
             try { conn.disconnect() } catch (e: Exception) {}
         }
     }
@@ -422,6 +497,9 @@ object OpenAiCompatClient {
             val trimmed = line!!.trim()
             if (!trimmed.startsWith("data:")) continue
             dataLines++
+            // vc334 R1 (A4): cek kooperatif per baris data: — abort tanpa
+            // menunggu baris berikut / read-timeout, walau koneksi hidup.
+            if (cancelRequested) throw UserCancelledException()
             val payload = trimmed.substring(5).trim()
             if (payload.isBlank()) continue
             if (payload == "[DONE]") break
