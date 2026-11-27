@@ -111,7 +111,11 @@ object TeamRun {
             else -> "Kamu berperan sebagai Asisten — peneliti & penulis utama: kerjakan tugas dengan rapi, jelas, dan terstruktur."
         }
         val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
-        sb.append(memoryBlockForTask(app, lane.task))
+        // vc334 R4 (G-2): blok memori dihitung SEKALI di awal lane —
+        // dulu memoryBlockForTask (4+ query MemoryDb) dipanggil ulang
+        // tiap langkah (maks 20 langkah × 4 lane).
+        val laneMemoryVc334 = memoryBlockForTask(app, lane.task)
+        sb.append(laneMemoryVc334)
         sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
         sb.append("\n\n[MODE TIM — ruang ").append(lane.agentName).append("] ").append(role)
         sb.append("\nKamu mengerjakan SATU sub-tugas dari tujuan tim yang lebih besar. Fokus hanya pada sub-tugasmu; agen lain mengerjakan bagian lain secara paralel.")
@@ -208,7 +212,7 @@ object TeamRun {
             if (multiTeamVc249.size > 1 && BatchToolVc274.useBatch(multiTeamVc249)) {
                 if (visible.isNotBlank()) transcript.append("\nAsisten: ").append(visible.take(1000))
                 if (execBatchTeamVc274(multiTeamVc249)) break
-                prompt = rebuildPrompt(app, lane, transcript)
+                prompt = continuationPromptVc334(lane, role, transcript)
                 continue
             }
             if (obj == null) {
@@ -266,21 +270,24 @@ object TeamRun {
                     break
                 }
             }
-            prompt = rebuildPrompt(app, lane, transcript)
+            prompt = continuationPromptVc334(lane, role, transcript)
         }
         var outTeamVc249 = finalText ?: "Ruang ${lane.agentName}: tanpa hasil."
         return outTeamVc249 to laneRidsVc303
     }
 
-    private fun rebuildPrompt(app: Context, lane: Lane, transcript: StringBuilder): String {
-        val sb = StringBuilder(AgentPrompt.buildSystemPrompt(app))
-        sb.append(memoryBlockForTask(app, lane.task))
-        sb.append("\n\n").append(AgentPrompt.CTX_LABEL_RULES)
-        sb.append("\n\n[MODE TIM — ruang ").append(lane.agentName).append("] Catatan giliran sejauh ini:\n")
-        sb.append(transcript)
-        sb.append("\n\nLanjutkan sub-tugasmu: bila butuh tool lain keluarkan blok json lagi, bila selesai jawab final tanpa blok json.")
-        return sb.toString()
-    }
+    /**
+     * vc334 R4 (G-2): prompt LANJUTAN lane = DELTA (pola grup vc321 /
+     * 1-1 vc316) — peran + sub-tugas verbatim + ekor transkrip (hasil
+     * tool terakhir, maks 4000 char) + instruksi lanjut. Prompt PENUH
+     * (system prompt + blok memori + CTX rules) hanya dikirim sekali
+     * di awal lane. Dulu rebuildPrompt membangun ulang semuanya tiap
+     * langkah (system prompt + 4+ query MemoryDb + transkrip penuh).
+     */
+    private fun continuationPromptVc334(lane: Lane, role: String, transcript: StringBuilder): String =
+        Vc334R4Pure.teamLaneDeltaPrompt(
+            lane.agentName, role, lane.task, transcript.toString().takeLast(4000)
+        )
 
     private fun verify(app: Context, goal: String, lanes: List<Lane>, results: List<String>): String {
         // F3c (B9, K1): verifikasi silang via helper Models API (kind TEAM).

@@ -4511,6 +4511,28 @@ class MainActivity : Activity() {
             else -> "application/octet-stream"
         }
     }
+    /** vc334 R4 (S-1): baca lampiran dari URI dengan cap 12 MB —
+     *  ukuran dicek DULU bila diketahui (OpenableColumns.SIZE), bila
+     *  tidak diketahui dibaca streaming ber-cap
+     *  (Vc334R4Pure.readCappedBytes). File besar TIDAK PERNAH dibaca
+     *  utuh ke memori (dulu: readBytes() dulu, cek sesudahnya —
+     *  OOM vector untuk file besar dari picker). */
+    private fun readAttachBytesCappedVc334(uri: android.net.Uri): ByteArray {
+        val max = Vc334R4Pure.MAX_ATTACH_BYTES
+        try {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val sz = c.getLong(0)
+                    if (sz > max) throw Exception("File terlalu besar (${sz / 1_000_000} MB > 12 MB).")
+                }
+            }
+        } catch (e: Exception) {
+            if ((e.message ?: "").contains("terlalu besar")) throw e
+            // Ukuran tak diketahui / query gagal — lanjut ke baca ber-cap.
+        }
+        val stream = contentResolver.openInputStream(uri) ?: throw Exception("tidak terbaca")
+        return stream.use { Vc334R4Pure.readCappedBytes(it, max) }
+    }
     private fun sendPendingAttachesVc212(contextText: String, attaches: List<PendingAttachVc212>) {
         showTab("Chat")
         addBubble("📎 Mengirim " + attaches.size + " lampiran dengan konteks: " + contextText.take(200), true)
@@ -4522,8 +4544,7 @@ class MainActivity : Activity() {
                     val failedRead = ArrayList<String>()
                     for (pa in attaches) {
                         try {
-                            val bytes = contentResolver.openInputStream(pa.uri)?.readBytes() ?: throw Exception("tidak terbaca")
-                            if (bytes.size > 12_000_000) throw Exception("lebih dari 12 MB")
+                            val bytes = readAttachBytesCappedVc334(pa.uri)
                             files.add(Triple(bytes, pa.name, pa.mime.ifBlank { mimeForNameVc212(pa.name) }))
                         } catch (e: Exception) { failedRead.add(pa.name + " (" + (e.message ?: "gagal baca") + ")") }
                     }
@@ -4543,8 +4564,20 @@ class MainActivity : Activity() {
                                 sendContinuation("Hasil lampiran multi-file (jalur lampiran: vision Models API):\n" + answer + failNote + "\n\nSampaikan hasil ini ke user dan lanjutkan tugasmu.")
                             }
                         } catch (e: Exception) {
-                            runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: ${e.message} — fallback per berkas dengan konteks yang sama.", false) }
-                            for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e2: Exception) {} }
+                            // vc334 R4 (V-1): bedakan penyebab gagal.
+                            // Provider-level (model unsupported / auth /
+                            // kuota / jaringan) = SATU akar masalah untuk
+                            // semua berkas — fallback per-berkas hanya
+                            // mengulang kegagalan yang sama (N× bubble +
+                            // N× biaya). Satu bubble error, stop.
+                            // Gagal per-berkas (baca/render/dokumen) =
+                            // fallback per-berkas seperti dulu.
+                            if (Vc334R4Pure.isProviderLevelFailure(e)) {
+                                runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: ${e.message} — penyebab di tingkat provider/model, tidak dicoba ulang per berkas.", false) }
+                            } else {
+                                runOnUiThread { addBubble("⚠️ Lampiran multi-file via API gagal: ${e.message} — fallback per berkas dengan konteks yang sama.", false) }
+                                for (pa in attaches) { try { handleAttachment(pa.uri, contextText) } catch (e2: Exception) {} }
+                            }
                         }
                     } else {
                     // Fase 6 K1: engine lokal — vision Models API tidak
@@ -4561,22 +4594,22 @@ class MainActivity : Activity() {
     private fun fallbackDocVc212(cacheF: File, name: String, ext: String, question: String) {
         try {
             if (ext == "pdf") {
-                val pfd = android.os.ParcelFileDescriptor.open(cacheF, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-                val renderer = android.graphics.pdf.PdfRenderer(pfd)
-                val page = renderer.openPage(0)
-                val bmp = android.graphics.Bitmap.createBitmap(page.width, page.height, android.graphics.Bitmap.Config.ARGB_8888)
-                page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                page.close(); renderer.close(); pfd.close()
-                val jpg = File(cacheDir, "pdf-page1-" + System.currentTimeMillis() + ".jpg")
-                java.io.FileOutputStream(jpg).use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
+                // vc334 R4 (V-2/S-3): SATU jalur render bersama
+                // (LlmEngineChat.renderPdfFirstPageToFile) — render
+                // langsung ≤1280 px, bitmap di-recycle + resource
+                // di-finally di sana. Duplikasi render resolusi penuh
+                // di sini dihapus.
+                val (jpg, _) = LlmEngineChat.renderPdfFirstPageToFile(this, cacheF)
                 runOnUiThread { showTab("Chat"); addBubble("📄 PDF '" + name + "' — fallback: menganalisa halaman 1 lewat vision…", false); analyzePhotoAndContinue(JSONObject().put("path", jpg.absolutePath).put("question", (question.ifBlank { "Ringkas isi halaman PDF ini." }))) }
             } else if (ext == "docx") {
                 val textDoc = try {
-                    val zf = java.util.zip.ZipFile(cacheF)
-                    val entry = zf.getEntry("word/document.xml") ?: throw Exception("document.xml tidak ditemukan")
-                    val xml = zf.getInputStream(entry).bufferedReader().readText()
-                    zf.close()
-                    xml.replace(Regex("<w:p[ >]"), "\n").replace(Regex("<[^>]+>"), "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").trim().let { tdVc230 -> if (tdVc230.length > 6000) tdVc230.take(30000) + "…(dipotong, sisa " + (tdVc230.length - 30000) + " char; jalur lampiran: fallback teks 30000 char — bukan upload penuh)…" else tdVc230 }
+                    // vc334 R4 (S-3): ZipFile ditutup di finally (use) —
+                    // dulu zf.close() hanya di jalur sukses.
+                    java.util.zip.ZipFile(cacheF).use { zf ->
+                        val entry = zf.getEntry("word/document.xml") ?: throw Exception("document.xml tidak ditemukan")
+                        val xml = zf.getInputStream(entry).bufferedReader().readText()
+                        xml.replace(Regex("<w:p[ >]"), "\n").replace(Regex("<[^>]+>"), "").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").trim().let { tdVc230 -> if (tdVc230.length > 6000) tdVc230.take(30000) + "…(dipotong, sisa " + (tdVc230.length - 30000) + " char; jalur lampiran: fallback teks 30000 char — bukan upload penuh)…" else tdVc230 }
+                    }
                 } catch (e: Exception) { "" }
                 runOnUiThread { showTab("Chat"); if (textDoc.isNotBlank()) onUserMessage("Baca file terlampir '" + name + "' ini (ekstrak teks fallback; jalur lampiran: fallback teks 30000 char — bukan upload penuh). " + (if (question.isNotBlank()) "Pertanyaanku: $question" else "Ringkas isinya dan tunjukkan hal penting di dalamnya.") + "\n\nISI FILE:\n" + textDoc) else addBubble("📎 File '" + name + "' gagal diparsing server dan ekstrak teks fallback juga gagal.", false) }
             } else {
@@ -8549,8 +8582,7 @@ class MainActivity : Activity() {
                 cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                     if (c.moveToFirst()) name = c.getString(0) ?: name
                 }
-                val bytes = cr.openInputStream(uri)?.readBytes() ?: throw Exception("File tidak terbaca.")
-                if (bytes.size > 12_000_000) throw Exception("File terlalu besar (${bytes.size / 1_000_000} MB > 12 MB).")
+                val bytes = readAttachBytesCappedVc334(uri)
                 val ext = name.substringAfterLast('.', "").lowercase()
                 val cacheF = File(cacheDir, "attach-" + System.currentTimeMillis() + "." + ext.ifBlank { "bin" })
                 cacheF.writeBytes(bytes)
@@ -8582,15 +8614,11 @@ class MainActivity : Activity() {
                         }
                     }
                     mime == "application/pdf" || ext == "pdf" -> {
-                        val pfd = android.os.ParcelFileDescriptor.open(cacheF, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-                        val renderer = android.graphics.pdf.PdfRenderer(pfd)
-                        val pageCount = renderer.pageCount
-                        val page = renderer.openPage(0)
-                        val bmp = android.graphics.Bitmap.createBitmap(page.width, page.height, android.graphics.Bitmap.Config.ARGB_8888)
-                        page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        page.close(); renderer.close(); pfd.close()
-                        val jpg = File(cacheDir, "pdf-page1-" + System.currentTimeMillis() + ".jpg")
-                        java.io.FileOutputStream(jpg).use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it) }
+                        // vc334 R4 (V-2/S-3): jalur render bersama (cabang
+                        // ini tak terjangkau — PDF sudah ditangkap cabang
+                        // dokumen di atas — tapi bila rute berubah, render
+                        // tetap lewat satu jalur ≤1280 px).
+                        val (jpg, pageCount) = LlmEngineChat.renderPdfFirstPageToFile(this@MainActivity, cacheF)
                         runOnUiThread {
                             showTab("Chat")
                             addBubble("📄 PDF '$name' ($pageCount halaman) — menganalisa halaman 1 lewat vision…", false)
@@ -11850,7 +11878,9 @@ class MainActivity : Activity() {
                 val bos = java.io.ByteArrayOutputStream()
                 small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
                 val jpegBytes = bos.toByteArray()
-                val b64 = android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP)
+                // vc334 R4 (V-3): baris b64 dihapus — base64 dihitung
+                // tapi tidak pernah dipakai (askWithFiles meng-encode
+                // ulang sendiri di prepareVisionImage).
                 // v4.10.3: foto lewat vision Models API (perintah user
                 // 2026-10-23 10:02) — berkas dikirim sebagai lampiran
                 // gambar ke provider. Engine lokal = gagal jujur (Fase 6
@@ -15844,11 +15874,11 @@ internal fun showApiTokenDialog() {
                                 LlmEngineChat.chatAsync(this, promptVerifyVcF2b, LlmCallKind.REVIEWER,
                                     onDone = { answer -> runOnUiThread {
                                         verifying.remove(i)
-                                        val st = when {
-                                            answer.contains("TERVERIFIKASI") -> "TERVERIFIKASI"
-                                            answer.contains("GAGAL") -> "GAGAL"
-                                            else -> "SEBAGIAN"
-                                        }
+                                        // vc334 R4 (R-1): parsing STATUS
+                                        // pakai regex ^STATUS: — contains()
+                                        // salah mencap "belum TERVERIFIKASI"
+                                        // jadi TERVERIFIKASI.
+                                        val st = Vc334R4Pure.parseReviewStatus(answer)
                                         val note = answer.substringAfter("BUKTI:", "").trim().take(200).ifBlank { answer.take(200) }
                                         if (st == "GAGAL") {
                                             Automation.setSessionTaskVerifyOnly(this, room, curSess, i, st, note)

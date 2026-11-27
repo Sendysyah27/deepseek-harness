@@ -376,6 +376,15 @@ object LlmEngineChat {
             }
         }
 
+        // vc334 R4 (V-4): hitung calon gambar DULU — tolak sebelum satu
+        // pun PDF dirender (dulu: semua PDF dirender dulu, baru dicek
+        // >4 — 5 PDF = 5× render mahal sebelum ditolak).
+        if (Vc334R4Pure.prospectiveImageCount(files) > VisionFiles.MAX_IMAGES) {
+            throw IllegalArgumentException(
+                "Maks ${VisionFiles.MAX_IMAGES} gambar per panggilan — kirim sisanya terpisah."
+            )
+        }
+
         // c. Pilah file.
         val docCap = provider.maxPromptChars ?: TurnMetrics.DEFAULT_CAP
         val docBlocks = StringBuilder()
@@ -491,23 +500,26 @@ object LlmEngineChat {
     private class RenderedPdfPage(val jpegBytes: ByteArray, val pageCount: Int)
 
     /**
-     * Render halaman 1 PDF → JPEG (pola MainActivity :4590/:8202:
-     * PdfRenderer + RENDER_MODE_FOR_DISPLAY, JPEG q85, file sementara
-     * di ctx.cacheDir). Gagal render → RuntimeException jujur.
+     * Render halaman 1 file PDF → JPEG (SATU jalur render, dipakai
+     * askWithFiles DAN fallbackDocVc212 — vc334 R4 V-2/S-3).
+     * Render LANGSUNG pada resolusi target ≤1280 px (Vc334R4Pure.
+     * pdfTargetSize) — dulu bitmap dibuat pada ukuran halaman asli
+     * (A4 300 dpi ≈ 35 MB ARGB_8888) baru di-downscale belakangan.
+     * Bitmap di-recycle + semua resource ditutup di finally.
+     * Gagal render → RuntimeException jujur.
      */
-    private fun renderPdfFirstPage(ctx: Context, file: VisionFile): RenderedPdfPage {
-        val tmp = File(ctx.cacheDir, "vision-pdf-" + System.currentTimeMillis() + ".pdf")
+    private fun renderPdfFileFirstPage(pdfFile: File, fileName: String): RenderedPdfPage {
         var pfd: ParcelFileDescriptor? = null
         var renderer: PdfRenderer? = null
         try {
-            tmp.writeBytes(file.bytes)
-            pfd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY)
+            pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
             renderer = PdfRenderer(pfd)
             val pageCount = renderer.pageCount
             if (pageCount <= 0) throw IllegalStateException("PDF tanpa halaman")
             val page = renderer.openPage(0)
+            val (targetW, targetH) = Vc334R4Pure.pdfTargetSize(page.width, page.height)
             val bmp = Bitmap.createBitmap(
-                page.width, page.height, Bitmap.Config.ARGB_8888
+                targetW, targetH, Bitmap.Config.ARGB_8888
             )
             try {
                 page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
@@ -520,13 +532,47 @@ object LlmEngineChat {
             }
         } catch (e: Exception) {
             throw RuntimeException(
-                "PDF '${file.fileName}' gagal dirender (halaman 1): ${e.message}", e
+                "PDF '$fileName' gagal dirender (halaman 1): ${e.message}", e
             )
         } finally {
             try { renderer?.close() } catch (ignored: Exception) { }
             try { pfd?.close() } catch (ignored: Exception) { }
+        }
+    }
+
+    /**
+     * Render halaman 1 PDF → JPEG (pola MainActivity :4590/:8202:
+     * PdfRenderer + RENDER_MODE_FOR_DISPLAY, JPEG q85, file sementara
+     * di ctx.cacheDir). Gagal render → RuntimeException jujur.
+     */
+    private fun renderPdfFirstPage(ctx: Context, file: VisionFile): RenderedPdfPage {
+        val tmp = File(ctx.cacheDir, "vision-pdf-" + System.currentTimeMillis() + ".pdf")
+        try {
+            tmp.writeBytes(file.bytes)
+            return renderPdfFileFirstPage(tmp, file.fileName)
+        } catch (e: RuntimeException) {
+            throw e
+        } catch (e: Exception) {
+            throw RuntimeException(
+                "PDF '${file.fileName}' gagal dirender (halaman 1): ${e.message}", e
+            )
+        } finally {
             try { tmp.delete() } catch (ignored: Exception) { }
         }
+    }
+
+    /**
+     * vc334 R4 (V-2/S-3): jalur render PDF bersama untuk fallback
+     * dokumen (MainActivity.fallbackDocVc212 + cabang PDF
+     * handleAttachment) — render halaman 1 → file JPEG di cacheDir,
+     * langsung ≤1280 px, recycle + finally di dalam
+     * renderPdfFileFirstPage. Mengembalikan (file JPG, jumlah halaman).
+     */
+    fun renderPdfFirstPageToFile(ctx: Context, pdfFile: File): Pair<File, Int> {
+        val rendered = renderPdfFileFirstPage(pdfFile, pdfFile.name)
+        val jpg = File(ctx.cacheDir, "pdf-page1-" + System.currentTimeMillis() + ".jpg")
+        jpg.writeBytes(rendered.jpegBytes)
+        return jpg to rendered.pageCount
     }
 
     /** True bila bytes diawali magic JPEG (FF D8 FF). */

@@ -276,6 +276,11 @@ object GroupChat {
                     listener.onSystem(note)
                 }
                 val memories = retrieveMemories(app, userText)
+                // vc334 R4 (G-4): blok bersama (fakta/goals/skills/
+                // katalog/transkrip) dihitung SEKALI per ronde — dulu
+                // buildPrompt menghitung ulang per anggota termasuk
+                // query MemoryDb yang sama.
+                val sharedVc334 = sharedBlockVc334(app, userText, memories, execMode)
                 // K1 (Fase 6): semua anggota aktif selalu menjawab via
                 // helper Models API (tanpa slot/auth).
                 val responded = HashSet<String>()
@@ -287,7 +292,7 @@ object GroupChat {
                     responded.add(m.id)
                     currentAgent = m.name
                     try { listener.onTurnStart(m.name) } catch (e: Exception) {}
-                    var prompt = buildPrompt(app, m, userText, memories, execMode)
+                    var prompt = buildPrompt(app, m, userText, memories, execMode, sharedVc334)
                     // VC303-P2-11 (CX-4): jejak tool ronde anggota ini —
                     // ditulis ke kunci grup di akhir giliran anggota.
                     // Dideklarasi DI LUAR try di bawah supaya terlihat juga
@@ -552,24 +557,33 @@ object GroupChat {
         return AgentPrompt.continuationAnchorVc316(userText) + "\n\n" + suffix
     }
 
-    /** Grup Matang F1: prompt penuh — persona user + pak perilaku anggota +
-     *  blok otaknya sendiri + keadaan sekarang + cuplikan otak kedua
-     *  berlabel + transkrip grup. Anggaran: total maks 200000 karakter;
-     *  cuplikan retrieval sudah dipotong (maks 10 x 1000); bila masih lewat,
-     *  baris transkrip tertua dipotong dulu (minimal 5 baris dipertahankan).
-     *  History 1-1 TIDAK disalin mentah — jembatan satu-satunya adalah
-     *  cuplikan retrieval berlabel di bawah. toolsEnabled=true menyertakan
-     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog.
-     *  vc321: katalog lewat selectCatalog (bukan penuh dicap 30.000);
-     *  lanjutan ronde memakai continuationPromptVc321 (delta), bukan
-     *  rebuild buildPrompt. */
-    private fun buildPrompt(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
-        // Slice 12 (vc329): semua blok dihitung di Kotlin (DB/prefs/
-        // katalog + redact), perakitan string lewat seam Rust. Katalog
-        // lewat selectCatalog + backstop 30k vc321 — JANGAN kirim
-        // katalog penuh dari Rust. `memories` dikirim SUDAH di-redact
-        // (Rust tidak me-redact baris memori).
-        val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
+    /** vc334 R4 (G-4): blok prompt grup yang SAMA untuk semua anggota
+     *  satu ronde — dihitung sekali per ronde (sharedBlockVc334),
+     *  bukan per anggota. Berisi semua yang tidak bergantung pada
+     *  anggota: persona, fakta PIN, fakta/goals ber-query, skill,
+     *  katalog, catatan kerja, transkrip grup, WorldState, Mode Bebas.
+     *  Yang tetap per anggota: pack + blok otak anggota
+     *  (AgentBrain.promptBlocksFor) + nama. */
+    private data class GroupSharedVc334(
+        val persona: String,
+        val pinned: String,
+        val memoriesFiltered: List<String>,
+        val facts: String,
+        val goals: String,
+        val workNotes: String,
+        val catalog: String,
+        val skills: String,
+        val transcript: List<String>,
+        val worldLine: String,
+        val modeBebas: String
+    )
+
+    /** vc334 R4 (G-4): hitung blok bersama satu ronde grup (sekali
+     *  per ronde — query MemoryDb + selectCatalog + groupMessages
+     *  di sini saja). Dipanggil dari startRound; buildPrompt memakai
+     *  hasilnya bila diberikan, bila tidak (call-site lain) menghitung
+     *  sendiri seperti dulu. */
+    private fun sharedBlockVc334(app: Context, userText: String, memories: List<String>, toolsEnabled: Boolean): GroupSharedVc334 {
         val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
         val pinnedRawGrpVc263 = try { MemoryDb.get(app).pinnedFactsText() } catch (e: Exception) { "" }
         val pinnedGrpVc248 = try { RedactSecrets.redact(pinnedRawGrpVc263) } catch (e: Exception) { "" }
@@ -591,23 +605,53 @@ object GroupChat {
             }
             transcript.add(who + ": " + (if (r.role == "user") r.text.take(2000) else RedactSecrets.redact(r.text.take(2000))))
         }
+        return GroupSharedVc334(
+            persona, pinnedGrpVc248, memoriesVc241, factsVc240, goalsVc240,
+            workNotesVc303, catVc240, skills, transcript,
+            WorldState.line(app, false, true), AgentPrompt.modeBebasBlock(app)
+        )
+    }
+
+    /** Grup Matang F1: prompt penuh — persona user + pak perilaku anggota +
+     *  blok otaknya sendiri + keadaan sekarang + cuplikan otak kedua
+     *  berlabel + transkrip grup. Anggaran: total maks 200000 karakter;
+     *  cuplikan retrieval sudah dipotong (maks 10 x 1000); bila masih lewat,
+     *  baris transkrip tertua dipotong dulu (minimal 5 baris dipertahankan).
+     *  History 1-1 TIDAK disalin mentah — jembatan satu-satunya adalah
+     *  cuplikan retrieval berlabel di bawah. toolsEnabled=true menyertakan
+     *  katalog tool 1-1 + katalog skill; false = teks biasa tanpa katalog.
+     *  vc321: katalog lewat selectCatalog (bukan penuh dicap 30.000);
+     *  lanjutan ronde memakai continuationPromptVc321 (delta), bukan
+     *  rebuild buildPrompt. */
+    private fun buildPrompt(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean, shared: GroupSharedVc334? = null): String {
+        // Slice 12 (vc329): semua blok dihitung di Kotlin (DB/prefs/
+        // katalog + redact), perakitan string lewat seam Rust. Katalog
+        // lewat selectCatalog + backstop 30k vc321 — JANGAN kirim
+        // katalog penuh dari Rust. `memories` dikirim SUDAH di-redact
+        // (Rust tidak me-redact baris memori).
+        val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
+        // vc334 R4 (G-4): blok bersama dari ronde (sekali per ronde);
+        // tanpa itu, hitung sendiri seperti dulu.
+        val sh = shared ?: sharedBlockVc334(app, userText, memories, toolsEnabled)
         val r = GroupChatSeam.buildPrompt(
-            me.name, persona, Behaviors.block(pack), AgentBrain.promptBlocksFor(app, me.id),
+            me.name, sh.persona, Behaviors.block(pack), AgentBrain.promptBlocksFor(app, me.id),
             AgentPrompt.CTX_LABEL_RULES, AgentPrompt.PAGING_TOTAL_RULE_VC302,
-            pinnedGrpVc248, WorldState.line(app, false, true),
-            memoriesVc241.map { RedactSecrets.redact(it) }, factsVc240, goalsVc240, workNotesVc303,
-            toolsEnabled, catVc240, skills, AgentPrompt.modeBebasBlock(app),
-            AgentPrompt.BATCH_TERMINAL_RULE_VC302, transcript, userText
+            sh.pinned, sh.worldLine,
+            sh.memoriesFiltered.map { RedactSecrets.redact(it) }, sh.facts, sh.goals, sh.workNotes,
+            toolsEnabled, sh.catalog, sh.skills, sh.modeBebas,
+            AgentPrompt.BATCH_TERMINAL_RULE_VC302, sh.transcript, userText
         )
         if (r != null) return r
-        return buildPromptKotlin(app, me, userText, memories, toolsEnabled)
+        return buildPromptKotlin(app, me, userText, memories, toolsEnabled, sh)
     }
 
     /** Slice 12 (vc329): prompt penuh grup (salinan asli) — dipakai
      *  bila seam Rust tak-tersedia. */
-    private fun buildPromptKotlin(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean): String {
+    private fun buildPromptKotlin(app: Context, me: Member, userText: String, memories: List<String>, toolsEnabled: Boolean, shared: GroupSharedVc334? = null): String {
         val pack = try { Agents.all(app).firstOrNull { it.id == me.id }?.pack ?: "asisten" } catch (e: Exception) { "asisten" }
-        val persona = try { app.getSharedPreferences("harness", Context.MODE_PRIVATE).getString("persona", "")?.trim().orEmpty() } catch (e: Exception) { "" }
+        // vc334 R4 (G-4): blok bersama dari ronde (sekali per ronde).
+        val sh = shared ?: sharedBlockVc334(app, userText, memories, toolsEnabled)
+        val persona = sh.persona
         val base = StringBuilder()
         base.append("Kamu adalah ${me.name} di grup chat (anggota: Asisten, Mandor, Mentor, Agen 4 + user).\n")
         if (persona.isNotEmpty()) base.append("PERSONA & INSTRUKSI DARI USER:\n").append(persona).append("\n\n")
@@ -616,13 +660,12 @@ object GroupChat {
         base.append(AgentPrompt.CTX_LABEL_RULES).append("\n\n")
         // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan).
         base.append(AgentPrompt.PAGING_TOTAL_RULE_VC302).append("\n\n")
-        val pinnedRawGrpVc263 = try { MemoryDb.get(app).pinnedFactsText() } catch (e: Exception) { "" }
-        val pinnedGrpVc248 = try { RedactSecrets.redact(pinnedRawGrpVc263) } catch (e: Exception) { "" }
+        val pinnedGrpVc248 = sh.pinned
         if (pinnedGrpVc248.isNotBlank()) base.append("[FAKTA PIN — selalu berlaku, tidak dibuang diam-diam]:\n").append(pinnedGrpVc248).append("\n\n")
         // vc241 WorldState: grup kini punya blok TUJUAN AKTIF (vc240 M18) sehingga goal-teratas WorldState dibuang; baterai/tanggal dipertahankan karena grup tidak punya blok khusus untuk keduanya.
-        base.append(WorldState.line(app, false, true)).append("\n\n")
+        base.append(sh.worldLine).append("\n\n")
         // vc241 O2: cuplikan memori grup yang menyebut kunci fakta dibuang — fakta itu sudah tampil di blok MEMORI PERSISTEN di bawah.
-        val memoriesVc241 = try { val keysVc241 = MemoryDb.get(app).factsAllWithStatus().map { it.first.lowercase() }.filter { it.length >= 4 }; memories.filter { ln -> keysVc241.none { k -> ln.lowercase().contains(k) } } } catch (e: Exception) { memories }
+        val memoriesVc241 = sh.memoriesFiltered
         if (memoriesVc241.isNotEmpty()) {
             base.append("Memori relevan (otak kedua) — cuplikan berlabel dari memori lama, BUKAN riwayat grup saat ini:\n")
             for (line in memoriesVc241) base.append("- ").append(RedactSecrets.redact(line)).append("\n")
@@ -633,14 +676,14 @@ object GroupChat {
         // fakta/goals user seperti 1-1 (cap fakta 20000, goals 10000 dari
         // factsText/goalsText, vc248). Thinking grup tetap false (routing
         // tidak diubah).
-        val factsVc240 = try { RedactSecrets.redact(MemoryDb.get(app).dedupFactsVsPinned(MemoryDb.get(app).factsText(userText), pinnedRawGrpVc263)) } catch (e: Exception) { "" }
+        val factsVc240 = sh.facts
         if (factsVc240.isNotBlank()) base.append("MEMORI PERSISTEN (fakta user):\n").append(factsVc240).append("\n\n")
-        val goalsVc240 = try { RedactSecrets.redact(MemoryDb.get(app).goalsText(userText)) } catch (e: Exception) { "" }
+        val goalsVc240 = sh.goals
         if (goalsVc240.isNotBlank()) base.append("TUJUAN AKTIF:\n").append(goalsVc240).append("\n\n")
         // VC303-P2-11 (CX-4): catatan kerja grup (satu kunci untuk seluruh
         // grup — grup tidak punya sessionId) — ronde berikut melihat hasil
         // tool ronde sebelumnya walau sudah keluar dari 30 pesan terakhir.
-        run { val wbGrpVc303 = WorkNotesVc301.blockForKey(app, WorkNotesVc301.groupNotesKey()); if (wbGrpVc303.isNotBlank()) base.append("[CATATAN KERJA GRUP]\n").append(wbGrpVc303).append("\n\n") }
+        run { val wbGrpVc303 = sh.workNotes; if (wbGrpVc303.isNotBlank()) base.append("[CATATAN KERJA GRUP]\n").append(wbGrpVc303).append("\n\n") }
         if (toolsEnabled) {
             // vc321 IXL: katalog room kini lewat selectCatalog (pola vc316
             // 1-1) — katalog penuh 94.809 char selama ini dicap 30.000,
@@ -650,12 +693,11 @@ object GroupChat {
             // dipertahankan (tugas kosong -> katalog penuh, kontrak lama).
             // Trade-off sama seperti vc316: tool di luar seleksi didapat
             // lewat list_tools {} (catatan fallback di tiap slim).
-            val catSlimVc321 = AgentPrompt.catalogForTask(app, userText)
-            val catVc240 = if (catSlimVc321.length > 30000) catSlimVc321.take(30000) + "\n…(katalog grup dipotong, sisa " + (catSlimVc321.length - 30000) + " char)…" else catSlimVc321
+            val catVc240 = sh.catalog
             base.append("KATALOG TOOL (sama seperti chat 1-1 — pakai bila tugas butuh aksi HP):\n").append(catVc240).append("\n\n")
             // vc262 N-m23: teruskan teks tugas sebagai query agar ranking
             // relevansi skill hidup (tanpa query semua skor 0).
-            val skills = try { RedactSecrets.redact(MemoryDb.get(app).skillsText(userText)) } catch (e: Exception) { "" }
+            val skills = sh.skills
             if (skills.isNotBlank()) base.append("SKILL AKTIF (nama+description saja; muat isi lewat use_skill bila relevan):\n").append(skills).append("\n\n")
             base.append("Jawablah pesan terakhir sebagai ${me.name} di grup ini: ringkas, langsung, menanggapi pesan sebelumnya bila relevan. Jangan mengulang transkrip, jangan menyebut dirimu sebagai model lain, jangan keluar dari peran ${me.name}. Bila perlu aksi HP, keluarkan blok json tool (boleh sampai 4 blok sekaligus bila call-nya independen, maks 4 per respons); hasil tool akan diberikan padamu untuk dilanjutkan. Tiap anggota maks 3 langkah tool per ronde — bila cap tercapai, giliran berhenti dengan penjelasan jujur (yang sudah selesai / yang belum).\n\n")
         } else {
@@ -664,17 +706,8 @@ object GroupChat {
         // vc252 D-M7: blok Mode Bebas TIDAK lagi ditempel di base (vc251
         // menempel di sini lalu ikut terpotong take(60000) di bawah) —
         // ditempel ke baseStrVc240 SETELAH cap, sebelum transkrip.
-        val rows = try { MemoryDb.get(app).groupMessages(30) } catch (e: Exception) { emptyList() }
-        val transcript = ArrayList<String>()
-        for (r in rows) {
-            val who = when (r.role) {
-                "user" -> "User"
-                "sistem" -> "Sistem"
-                "tool" -> "Tool"
-                else -> r.name
-            }
-            transcript.add(who + ": " + (if (r.role == "user") r.text.take(2000) else RedactSecrets.redact(r.text.take(2000))))
-        }
+        // vc334 R4 (G-4): transkrip dari blok bersama ronde.
+        val transcript = sh.transcript
         // vc240 M18: pengaman akhir base — bila base sendiri sudah
         // di atas 12000 (persona panjang), base dipotong dengan penanda
         // sebelum transkrip, sehingga total dengan 5 baris transkrip
@@ -689,7 +722,7 @@ object GroupChat {
         // paling akhir). Ditempel juga bila toolsEnabled=false: agen tanpa
         // tool tidak terpengaruh, dan tidak ada cabang prompt kedua.
         baseStrVc240 += AgentPrompt.BATCH_TERMINAL_RULE_VC302 + "\n\n"
-        baseStrVc240 += AgentPrompt.modeBebasBlock(app)
+        baseStrVc240 += sh.modeBebas
         var drop = 0
         while (drop < transcript.size - 5) {
             val candidate = baseStrVc240 + "Transkrip grup:\n" + transcript.drop(drop).joinToString("\n")
