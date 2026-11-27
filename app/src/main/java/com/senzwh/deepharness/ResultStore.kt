@@ -148,7 +148,7 @@ object ResultStore {
         if (text.isBlank()) return ""
         return try {
             synchronized(lock) {
-                val seq = b.prefs.getInt(b.seqKey, 0) + 1
+                val seq = b.prefs.getIntSafe(b.seqKey, 0) + 1
                 b.prefs.edit().putInt(b.seqKey, seq).apply()
                 val id = "R$seq"
                 val truncated = text.length > MAX_CHARS

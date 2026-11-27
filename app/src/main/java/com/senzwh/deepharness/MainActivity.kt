@@ -395,15 +395,15 @@ class MainActivity : Activity() {
         tg.put("verify", if (::verifyCheck.isInitialized) verifyCheck.isChecked else true)
         o.put("toggles", tg)
         o.put("perms", permStatusJson())
-        o.put("maxSteps", prefs.getInt("maxToolSteps", 50))
+        o.put("maxSteps", prefs.getIntSafe("maxToolSteps", 50))
         o.put("defSearch", prefs.getBoolean("defSearch", true))
         o.put("defThink", prefs.getBoolean("defThink", false))
         o.put("modeBebas", prefs.getBoolean("modeBebas", false))
         o.put("rootMode", prefs.getBoolean("rootMode", false))
         o.put("rootStatus", prefs.getString("rootStatus", "Belum dites") ?: "Belum dites")
         o.put("bubbleOn", prefs.getBoolean("overlayOn", false))
-        o.put("bubbleSize", prefs.getInt("bubbleSizeDp", 56))
-        o.put("bubbleAlpha", prefs.getInt("bubbleAlphaPct", 100))
+        o.put("bubbleSize", prefs.getIntSafe("bubbleSizeDp", 56))
+        o.put("bubbleAlpha", prefs.getIntSafe("bubbleAlphaPct", 100))
         o.put("bubbleTap", prefs.getString("bubbleTap", "panel") ?: "panel")
         o.put("voiceAuto", prefs.getBoolean("voiceAuto", true))
         o.put("panelSpeak", prefs.getBoolean("panelSpeak", true))
@@ -411,8 +411,8 @@ class MainActivity : Activity() {
         o.put("askExtend", prefs.getBoolean("askExtendSteps", true))
         o.put("persona", prefs.getString("persona", "") ?: "")
         o.put("ocPending", try { OcCoord.pendingTitle(this) } catch (e: Exception) { "" })
-        o.put("ocBusy", prefs.getLong("ocCurrentTask", 0) > 0)
-        o.put("ckptTask", prefs.getLong("ckptPending", 0))
+        o.put("ocBusy", prefs.getLongSafe("ocCurrentTask", 0) > 0)
+        o.put("ckptTask", prefs.getLongSafe("ckptPending", 0))
         o.put("ckptDiff", prefs.getString("ckptDiff", "") ?: "")
         var agName = "Asisten"
         var agAccent = "#4d8cff"
@@ -429,7 +429,7 @@ class MainActivity : Activity() {
         o.put("agentAccent", agAccent)
         o.put("agents", agArr)
         val factsN = try { MemoryDb.get(this).factsText().split("\n").count { it.isNotBlank() } } catch (e: Exception) { 0 }
-        o.put("statsText", "• Total pesan terkirim: " + prefs.getInt("msgCount", 0) + "\n• Fakta tersimpan: " + factsN + "\n• Sesi aktif: " + (try { MemoryDb.get(this).sessionTitle(currentSessionId) } catch (e: Exception) { "Utama" }) + "\n• Agen: " + agInfo)
+        o.put("statsText", "• Total pesan terkirim: " + prefs.getIntSafe("msgCount", 0) + "\n• Fakta tersimpan: " + factsN + "\n• Sesi aktif: " + (try { MemoryDb.get(this).sessionTitle(currentSessionId) } catch (e: Exception) { "Utama" }) + "\n• Agen: " + agInfo)
         val planRaw = PlanStore.read(this, currentSessionId).toString()
         val focusSb = StringBuilder()
         if (planRaw.isNotBlank() && planRaw != "[]") {
@@ -441,7 +441,7 @@ class MainActivity : Activity() {
                 focusSb.append("Rencana aktif: ").append(dn).append("/").append(arrP.length()).append(" selesai\n").append(linesP.joinToString("\n"))
             } catch (e: Exception) { focusSb.append("Rencana: -") }
         } else focusSb.append("Rencana: belum ada — minta agen membuat rencana untuk tugas multi-langkah.")
-        val ckP = prefs.getLong("ckptPending", 0)
+        val ckP = prefs.getLongSafe("ckptPending", 0)
         focusSb.append("\nCheckpoint: ").append(if (ckP > 0) "MENUNGGU keputusan Terima/Urungkan (tugas #$ckP)" else "tidak ada yang menunggu")
         o.put("focusText", focusSb.toString())
         o.put("flowOnboarded", prefs.getBoolean("flowOnboarded", false))
@@ -898,19 +898,19 @@ class MainActivity : Activity() {
             o.put("bubbleOn", prefs.getBoolean("overlayOn", false))
             o.put("rootMode", prefs.getBoolean("rootMode", false))
             o.put("rootStatus", prefs.getString("rootStatus", "Belum dites") ?: "Belum dites")
-            o.put("bubbleSize", prefs.getInt("bubbleSizeDp", 56))
-            o.put("bubbleAlpha", prefs.getInt("bubbleAlphaPct", 100))
+            o.put("bubbleSize", prefs.getIntSafe("bubbleSizeDp", 56))
+            o.put("bubbleAlpha", prefs.getIntSafe("bubbleAlphaPct", 100))
             o.put("bubbleTap", prefs.getString("bubbleTap", "panel") ?: "panel")
             o.put("voiceAuto", prefs.getBoolean("voiceAuto", true))
             o.put("panelSpeak", prefs.getBoolean("panelSpeak", true))
             o.put("shakeSummon", prefs.getBoolean("shakeSummon", false))
             o.put("wakeWordOn", prefs.getBoolean("wakeWordOn", false))
-            o.put("tokIn", prefs.getLong("tokInAll", 0))
-            o.put("tokOut", prefs.getLong("tokOutAll", 0))
-            o.put("tokInSess", prefs.getLong("tokInSess", 0))
-            o.put("tokOutSess", prefs.getLong("tokOutSess", 0))
-            o.put("govQuietStart", prefs.getInt("govQuietStart", -1))
-            o.put("govQuietEnd", prefs.getInt("govQuietEnd", -1))
+            o.put("tokIn", prefs.getLongSafe("tokInAll", 0))
+            o.put("tokOut", prefs.getLongSafe("tokOutAll", 0))
+            o.put("tokInSess", prefs.getLongSafe("tokInSess", 0))
+            o.put("tokOutSess", prefs.getLongSafe("tokOutSess", 0))
+            o.put("govQuietStart", prefs.getIntSafe("govQuietStart", -1))
+            o.put("govQuietEnd", prefs.getIntSafe("govQuietEnd", -1))
             o.put("govWifiOnly", prefs.getBoolean("govWifiOnly", false))
             o.put("notifDigest", prefs.getBoolean("notifDigest", true))
             o.put("routines", prefs.getString("routines", "[]") ?: "[]")
@@ -932,13 +932,13 @@ class MainActivity : Activity() {
                 }
                 o.put("sessions", sArr)
             } catch (e: Exception) {}
-            o.put("chatFont", prefs.getInt("chatFontPx", 16)) // vc306: default 16
+            o.put("chatFont", prefs.getIntSafe("chatFontPx", 16)) // vc306: default 16
             o.put("sessMsgCount", try { MemoryDb.get(this).historyCount(currentSessionId) } catch (e: Exception) { 0 })
             o.put("connectors", try { Connectors.statusJson(this) } catch (e: Exception) { org.json.JSONArray() })
             var agEngine = ""
             try { agEngine = Agents.active(this).engine } catch (e: Exception) {}
-            o.put("ckptTask", prefs.getLong("ckptPending", 0))
-            o.put("ocBusy", prefs.getLong("ocCurrentTask", 0) > 0)
+            o.put("ckptTask", prefs.getLongSafe("ckptPending", 0))
+            o.put("ocBusy", prefs.getLongSafe("ocCurrentTask", 0) > 0)
             o.put("ocPending", try { OcCoord.pendingTitle(this) } catch (e: Exception) { "" })
             val perms = try { permStatusJson() } catch (e: Exception) { JSONObject() }
             fun permBadge(k: String): String = if (perms.optString(k) == "ok") "Aktif" else "Belum"
@@ -954,7 +954,7 @@ class MainActivity : Activity() {
             b.put("16", permBadge("assistant"))
             b.put("23", if (prefs.getBoolean("wakeWordOn", false)) "ON" else "OFF")
             if (agEngine.isNotBlank()) b.put("39", if (agEngine == "local") "Lokal" else "Models API")
-            if (prefs.getLong("ocCurrentTask", 0) > 0) b.put("33", "Sedang bekerja")
+            if (prefs.getLongSafe("ocCurrentTask", 0) > 0) b.put("33", "Sedang bekerja")
             b.put("44", permBadge("assistant"))
             b.put("45", if (prefs.getBoolean("rootMode", false)) "ON" else "OFF")
             b.put("46", if (prefs.getBoolean("overlayOn", false)) "ON" else "OFF")
@@ -1208,7 +1208,7 @@ class MainActivity : Activity() {
     }
 
     fun uiOcCkpt(accept: Boolean) {
-        val id = getSharedPreferences("harness", MODE_PRIVATE).getLong("ckptPending", 0)
+        val id = getSharedPreferences("harness", MODE_PRIVATE).getLongSafe("ckptPending", 0)
         if (id <= 0) return
         Thread {
             val msg = OcCoord.checkpointAction(applicationContext, id, if (accept) "accept" else "undo")
@@ -1773,8 +1773,8 @@ class MainActivity : Activity() {
             val pf = getSharedPreferences("harness", MODE_PRIVATE)
             if (!pf.getBoolean("f2QuietInit", false)) {
                 val e = pf.edit()
-                if (pf.getInt("govQuietStart", -1) < 0) e.putInt("govQuietStart", 23)
-                if (pf.getInt("govQuietEnd", -1) < 0) e.putInt("govQuietEnd", 5)
+                if (pf.getIntSafe("govQuietStart", -1) < 0) e.putInt("govQuietStart", 23)
+                if (pf.getIntSafe("govQuietEnd", -1) < 0) e.putInt("govQuietEnd", 5)
                 e.putBoolean("f2QuietInit", true).apply()
         // F2.1 (v4.39.1): grounding untuk 2 job contoh yang sudah dibuat.
         try {
@@ -1958,7 +1958,7 @@ class MainActivity : Activity() {
             val nb = chatScroll.scrollY + chatScroll.height >= chatList.height - dp(300)
             lb.visibility = if (nb) View.GONE else View.VISIBLE
         }
-        currentSessionId = getSharedPreferences("harness", MODE_PRIVATE).getLong("currentSession", 1L)
+        currentSessionId = getSharedPreferences("harness", MODE_PRIVATE).getLongSafe("currentSession", 1L)
         val sessionBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -3159,7 +3159,7 @@ class MainActivity : Activity() {
             }
             val isUser = kind == "user"
             // vc306 (C3/C4): default font chat 15 -> 16sp; rentang tetap 12-22.
-            val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 16).toFloat()
+            val bf = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("chatFontPx", 16).toFloat()
             val wrap = LinearLayout(this).apply {
                 // vc306 (C3/C4): user + asisten pakai kolom vertikal (bubble
                 // + baris status / titik stall di bawahnya); kind lain tetap
@@ -3337,7 +3337,7 @@ class MainActivity : Activity() {
     // label ini informasi penting). Hairline tone α0.45, radius md 14, padding 12/8.
     private fun buildToneCardVc306(text: String, toneKind: String): LinearLayout {
         val dark = isDarkTheme()
-        val bf = getSharedPreferences("harness", MODE_PRIVATE).getInt("chatFontPx", 16).toFloat()
+        val bf = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("chatFontPx", 16).toFloat()
         val danger = toneKind == "danger"
         val bgHex = if (danger) ChatCardsVc306.stuckContainerHex(dark) else ChatCardsVc306.claimContainerHex(dark)
         val fgHex = if (danger) ChatCardsVc306.stuckTextHex(dark) else ChatCardsVc306.claimTextHex(dark)
@@ -4713,7 +4713,7 @@ class MainActivity : Activity() {
     // kembali ke init (stepBudget 10) → giliran resume kehabisan budget
     // di 10 lalu +10 sekali = 20, walau pref maxToolSteps 200.
     private fun loadStepBudgetVc304() {
-        stepBudget = getSharedPreferences("harness", MODE_PRIVATE).getInt("maxToolSteps", 50).coerceIn(5, 200)
+        stepBudget = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
     }
 
     private fun onUserMessage(text: String) {
@@ -4865,7 +4865,7 @@ class MainActivity : Activity() {
         // berubah (60/60.000, vc230). Hitungan diambil SEBELUM giliran
         // ini (msgCount_<sesi> di prefs "harness", belum termasuk pesan
         // ini — sama seperti sessMsgCountVc235 di bawah).
-        val (histNVc321, histCapVc321) = LlmEngineChat.historyBudget(getSharedPreferences("harness", MODE_PRIVATE).getInt("msgCount_" + currentSessionId, 0))
+        val (histNVc321, histCapVc321) = LlmEngineChat.historyBudget(getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("msgCount_" + currentSessionId, 0))
         val transcript = mdb.historyTranscriptVc230(histNVc321, histCapVc321, currentSessionId)
         mdb.addHistory("user", text, currentSessionId)
         if (mdb.sessionTitle(currentSessionId) == "Sesi baru") {
@@ -4873,13 +4873,13 @@ class MainActivity : Activity() {
             if (::sessionTitleTv.isInitialized) sessionTitleTv.text = "🗂️ " + text.take(32)
         }
         val prefs0 = getSharedPreferences("harness", MODE_PRIVATE)
-        val msgCount = prefs0.getInt("msgCount", 0) + 1
+        val msgCount = prefs0.getIntSafe("msgCount", 0) + 1
         prefs0.edit().putInt("msgCount", msgCount).apply()
         // vc235 M2: pemicu ekstraksi PER SESI, bukan global. Hitungan
         // global di atas dipertahankan untuk statistik; pemicu memakai
         // kunci per sesi agar pesan di sesi lain tidak memicu ekstraksi
         // sesi ini dan sebaliknya (dulu: msgCount global % 10).
-        val sessMsgCountVc235 = prefs0.getInt("msgCount_" + currentSessionId, 0) + 1
+        val sessMsgCountVc235 = prefs0.getIntSafe("msgCount_" + currentSessionId, 0) + 1
         prefs0.edit().putInt("msgCount_" + currentSessionId, sessMsgCountVc235).apply()
         if (sessMsgCountVc235 % 10 == 0) pendingExtract = true
         // vc240 M16: WorldState slim — tanggal, baterai, dan goal teratas
@@ -5041,7 +5041,7 @@ class MainActivity : Activity() {
             try { val siVc230 = mdb.sessionInfoVc230(currentSessionId); val dfVc230 = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale("id", "ID")); sb.append(" • sesi ini: ").append(siVc230.first).append(" pesan, dimulai ").append(if (siVc230.second > 0) dfVc230.format(java.util.Date(siVc230.second)) else "-") } catch (e: Exception) {}
             sb.append(" • agen aktif: ").append(Agents.active(this).name)
             sb.append(" • mesin: ").append(prefsA.getString("agentEngine", "openai") ?: "openai")
-            if (prefsA.getLong("ckptPending", 0) > 0) sb.append(" • ADA checkpoint tugas koordinator menunggu keputusan Terima/Urungkan dari user")
+            if (prefsA.getLongSafe("ckptPending", 0) > 0) sb.append(" • ADA checkpoint tugas koordinator menunggu keputusan Terima/Urungkan dari user")
             sb.append("]")
             if (planItems.isNotEmpty()) {
                 val doneN = planItems.count { it.startsWith("☑") }
@@ -6381,10 +6381,10 @@ class MainActivity : Activity() {
         } catch (e: Exception) { }
     }
 
-    private fun prefLong(key: String): Long {
-        val p = getSharedPreferences("harness", MODE_PRIVATE)
-        return try { p.getLong(key, 0) } catch (e: Exception) { try { p.getInt(key, 0).toLong() } catch (e2: Exception) { 0L } }
-    }
+    // vc332 G7: delegasi ke PrefsSafe.getLongSafe — perilaku sama
+    // (getLong, fallback getInt), satu-satunya implementasi.
+    private fun prefLong(key: String): Long =
+        getSharedPreferences("harness", MODE_PRIVATE).getLongSafe(key, 0)
 
     private fun fmtNum(v: Long): String = String.format(java.util.Locale.US, "%,d", v).replace(',', '.')
 
@@ -9199,7 +9199,7 @@ class MainActivity : Activity() {
             val ts = o.optLong("ts", 0)
             val age = System.currentTimeMillis() - ts
             if (age < 20_000 || age > 3 * 60 * 60 * 1000) return
-            if (turnPrefs().getLong("turnCkptResumedFor", 0) == ts) return
+            if (turnPrefs().getLongSafe("turnCkptResumedFor", 0) == ts) return
             turnPrefs().edit().putLong("turnCkptResumedFor", ts).apply()
             // T10: proses baru = requestStartMs 0 → semua durasi giliran
             // lanjutan jadi epoch. Anggap giliran mulai saat dipulihkan.
@@ -9296,28 +9296,8 @@ class MainActivity : Activity() {
 
     private fun extractTool(text: String): Pair<String, JSONObject?> = AgentPrompt.extractToolCall(text)
 
-    /** Saring hasil verifikasi diri sebelum tampil. Return "LULUS", teks koreksi bersih,
-     *  atau null bila output model berupa bocoran proses mikir / tidak konklusif (vc228: null ditampilkan sebagai "verifikasi tidak konklusif", bukan didiamkan). */
-    private fun cleanVerdict(raw: String): String? {
-        var t = raw.replace("**", "").trim()
-        if (t.isEmpty()) return null
-        val up = t.uppercase()
-        if (up.startsWith("LULUS")) return "LULUS"
-        val markers = listOf("need verify", "let's craft", "should we", "desired oververbosity",
-            "the prompt says", "the instruction says", "final only", "ensure no tool",
-            "need include correction", "need focus", "is that too much", "no greeting")
-        val low = t.lowercase()
-        val ki = low.lastIndexOf("koreksi")
-        if (ki >= 0) {
-            var k = t.substring(ki + "koreksi".length).trimStart(':', ' ', '\n')
-            k = k.lineSequence().firstOrNull()?.trim() ?: ""
-            if (k.length > 300) k = k.take(300).substringBeforeLast('.') + "."
-            return if (k.length >= 10) k else null
-        }
-        if (markers.any { low.contains(it) }) return null
-        if (t.length > 350) return null
-        return t
-    }
+    // cleanVerdict pindah ke VerifyVerdict.kt (F6) — dipakai kedua overload
+    // handleAgentResponse supaya parser verdict tidak bisa drift antar jalur.
 
     // vc228 R-02(a): klaim faktual = kata penyelesaian/file/graph/laporan/
     // tugas + angka, atau path file. Return null bila tidak ada klaim atau
@@ -10070,7 +10050,15 @@ class MainActivity : Activity() {
         // Giliran verifikasi: jawaban final tanpa tool (request dikirim
         // tool_choice "none"). Bila provider tetap mengembalikan tool_calls,
         // JANGAN eksekusi — verifikasi tidak konklusif (cermin guard
-        // dialek teks). Bila bersih, verdict lewat pipeline String yang sama.
+        // dialek teks).
+        // F6 (loop verifikasi vc332): verdict DITANGANI LANGSUNG di sini —
+        // JANGAN delegasi ke overload String. Delegasi dulu membuat
+        // "LULUS" dibaca sebagai jawaban final baru, lalu gerbang
+        // verifikasi :10502 nyala lagi (turnUsedTools masih true;
+        // allClaimsSupportedByMemory("LULUS") == false karena klaim
+        // kosong, AgentPrompt.kt:822) → verifikasi diulang tanpa henti.
+        // Verdict BUKAN jawaban baru: tidak ada gate bukti, reviewer,
+        // atau gerbang verifikasi di sini — langsung ekor giliran.
         if (verifyTurn) {
             verifyTurn = false
             if (resp.toolCalls.isNotEmpty()) {
@@ -10079,7 +10067,37 @@ class MainActivity : Activity() {
                 return
             }
             turnThinking = ""
-            handleAgentResponse(AgentPrompt.stripRawToolMarkupForDisplay(resp.content))
+            val verdictVc6 = VerifyVerdict.cleanVerdict(AgentPrompt.stripRawToolMarkupForDisplay(resp.content))
+            when (verdictVc6) {
+                "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
+                null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
+                else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$verdictVc6", false, turn = true)
+            }
+            // Ekor giliran — CERMIN cabang verifyTurn handler String
+            // (:10267 + :10521): ekstraksi latar bila pending, kalau tidak
+            // tutup giliran. Duplikat sadar: ekor ini milik bersama kedua
+            // overload; bila diubah di satu tempat, samakan di tempat lain.
+            val verdictTextVc6 = verdictVc6 ?: ""
+            if (pendingExtract) {
+                pendingExtract = false
+                // vc241 O7 + vc235 M2: sama seperti ekor handler String.
+                val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
+                if (!extractHasFactSignalVc241(hist)) {
+                    if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (verdictTextVc6.contains("?")) "pertanyaan-user" else "final"
+                    endUserTurn()
+                } else {
+                    internalTurn = true
+                    collectingExtract = true
+                    pendingExtractProposals.clear()
+                    // vc330 SESI: sama seperti ekor handler String.
+                    val histRecentVc330 = try { MemoryDb.get(this).historyTranscriptVc230(AgentPrompt.EXTRACT_WINDOW_N_VC330, AgentPrompt.EXTRACT_WINDOW_CHARS_VC330, turnSessionId) } catch (e: Exception) { "" }
+                    val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
+                    sendToAgent(fullExtractVc330, AgentPrompt.deltaExtractPromptVc330(currentTurnUser, histRecentVc330))
+                }
+            } else {
+                if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (verdictTextVc6.contains("?")) "pertanyaan-user" else "final"
+                endUserTurn()
+            }
             return
         }
         // Giliran internal (ekstraksi fakta): request dikirim HANYA tools
@@ -10266,7 +10284,7 @@ class MainActivity : Activity() {
             }
             if (verifyTurn) {
                 verifyTurn = false
-                when (val cleaned = cleanVerdict(visible)) {
+                when (val cleaned = VerifyVerdict.cleanVerdict(visible)) {
                     "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
                     null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
                     else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false, turn = true)
@@ -14430,7 +14448,7 @@ internal fun showApiTokenDialog() {
             try {
                 val prodIdxFile = java.io.File(this@MainActivity.filesDir, "result-store/index.json")
                 val prodHashBefore = if (prodIdxFile.exists()) sha16(prodIdxFile.readText(Charsets.UTF_8)) else "ABSENT"
-                val prodSeqBefore = getSharedPreferences("harness", MODE_PRIVATE).getInt("resultSeq", 0)
+                val prodSeqBefore = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("resultSeq", 0)
                 val backend = ResultStore.testBackend(this@MainActivity, stamp)
                 try {
                     val id1 = ResultStore.putIn(backend, "uji", "halo uji")
@@ -14452,7 +14470,7 @@ internal fun showApiTokenDialog() {
                     var totalBytes = 0L
                     backend.dir.listFiles()?.forEach { if (it.name.endsWith(".txt")) totalBytes += it.length() }
                     val prodHashAfter = if (prodIdxFile.exists()) sha16(prodIdxFile.readText(Charsets.UTF_8)) else "ABSENT"
-                    val prodSeqAfter = getSharedPreferences("harness", MODE_PRIVATE).getInt("resultSeq", 0)
+                    val prodSeqAfter = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("resultSeq", 0)
                     val prodGuard = prodHashAfter == prodHashBefore && prodSeqAfter == prodSeqBefore
                     val ok = id1.isNotBlank() && g1?.text == "halo uji" && g1.total == 8 && gBig?.truncated == true && gBig.text.length == 400000 && gBig.total == 400001 && gExpired == null && gLast != null && gBigAfter == null && totalBytes <= 10L * 1024 * 1024 && prodGuard
                     verdict("Cek 3 (result store uji)", ok, "id1=$id1 get='${g1?.text}' total=${g1?.total}; big truncated=${gBig?.truncated} stored=${gBig?.text?.length} total=${gBig?.total}; TTL expired->null=${gExpired == null}; LRU lastAda=${gLast != null} bigLamaHilang=${gBigAfter == null} totalByte=$totalBytes; produksi tak berubah=$prodGuard (hash index + resultSeq)")
@@ -14862,7 +14880,7 @@ internal fun showApiTokenDialog() {
         val prefs = getSharedPreferences("harness", MODE_PRIVATE)
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (e: Exception) { "" }
         val lastVer = prefs.getString("serveSeenVersion", "") ?: ""
-        val lastTs = prefs.getLong("serveF3TickTs", 0)
+        val lastTs = prefs.getLongSafe("serveF3TickTs", 0)
         val now = System.currentTimeMillis()
         val versionChanged = ver.isNotBlank() && ver != lastVer
         if (!versionChanged && now - lastTs < 300_000) return
@@ -14876,7 +14894,7 @@ internal fun showApiTokenDialog() {
                 // hanya teks UI) — throttle 1 jam agar tidak spam.
                 if (!st.alive) {
                     try {
-                        val lastN = prefs.getLong("serveDownNotifTs", 0)
+                        val lastN = prefs.getLongSafe("serveDownNotifTs", 0)
                         if (System.currentTimeMillis() - lastN > 3600_000) {
                             prefs.edit().putLong("serveDownNotifTs", System.currentTimeMillis()).apply()
                             val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager

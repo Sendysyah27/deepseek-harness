@@ -51,6 +51,13 @@ class FakeEditor(private val prefs: FakeSharedPreferences) : SharedPreferences.E
         return this
     }
 
+    // vc332 G7: stub putFloat (lihat AndroidStubs.kt) — dipakai
+    // PrefsSafe.putRestoreNumber untuk nilai Double.
+    override fun putFloat(key: String, value: Float): SharedPreferences.Editor {
+        pending[key] = value
+        return this
+    }
+
     override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor {
         pending[key] = value
         return this

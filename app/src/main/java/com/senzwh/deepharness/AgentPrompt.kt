@@ -1064,7 +1064,7 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
 
     fun toolCatalogText(ctx: Context): String {
         val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-        val MAXSTEPS = prefs.getInt("maxToolSteps", 50).coerceIn(5, 200)
+        val MAXSTEPS = prefs.getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
         // vc272 O2: teks katalog dibangun dari ToolRegistry (satu sumber
         // kebenaran) + kepala/ekor statis. Placeholder __MAXSTEPS__ diganti
         // angka runtime di sini (dulu interpolasi $MAXSTEPS di raw string
@@ -1083,7 +1083,7 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
      *  tetap teks (§2.2) — model tetap butuh formatnya. */
     fun toolCatalogNative(ctx: Context): String {
         val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
-        val MAXSTEPS = prefs.getInt("maxToolSteps", 50).coerceIn(5, 200)
+        val MAXSTEPS = prefs.getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
         return (CATALOG_HEAD_COMMON + NATIVE_TOOL_CALL_NOTE + API_LAYER_NOTE_VC282 + CATALOG_TRAILER)
             .replace("__MAXSTEPS__", MAXSTEPS.toString())
             .replace("/data/data/com.senzwh.deepharness/files/proot/ubuntu", ctx.packageName + "/files/proot/ubuntu")

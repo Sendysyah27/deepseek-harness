@@ -21,6 +21,10 @@ interface SharedPreferences {
         fun putString(key: String, value: String?): Editor
         fun putInt(key: String, value: Int): Editor
         fun putLong(key: String, value: Long): Editor
+        // vc332 G7: putFloat belum ada di stub — ditambahkan supaya
+        // PrefsSafe.putRestoreNumber (cabang Double -> putFloat, sama
+        // seperti restore lama) bisa dikompilasi di tes JVM.
+        fun putFloat(key: String, value: Float): Editor
         fun putBoolean(key: String, value: Boolean): Editor
         fun remove(key: String): Editor
         fun clear(): Editor

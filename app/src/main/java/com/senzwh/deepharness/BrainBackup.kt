@@ -221,17 +221,27 @@ object BrainBackup {
                     // vc265 V-m7 (vc299: plafon naik 50 → 200): maxToolSteps hasil restore di-clamp ke 200
                     // (batas UI) — backup buatan tidak boleh menaikkan cap
                     // langkah di atas 200 tanpa lewat UI.
+                    // vc332 G7: clamp SELALU menghasilkan Int — cabang Long
+                    // lama menulis Long, padahal app membaca kunci ini via
+                    // getInt (ClassCastException arah sebaliknya).
                     val vv: Any = if (k == "maxToolSteps") when (val raw = sj.get(k)) {
                         is Int -> raw.coerceIn(0, 200)
-                        is Long -> raw.coerceIn(0L, 200L)
-                        is Number -> raw.toLong().coerceIn(0L, 200L)
+                        is Long -> raw.coerceIn(0L, 200L).toInt()
+                        is Number -> raw.toLong().coerceIn(0L, 200L).toInt()
                         else -> raw
                     } else sj.get(k)
                     when (val v = vv) {
                         is Boolean -> ed.putBoolean(k, v)
-                        is Int -> ed.putInt(k, v)
-                        is Long -> ed.putLong(k, v)
-                        is Double -> ed.putFloat(k, v.toFloat())
+                        // vc332 G7: angka ditulis dengan tipe kanonik
+                        // kuncinya (PrefsSafe.putRestoreNumber) — org.json
+                        // mem-parse angka kecil jadi Integer, jadi putInt/
+                        // putLong buta-jenis di sini dulu menciptakan
+                        // ClassCastException di getLong/getInt berikutnya
+                        // (FC currentSession 27 Nov 07:18). putRestoreNumber
+                        // mengembalikan false bila nilai tidak bisa diwakili
+                        // (Long di luar Int untuk kunci-Int) — kunci itu
+                        // dilewati + dihitung, bukan ditulis salah tipe.
+                        is Number -> if (!ed.putRestoreNumber(k, v)) skippedSettings++
                         is String -> {
                             // §1 C2 (Fase 1): catat nilai agentEngine hasil
                             // restore — dinormalisasi sesudah apply() di
@@ -239,7 +249,6 @@ object BrainBackup {
                             if (k == "agentEngine") restoredEngine = v
                             ed.putString(k, RedactSecrets.redact(v))
                         }
-                        is Number -> ed.putLong(k, v.toLong())
                     }
                 }
                 ed.apply()

@@ -103,7 +103,7 @@ object OcCoord {
 
     // vc243 GELOMBANG 2 (K-04): tangkap sesi 1-1 aktif SAAT ENQUEUE.
     fun enqueueSingle(ctx: Context, text: String, dir: String = ""): Long {
-        val originSession = prefs(ctx).getLong("currentSession", 1)
+        val originSession = prefs(ctx).getLongSafe("currentSession", 1)
         val id = mdb(ctx).addOcTask("single-" + System.currentTimeMillis(), text, dir, originSession)
         kick(ctx)
         return id
@@ -111,7 +111,7 @@ object OcCoord {
 
     fun enqueueChain(ctx: Context, texts: List<String>, dir: String = ""): Pair<String, List<Long>> {
         val chainId = "chain-" + System.currentTimeMillis()
-        val originSession = prefs(ctx).getLong("currentSession", 1)
+        val originSession = prefs(ctx).getLongSafe("currentSession", 1)
         val ids = texts.map { mdb(ctx).addOcTask(chainId, it, dir, originSession) }
         kick(ctx)
         return Pair(chainId, ids)
@@ -318,7 +318,7 @@ object OcCoord {
         } catch (e: Exception) {
             finishTask(ctx, task, "failed", "❌ Koordinator error: ${e.message}")
         } finally {
-            if (prefs(ctx).getLong("ocCurrentTask", 0) == task.id) {
+            if (prefs(ctx).getLongSafe("ocCurrentTask", 0) == task.id) {
                 prefs(ctx).edit().putLong("ocCurrentTask", 0).apply()
             }
         }
@@ -1020,7 +1020,7 @@ object OcCoord {
             "undo" -> Checkpoint.restore(ctx, id)
             else -> "Aksi checkpoint tidak dikenal: $action (pakai accept/undo)."
         }
-        if (p.getLong("ckptPending", 0) == id) p.edit().remove("ckptPending").remove("ckptDiff").apply()
+        if (p.getLongSafe("ckptPending", 0) == id) p.edit().remove("ckptPending").remove("ckptDiff").apply()
         try { EventDb.get(ctx).add("occoord", ctx.packageName, "Checkpoint #$id $action -> ${out.take(120)}") } catch (e: Exception) {}
         return out
     }
@@ -1099,7 +1099,7 @@ object OcCoord {
     /** Tombol Stop di panel: hentikan tugas berjalan + tolak izin yang diparkir. */
     fun stopCurrent(ctx: Context) {
         val app = ctx.applicationContext
-        val cur = prefs(app).getLong("ocCurrentTask", 0)
+        val cur = prefs(app).getLongSafe("ocCurrentTask", 0)
         if (cur > 0) prefs(app).edit().putLong("ocCancelTask", cur).apply()
         if (permWaiterActive) prefs(app).edit().putString("ocPendingDecision", "reject").apply()
         EventDb.get(app).add("occoord", app.packageName, "Stop diminta user dari panel (tugas #$cur)")
@@ -1239,7 +1239,7 @@ object OcCoord {
     fun statusText(ctx: Context, forceProbe: Boolean = false): String {
         val db = mdb(ctx)
         val probes = probeCached(ctx, forceProbe)
-        val cur = prefs(ctx).getLong("ocCurrentTask", 0)
+        val cur = prefs(ctx).getLongSafe("ocCurrentTask", 0)
         val pend = pendingTitle(ctx)
         val rules = db.allCoordRules()
         val rulesJson = JSONObject()
@@ -1268,7 +1268,7 @@ object OcCoord {
         fun st(b: Boolean) = if (b) "HIDUP" else "MATI"
         val sb = StringBuilder()
         sb.append("Jalur mode: ${rule(ctx, "path_mode")} • 4097 (resmi): ${st(probes[4097] == true)} • 4096 (cadangan): ${st(probes[4096] == true)} • 4100 (mandiri): ${st(probes[4100] == true)}\n")
-        val cur = prefs(ctx).getLong("ocCurrentTask", 0)
+        val cur = prefs(ctx).getLongSafe("ocCurrentTask", 0)
         sb.append("Antrean: ${db.countOcTasks("queued")} menunggu • ${db.countOcTasks("running")} berjalan")
         if (cur > 0) sb.append(" (tugas #$cur)")
         sb.append("\n")

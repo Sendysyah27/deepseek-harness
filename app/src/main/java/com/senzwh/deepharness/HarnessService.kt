@@ -151,7 +151,7 @@ class HarnessService : Service() {
             if (st.alive) {
                 try { nm.cancel(NotifIds.SERVE_DOWN) } catch (e: Exception) {}
             } else {
-                val lastN = p.getLong("serveDownNotifTs", 0)
+                val lastN = p.getLongSafe("serveDownNotifTs", 0)
                 if (System.currentTimeMillis() - lastN > 3600_000) {
                     p.edit().putLong("serveDownNotifTs", System.currentTimeMillis()).apply()
                     if (android.os.Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel("harness_auto_heal") == null) nm.createNotificationChannel(android.app.NotificationChannel("harness_auto_heal", "Automation Perlu Perhatian", android.app.NotificationManager.IMPORTANCE_DEFAULT))
@@ -304,7 +304,7 @@ class HarnessService : Service() {
         val hour = cal.get(Calendar.HOUR_OF_DAY)
 
         // 2) Briefing pagi (sekali sehari pada jam yang diatur)
-        val briefingHour = p.getInt("briefingHour", 7)
+        val briefingHour = p.getIntSafe("briefingHour", 7)
         if (hour == briefingHour && p.getInt("lastBriefingDay", -1) != today) {
             p.edit().putInt("lastBriefingDay", today).apply()
             val upcoming = mdb.upcoming(5)
@@ -711,11 +711,11 @@ class HarnessService : Service() {
             if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) return
             if (overlayView != null) return
             val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val sizeDp = prefs().getInt("bubbleSizeDp", 56)
+            val sizeDp = prefs().getIntSafe("bubbleSizeDp", 56)
             val sizePx = (sizeDp * resources.displayMetrics.density).toInt()
             val iv = android.widget.ImageView(this)
             try { iv.setImageDrawable(packageManager.getApplicationIcon(packageName)) } catch (e: Exception) {}
-            iv.alpha = (prefs().getInt("bubbleAlphaPct", 100).coerceIn(30, 100)) / 100f
+            iv.alpha = (prefs().getIntSafe("bubbleAlphaPct", 100).coerceIn(30, 100)) / 100f
             var dragStartX = 0f
             var dragStartY = 0f
             var lpStartX = 0

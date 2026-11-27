@@ -62,8 +62,8 @@ object BgBrain {
     fun bgAllowed(ctx: Context): Boolean {
         val p = prefs(ctx)
         try {
-            val qs = p.getInt("govQuietStart", -1)
-            val qe = p.getInt("govQuietEnd", -1)
+            val qs = p.getIntSafe("govQuietStart", -1)
+            val qe = p.getIntSafe("govQuietEnd", -1)
             val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
             val inQuiet = BgBrainSeam.bgQuietHour(qs, qe, h) ?: bgQuietHourKotlin(qs, qe, h)
             if (inQuiet) return false
@@ -147,8 +147,8 @@ object BgBrain {
         // Slice 12 (vc329): gerbang submit lewat seam Rust (keputusan
         // murni); efek samping (block/notify/clear sessionDead) tetap
         // Kotlin. Fallback = blok gerbang asli bila seam tak-tersedia.
-        val lastRL = prefs(ctx).getLong("bgLastRateLimitTs", 0)
-        val lastRetry = prefs(ctx).getLong("bgDeadRetryTs", 0)
+        val lastRL = prefs(ctx).getLongSafe("bgLastRateLimitTs", 0)
+        val lastRetry = prefs(ctx).getLongSafe("bgDeadRetryTs", 0)
         val gate = BgBrainSeam.submitDecision(
             lastRL, System.currentTimeMillis(), sessionDead(ctx), lastRetry,
             overCapBgForEngine(ctx), bgAllowed(ctx), origin in setOf("jadwal", "rutinitas") && jobsOff(ctx),
@@ -177,7 +177,7 @@ object BgBrain {
             q.add((jobId ?: ("tanpa-id-" + System.currentTimeMillis())) + " | " + origin + " | " + task.take(80))
             prefs(app).edit().putStringSet("bgQueue", q).apply()
         } catch (e: Exception) {}
-        val owner = ownerSessionId ?: prefs(app).getLong("currentSession", 1L)
+        val owner = ownerSessionId ?: prefs(app).getLongSafe("currentSession", 1L)
         executor.execute { runTask(app, task, origin, notifTitle, jobId, jobTools, owner) }
         return true
     }
@@ -198,14 +198,14 @@ object BgBrain {
      *  retry sessionDead, kuota, gerbang, job, baterai) — dipakai bila
      *  seam Rust tak-tersedia. True = lolos, false = diblokir. */
     private fun submitGateKotlin(ctx: Context, origin: String): Boolean {
-        val lastRL = prefs(ctx).getLong("bgLastRateLimitTs", 0)
+        val lastRL = prefs(ctx).getLongSafe("bgLastRateLimitTs", 0)
         if (lastRL > 0 && System.currentTimeMillis() - lastRL < 15 * 60_000) return block(ctx, "cooldown")
         if (sessionDead(ctx)) {
             // F2.1: jangan mengunci mati selamanya — coba lagi maks 1x per
             // 15 menit. K1 (Fase 6): handleError TIDAK LAGI men-set flag
             // ini, jadi cabang ini hanya membersihkan flag warisan
             // instalasi lama, bukan gerbang hidup.
-            val lastRetry = prefs(ctx).getLong("bgDeadRetryTs", 0)
+            val lastRetry = prefs(ctx).getLongSafe("bgDeadRetryTs", 0)
             if (System.currentTimeMillis() - lastRetry < 15 * 60_000) return block(ctx, "sesi mati")
             prefs(ctx).edit().putBoolean("bgSessionDead", false).putLong("bgDeadRetryTs", System.currentTimeMillis()).apply()
         }
@@ -356,7 +356,7 @@ object BgBrain {
                     val r = arr.optJSONObject(i) ?: continue
                     if (r.optString("id") == jobId && r.optString("kind") == "digest") {
                         val digest = Automation.buildRoomDigest(ctx, r.optString("digestRoomId"))
-                        val digestOwner = ownerSessionId ?: prefs(ctx).getLong("currentSession", 1L)
+                        val digestOwner = ownerSessionId ?: prefs(ctx).getLongSafe("currentSession", 1L)
                         deliver(ctx, origin, notifTitle, digestOwner, digest, jobId)
                         return
                     }
@@ -368,7 +368,7 @@ object BgBrain {
         val mdb = MemoryDb.get(ctx)
         // vc243 GELOMBANG 2 (AG-M4): konteks + hasil memakai sesi PEMILIK
         // tugas (ditangkap submit), bukan sesi aktif saat eksekusi.
-        val sessionId = ownerSessionId ?: prefs(ctx).getLong("currentSession", 1L)
+        val sessionId = ownerSessionId ?: prefs(ctx).getLongSafe("currentSession", 1L)
         // vc241: latar memakai katalog per tugas + WorldState tanpa goal-teratas (blok TUJUAN AKTIF sendiri sudah ada di bawah).
         // F5b: varian katalog mengikuti dialek tugas ini (native bila
         // provider mendukung native; teks bila dialek teks).
@@ -561,7 +561,7 @@ object BgBrain {
     private fun loopInnerVc263(ctx: Context, task: String, origin: String, notifTitle: String?,
                      sessionId: Long, transcript: StringBuilder, steps0: Int, firstPrompt: String?, jobId: String? = null, jobTools: Set<String>? = null, workVc303: MutableList<WorkItem>? = null) {
         // vc265 V-m7 (vc299: plafon naik 50 → 200): batas atas dicocokkan dengan UI (200).
-        val maxSteps = prefs(ctx).getInt("maxToolSteps", 50).coerceIn(5, 200)
+        val maxSteps = prefs(ctx).getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
         // vc266: FAKTA PIN penuh sekali per tugas latar — dipakai gate bukti, warning, dan filter reviewer.
         val pinnedBgVc266 = try { MemoryDb.get(ctx).pinnedFactsText() } catch (e: Exception) { "" }
         var steps = steps0
@@ -1132,7 +1132,7 @@ object BgBrain {
     private fun autoAllowed(ctx: Context, tool: String): Boolean {
         // vc229 R-04(a)(b): gerbang autoAllow yang sama (blokir kelas
         // terkunci + TTL 24 jam + ikatan sesi saat ini).
-        return ApprovalPanelStore.autoAllowValid(ctx, tool, prefs(ctx).getLong("currentSession", 1L))
+        return ApprovalPanelStore.autoAllowValid(ctx, tool, prefs(ctx).getLongSafe("currentSession", 1L))
     }
 
     // vc233 K2b: penampung proposal fakta latar — pola yang sama dengan
@@ -1313,7 +1313,7 @@ object BgBrain {
      *  tampil (activity tidak di depan — dulu crash BadTokenException).
      *  vc242: mengembalikan false bila antrean penuh (tidak diparkir). */
     fun parkExternal(ctx: Context, task: String, transcriptText: String, tool: String, args: JSONObject): Boolean {
-        return park(ctx, task, "panel", null, StringBuilder(transcriptText), 1, tool, args, "", null, null, prefs(ctx).getLong("currentSession", 1L))
+        return park(ctx, task, "panel", null, StringBuilder(transcriptText), 1, tool, args, "", null, null, prefs(ctx).getLongSafe("currentSession", 1L))
     }
 
     /** Dipanggil BgApprovalReceiver saat user mengetuk Setujui/Tolak.
@@ -1367,7 +1367,7 @@ object BgBrain {
             }
             val claimed = store.get(pidVc305) ?: return@execute
             val jobIdForCancel: String? = claimed.job.ifBlank { null }
-            val sessionIdForCancel = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val sessionIdForCancel = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLongSafe("currentSession", 1L)
             val tool = claimed.tool
             val args = try { JSONObject(claimed.args) } catch (e: Exception) { JSONObject() }
             // Staleness via machine (ts<=0 SELALU expired — lubang vc304 ditutup).
@@ -1414,7 +1414,7 @@ object BgBrain {
                 else "User MENOLAK tool $tool dari notifikasi persetujuan Otak Latar. Jangan ulangi tool itu; selesaikan tugas tanpanya atau laporkan keterbatasannya dengan jujur."
             val transcript = StringBuilder(claimed.transcript)
             transcript.append("\n[HASIL TOOL] $tool (persetujuan notifikasi: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
-            val sessionId = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val sessionId = claimed.ownerSession.takeIf { it > 0 } ?: prefs(app).getLongSafe("currentSession", 1L)
             val jobId = claimed.job.ifBlank { null }
             val jobTools = claimed.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
             loop(app, claimed.task, claimed.origin,
@@ -1439,7 +1439,7 @@ object BgBrain {
             if (pidVc305.isBlank()) {
                 // Slot legacy tanpa pid: tidak ada status durable yang
                 // bisa diverifikasi -> TIDAK PERNAH dieksekusi.
-                deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tanpa identitas parkir durable (slot lama pra-vc305) \u2014 tidak dieksekusi.", o.optString("job").ifBlank { null }, "dibatalkan")
+                deliver(app, o.optString("origin"), o.optString("title").ifBlank { null }, o.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(app).getLongSafe("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tanpa identitas parkir durable (slot lama pra-vc305) \u2014 tidak dieksekusi.", o.optString("job").ifBlank { null }, "dibatalkan")
                 return@execute
             }
             val store = ParkedApprovalStoreVc305.get(app)
@@ -1457,7 +1457,7 @@ object BgBrain {
                 ParkedApprovalMachineVc305.isClaimExpired(row.toState(), nowMs) ||
                 nowMs - o.optLong("ts", 0) > 15 * 60_000L) {
                 store.markExpired(pidVc305, nowMs)
-                deliver(app, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool $tool lewat 15 menit \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
+                deliver(app, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLongSafe("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool $tool lewat 15 menit \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
                 return@execute
             }
             store.decide(pidVc305, if (approved) "APPROVED" else "REJECTED", nowMs)
@@ -1465,7 +1465,7 @@ object BgBrain {
                 else "User MENOLAK tool $tool pada konfirmasi kedua dalam-app. Jangan ulangi tool itu; selesaikan tugas tanpanya atau laporkan keterbatasannya dengan jujur."
             val transcript = StringBuilder(row.transcript)
             transcript.append("\n[HASIL TOOL] $tool (konfirmasi kedua dalam-app: ${if (approved) "DISETUJUI" else "DITOLAK"}): ").append(result.take(8000))
-            val sessionId = row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLong("currentSession", 1L)
+            val sessionId = row.ownerSession.takeIf { it > 0 } ?: prefs(app).getLongSafe("currentSession", 1L)
             val jobId = row.job.ifBlank { null }
             val jobTools = row.tools.split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet().takeIf { it.isNotEmpty() }
             loop(app, row.task, row.origin,
@@ -1508,7 +1508,7 @@ object BgBrain {
             for (row in expired) {
                 removed++
                 try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(row.notifId) } catch (e: Exception) {}
-                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
+                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLongSafe("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
             }
             val sc = prefs(ctx).getString("bgSecondConfirm", "") ?: ""
             if (sc.isNotBlank()) {
@@ -1556,7 +1556,7 @@ object BgBrain {
                     if (pidSc.isNotBlank()) {
                         ParkedApprovalStoreVc305.get(ctx).markExpired(pidSc, System.currentTimeMillis())
                     }
-                    deliver(ctx, so.optString("origin"), so.optString("title").ifBlank { null }, so.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool ${so.optString("tool")} lewat 15 menit \u2014 tidak dieksekusi.", so.optString("job").ifBlank { null }, "dibatalkan")
+                    deliver(ctx, so.optString("origin"), so.optString("title").ifBlank { null }, so.optLong("ownerSession", 0).takeIf { it > 0 } ?: prefs(ctx).getLongSafe("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: konfirmasi kedua tool ${so.optString("tool")} lewat 15 menit \u2014 tidak dieksekusi.", so.optString("job").ifBlank { null }, "dibatalkan")
                 }
             }
         } catch (e: Exception) {}
@@ -1565,7 +1565,7 @@ object BgBrain {
             val expired = ParkedApprovalStoreVc305.get(ctx).sweepExpired(System.currentTimeMillis())
             for (row in expired) {
                 try { (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(row.notifId) } catch (e: Exception) {}
-                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLong("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA (melewati batas staleness) \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
+                deliver(ctx, row.origin, row.title.ifBlank { null }, row.ownerSession.takeIf { it > 0 } ?: prefs(ctx).getLongSafe("currentSession", 1L), "\u26d4 Tugas latar dibatalkan: persetujuan tool ${row.tool} sudah KEDALUWARSA (melewati batas staleness) \u2014 tidak dieksekusi.", row.job.ifBlank { null }, "dibatalkan")
                 EventDb.get(ctx).add("bgbrain", ctx.packageName, "Parkir kedaluwarsa dibatalkan: ${row.tool} (id: ${row.pid})")
             }
         } catch (e: Exception) {}
@@ -1697,7 +1697,7 @@ object BgBrain {
                 if (sims.isNotEmpty()) pairsText = "\n\nPASANGAN FAKTA MIRIP (gabungkan jadi satu fakta utuh: remember_fact dengan kunci paling jelas berisi gabungannya, lalu forget_fact kunci gandanya):\n" + sims.take(6).joinToString("\n")
             } catch (e: Exception) {}
         }
-        val sessionId = prefs(app).getLong("currentSession", 1L)
+        val sessionId = prefs(app).getLongSafe("currentSession", 1L)
         // vc235 M2: transkrip Vc230; sessionId = sesi aktif saat
         // konsolidasi jalan (pref currentSession), sama seperti runTask.
         val hist = try { mdb.historyTranscriptVc230(60, 30000, sessionId) } catch (e: Exception) { "" }
@@ -1725,7 +1725,7 @@ object BgBrain {
     private fun openAppIntent(ctx: Context): PendingIntent =
         PendingIntent.getActivity(ctx, 7,
             Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra("bgSessionId", try { prefs(ctx).getLong("notifSessionId", -1) } catch (e: Exception) { -1L }),
+                .putExtra("bgSessionId", try { prefs(ctx).getLongSafe("notifSessionId", -1) } catch (e: Exception) { -1L }),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     // vc243 GELOMBANG 2 (NT-M1): SATU fungsi sapu bersama untuk semua
@@ -1770,7 +1770,7 @@ object BgBrain {
     fun notifyGovernorDelay(ctx: Context, reason: String) {
         try {
             val p = prefs(ctx)
-            val last = p.getLong("govDelayNotifTs", 0)
+            val last = p.getLongSafe("govDelayNotifTs", 0)
             if (System.currentTimeMillis() - last < 3600_000) return
             p.edit().putLong("govDelayNotifTs", System.currentTimeMillis()).apply()
             notify(ctx, 7799, "⏸️ Tugas latar ditunda Governor", "Ditunda karena: $reason. Tugas dicoba lagi di tick berikutnya bila gerbang sudah lolos.", "Tugas latar ditunda Governor ($reason) — bukan gagal. Bila gerbang (jam hening/WiFi/kuota) masih menahan, tugas tetap ditunda sampai gerbang lolos.")

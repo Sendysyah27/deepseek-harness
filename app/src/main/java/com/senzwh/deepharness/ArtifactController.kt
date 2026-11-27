@@ -134,7 +134,7 @@ import java.io.File
         artifactWebView = wv
         body.addView(wv)
         val tv = TextView(this).apply {
-            textSize = getSharedPreferences("harness", Context.MODE_PRIVATE).getInt("chatFontPx", 15).toFloat()
+            textSize = getSharedPreferences("harness", Context.MODE_PRIVATE).getIntSafe("chatFontPx", 15).toFloat()
             setTextColor(th.text)
             setPadding(dp(14), dp(12), dp(14), dp(12))
         }
@@ -239,7 +239,7 @@ import java.io.File
         val latch = java.util.concurrent.CountDownLatch(1)
         val runnable = Runnable {
             val th = currentTheme()
-            val bf = getSharedPreferences("harness", Context.MODE_PRIVATE).getInt("chatFontPx", 15).toFloat()
+            val bf = getSharedPreferences("harness", Context.MODE_PRIVATE).getIntSafe("chatFontPx", 15).toFloat()
             val wrap = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = android.view.Gravity.START

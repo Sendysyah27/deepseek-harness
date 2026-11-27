@@ -745,11 +745,11 @@ import java.io.File
             val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
             val now = !prefs.getBoolean("proactiveOn", true)
             prefs.edit().putBoolean("proactiveOn", now).apply()
-            setupStatusTv.text = "Mode proaktif: ${if (now) "AKTIF — pengingat dari tool set_reminder akan muncul sebagai notifikasi; briefing pagi jam ${prefs.getInt("briefingHour", 7)}.00; rekap malam jam 20.00." else "MATI — notifikasi proaktif berhenti (layanan pantau tetap jalan)."}"
+            setupStatusTv.text = "Mode proaktif: ${if (now) "AKTIF — pengingat dari tool set_reminder akan muncul sebagai notifikasi; briefing pagi jam ${prefs.getIntSafe("briefingHour", 7)}.00; rekap malam jam 20.00." else "MATI — notifikasi proaktif berhenti (layanan pantau tetap jalan)."}"
         }
         addBtn("15. Jam Briefing Pagi (ketuk untuk ganti)") {
             val prefs = getSharedPreferences("harness", Context.MODE_PRIVATE)
-            val next = (prefs.getInt("briefingHour", 7) + 1).let { if (it > 10) 5 else it }
+            val next = (prefs.getIntSafe("briefingHour", 7) + 1).let { if (it > 10) 5 else it }
             prefs.edit().putInt("briefingHour", next).apply()
             setupStatusTv.text = "Jam briefing pagi sekarang: $next.00 WIB (ketuk lagi untuk geser 5–10)."
         }
@@ -932,7 +932,7 @@ import java.io.File
             val numF = EditText(this).apply {
                 hint = "Batas langkah (3–200)"
                 inputType = android.text.InputType.TYPE_CLASS_NUMBER
-                setText(prefs.getInt("maxToolSteps", 50).toString())
+                setText(prefs.getIntSafe("maxToolSteps", 50).toString())
                 setTextColor(TEXT); setHintTextColor(DIM)
             }
             val askB = CheckBox(this).apply {
