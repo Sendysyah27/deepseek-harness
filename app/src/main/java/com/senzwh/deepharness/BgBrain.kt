@@ -220,8 +220,8 @@ object BgBrain {
     // helper bersama (LlmEngineChat). Governor + TurnMetrics +
     // jawaban-kosong=throw ditegakkan helper. Engine "local" → helper
     // melempar pesan offline (mode lokal tanpa LLM).
-    private fun chatSync(ctx: Context, prompt: String, reviewer: Boolean = false): String {
-        return LlmEngineChat.chatSyncForEngine(ctx, prompt, if (reviewer) LlmCallKind.REVIEWER else LlmCallKind.BACKGROUND)
+    private fun chatSync(ctx: Context, prompt: String): String {
+        return LlmEngineChat.chatSyncForEngine(ctx, prompt, LlmCallKind.BACKGROUND)
     }
 
     // ---------------- F5b: loop tool native (Models API) ----------------
@@ -562,8 +562,6 @@ object BgBrain {
                      sessionId: Long, transcript: StringBuilder, steps0: Int, firstPrompt: String?, jobId: String? = null, jobTools: Set<String>? = null, workVc303: MutableList<WorkItem>? = null) {
         // vc265 V-m7 (vc299: plafon naik 50 → 200): batas atas dicocokkan dengan UI (200).
         val maxSteps = prefs(ctx).getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
-        // vc266: FAKTA PIN penuh sekali per tugas latar — dipakai gate bukti, warning, dan filter reviewer.
-        val pinnedBgVc266 = try { MemoryDb.get(ctx).pinnedFactsText() } catch (e: Exception) { "" }
         var steps = steps0
         var prompt = firstPrompt ?: continuationPrompt(ctx, transcript, sessionId)
         // F5b: engine openai native → loop messages (ChatResult.toolCalls);
@@ -578,7 +576,6 @@ object BgBrain {
         if (useNativeBgVc5b) bgMessagesVc5b.add(ChatMessage("user", prompt))
         var lastRejected: String? = null
         var rejectNudges = 0
-        var gateRetriedVc249 = false
         val usedToolsVc249 = ArrayList<String>()
         // vc277 O17(c): pengunci giliran latar — sekali StuckDetector 🛑,
         // tool berikutnya ditolak tanpa eksekusi dan tanpa memakan langkah.
@@ -629,8 +626,8 @@ object BgBrain {
             )
             transcript.append("\n").append(BatchToolVc274.combinedMessage("latar", reportBgVc274))
             // F5b: hasil batch sebagai pesan role:tool (satu per call) —
-            // transkrip tetap mendapat teks gabungan (bukti reviewer +
-            // deliver), messages mendapat hasil terstruktur.
+            // transkrip tetap mendapat teks gabungan (hasil + deliver),
+            // messages mendapat hasil terstruktur.
             if (useNativeBgVc5b) {
                 for (oc in reportBgVc274.outcomes) {
                     bgMessagesVc5b.add(ChatMessage("tool", toolResultContentBgVc5b(oc.result, oc.resultId, oc.resultTotal), toolCallId = oc.callId.ifBlank { null }))
@@ -765,63 +762,7 @@ object BgBrain {
                     continue
                 }
                 val finalBgVc249 = visible.ifBlank { resp.trim() }
-                // vc249: gate bukti latar — minta ulang SEKALI, jawaban pertama dibuang.
-                // vc266: jawaban yang seluruh klaimnya didukung memori tidak kena gate bukti.
-                val allMemBgVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(finalBgVc249), pinnedBgVc266.lines(), task)
-                if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(finalBgVc249) && usedToolsVc249.isNotEmpty() && !allMemBgVc266 && !AgentPrompt.evidenceMarkerPresent(finalBgVc249)) {
-                    gateRetriedVc249 = true
-                    transcript.append("\n[SISTEM] ").append(AgentPrompt.EVIDENCE_GATE_NUDGE)
-                    // F5b: native → gate nudgenya jadi pesan user (bukan
-                    // prompt string yang dibangun ulang); teks → lama.
-                    if (useNativeBgVc5b) bgMessagesVc5b.add(ChatMessage("user", "[SISTEM] " + AgentPrompt.EVIDENCE_GATE_NUDGE)) else prompt = continuationPrompt(ctx, transcript, sessionId)
-                    continue
-                }
-                var deliverBgVc249 = finalBgVc249
-                if (AgentPrompt.hasFactualClaim(finalBgVc249)) {
-                    val warnBgVc249 = AgentPrompt.claimWarningForCorpus(finalBgVc249, usedToolsVc249, transcript.toString(), pinnedBgVc266, task)
-                    if (warnBgVc249 != null) deliverBgVc249 = "⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnBgVc249\n\n" + deliverBgVc249
-                }
-                // vc249 + vc262 N-M12: reviewer konteks-nol latar — hanya klaim + bukti (tugas, hasil tool, fakta PIN), panggilan
-                // stateless segar via helper Models API (bukan sesi yang sama dengan giliran agen).
-                if (AgentPrompt.hasFactualClaim(finalBgVc249) || usedToolsVc249.isNotEmpty()) {
-                    // vc277 O16(b): kuota reviewer habis — reviewer
-                    // dilewati dengan penanda, bukan diam-diam lolos.
-                    // F2a: kuota bucket reviewer per-provider (Governor
-                    // Models API) + teks refusalModels. Reviewer stateless
-                    // (independen) — tanpa suffix "tidak independen".
-                    val reviewerProviderBg = try { LlmEngineChat.resolveProvider(ctx) } catch (e: Exception) { null }
-                    val overCapReviewerBgVc277 = reviewerProviderBg?.let { Governor.overCapModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: false
-                    if (overCapReviewerBgVc277) {
-                        val overCapTextBgVc275 = reviewerProviderBg?.let { Governor.refusalModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } ?: ""
-                        deliverBgVc249 = overCapTextBgVc275 + "\n\n" + deliverBgVc249
-                    }
-                    try {
-                        val claimsBgVc249 = AgentPrompt.splitClaims(finalBgVc249)
-                        if (!overCapReviewerBgVc277 && claimsBgVc249.isNotEmpty()) {
-                            val pinnedBgR = try { RedactSecrets.redact(MemoryDb.get(ctx).pinnedFactsText()) } catch (e: Exception) { "" }
-                            val evBg = ("TUGAS:\n" + task + "\nHASIL TOOL:\n" + transcript.toString() + "\nFAKTA PIN:\n" + pinnedBgR).take(16000)
-                            // vc275 O11: verdict tak terparse -> retry 1x format ketat (chatSync reviewer=true bump bucket reviewer); tetap gagal -> penanda "belum terverifikasi". Reviewer stateless independen.
-                            var unsBg: List<Int> = emptyList()
-                            var concBg = false
-                            var reviewFailBgVc275 = false
-                            try {
-                                val rawBgVc249 = chatSync(ctx, AgentPrompt.zeroCtxReviewPrompt(claimsBgVc249, evBg), reviewer = true)
-                                val (u1BgVc275, c1BgVc275) = AgentPrompt.parseZeroCtxReview(rawBgVc249)
-                                if (c1BgVc275) { unsBg = u1BgVc275; concBg = true } else {
-                                    val rawBg2Vc275 = chatSync(ctx, AgentPrompt.reviewerRetryPrompt(claimsBgVc249, evBg), reviewer = true)
-                                    val (u2BgVc275, c2BgVc275) = AgentPrompt.parseZeroCtxReview(rawBg2Vc275)
-                                    if (c2BgVc275) { unsBg = u2BgVc275; concBg = true } else reviewFailBgVc275 = true
-                                }
-                            } catch (e: Exception) { reviewFailBgVc275 = true }
-                            // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                            val unsBgFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsBgVc249, unsBg, pinnedBgR.lines(), task)
-                            if (reviewFailBgVc275) deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + deliverBgVc249
-                            else if (unsBgFiltVc266.isNotEmpty()) deliverBgVc249 = AgentPrompt.reviewerNoteText(claimsBgVc249, unsBgFiltVc266) + "\n\n" + AgentPrompt.applyDoublePass(deliverBgVc249, claimsBgVc249, unsBgFiltVc266)
-                        }
-                    } catch (e: Exception) {
-                        deliverBgVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + deliverBgVc249
-                    }
-                }
+                val deliverBgVc249 = finalBgVc249
                 try { EventDb.get(ctx).add("bgbrain", ctx.packageName, "[$origin] selesai: $steps langkah, ${System.currentTimeMillis() - loopStartMsVc263} ms, prompt terakhir ${prompt.length} char, transkrip ${transcript.length} char") } catch (e: Exception) {}
                 deliver(ctx, origin, notifTitle, sessionId, deliverBgVc249, jobId)
                 return

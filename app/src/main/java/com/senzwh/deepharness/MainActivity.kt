@@ -259,9 +259,8 @@ class MainActivity : Activity() {
     // vc286 Fase 1 (d).4 poin 2: daftar resultId 2 giliran terakhir sesi
     // 1-1 yang sama (in-memory; hilang bila proses mati). Tiap entri =
     // resultId giliran itu (bisa kosong bila giliran tanpa tool — slot
-    // tetap dihitung agar jendela 2 giliran harfiah). Dibaca di
-    // vc228ClaimWarning via ResultStore.get (cap 8.000 char per hasil,
-    // sama seperti giliran ini) dan vc287 di bukti reviewer 1-1.
+    // tetap dihitung agar jendela 2 giliran harfiah).
+    // (Dulu dibaca claim-check + reviewer 1-1, keduanya dihapus vc333.)
     // Dibuang bila pindah sesi atau wipe.
     internal val prevTurnResultIdsVc286 = ArrayDeque<List<String>>()
     internal var prevTurnResultIdsSessionVc286: Long = -1
@@ -313,9 +312,7 @@ class MainActivity : Activity() {
     private var resumeDialogVc304: android.app.AlertDialog? = null
     private var lastUserText: String = ""
     private var turnUsedTools: Boolean = false
-    private var verifyTurn: Boolean = false
     private val retriedTools = HashSet<String>()
-    private lateinit var verifyCheck: CheckBox
     private lateinit var sessionTitleTv: TextView
     internal lateinit var termOut: TextView
     internal fun termOutReady(): Boolean = ::termOut.isInitialized
@@ -392,7 +389,6 @@ class MainActivity : Activity() {
         tg.put("think", if (::thinkingCheck.isInitialized) thinkingCheck.isChecked else false)
         tg.put("search", if (::searchCheck.isInitialized) searchCheck.isChecked else false)
         tg.put("voice", if (::voiceCheck.isInitialized) voiceCheck.isChecked else false)
-        tg.put("verify", if (::verifyCheck.isInitialized) verifyCheck.isChecked else true)
         o.put("toggles", tg)
         o.put("perms", permStatusJson())
         o.put("maxSteps", prefs.getIntSafe("maxToolSteps", 50))
@@ -451,13 +447,12 @@ class MainActivity : Activity() {
     }
 
     // ---- Dipanggil UiBridge (semua hop ke UI thread) ----
-    fun uiSend(text: String, ctx: Boolean, think: Boolean, search: Boolean, voice: Boolean, verify: Boolean) {
+    fun uiSend(text: String, ctx: Boolean, think: Boolean, search: Boolean, voice: Boolean) {
         runOnUiThread {
             if (::ctxCheck.isInitialized) ctxCheck.isChecked = ctx
             if (::thinkingCheck.isInitialized) thinkingCheck.isChecked = think
             if (::searchCheck.isInitialized) searchCheck.isChecked = search
             if (::voiceCheck.isInitialized) voiceCheck.isChecked = voice
-            if (::verifyCheck.isInitialized) verifyCheck.isChecked = verify
             val t = text.trim()
             if (t.isNotEmpty()) onUserMessage(t)
         }
@@ -2074,8 +2069,6 @@ class MainActivity : Activity() {
         modeRow.addView(searchCheck)
         voiceCheck = CheckBox(this).apply { text = "Suara (TTS)"; setTextColor(DIM); textSize = 12f }
         modeRow.addView(voiceCheck)
-        verifyCheck = CheckBox(this).apply { text = "Verifikasi"; setTextColor(DIM); textSize = 12f; isChecked = true }
-        modeRow.addView(verifyCheck)
         drawerPanel.addView(modeRow)
         // v4.36.0 (T16): composer SATU pill ala messenger referensi — tombol +
         // kiri & mic/panah-kirim kanan hidup DI DALAM pill; panah kirim hanya
@@ -3969,7 +3962,7 @@ class MainActivity : Activity() {
      *  kayak web asli biar output API bisa dibedakan"): di UI React pesan membawa
      *  label sumber jalur (src) + teks berpikir (think) yang dirender terlipat;
      *  di UI klasik berpikir tampil sebagai bubble kecil redup di atas jawaban. */
-    private fun addAnswerBubble(text: String, untrusted: Boolean = false) {
+    private fun addAnswerBubble(text: String) {
         val src = turnSource
         val think = turnThinking
         turnThinking = ""
@@ -3978,10 +3971,6 @@ class MainActivity : Activity() {
         // pill "Berpikir" (preview + expand). Isi berpikir tidak dikirim ke
         // mana pun dari sini, jadi tidak ada dampak ke tool/server.
         if (think.isNotBlank()) addMsg("💭 Berpikir:\n" + AgentPrompt.stripRawToolMarkupForDisplay(think), "think", turn = true)
-        // vc232 S3(a) + vc306 C12: jawaban kena claimWarning TIDAK LAGI
-        // ditempel sebagai prefix di bubble asisten — peringatannya tampil
-        // sebagai kartu tone attention sendiri (teks SAMA), jawaban bersih.
-        if (untrusted) addMsg("⚠️ JAWABAN INI TIDAK DIDUKUNG HASIL TOOL — baca dengan curiga; klaimnya belum terbukti.", "meta", turn = true)
         val marked = text
         // vc232 S10(b): label mimikri diperluas (awalan teks).
         val labeledVc230 = if (marked.trimStart().startsWith("✓ Selesai") || marked.trimStart().startsWith("🧰") || marked.trimStart().startsWith("⏱") || marked.trimStart().startsWith("✓ jawaban lolos") || marked.trimStart().startsWith("⛔ Dihentikan") || marked.trimStart().startsWith("⚠️ Peringatan sistem") || marked.trimStart().startsWith("❓ Agen menunggu") || marked.trimStart().startsWith("SISTEM •")) "[prosa model — bukan meta sistem] " + marked else marked
@@ -4672,7 +4661,7 @@ class MainActivity : Activity() {
     // satu giliran baru via onUserMessage dengan teks lanjutan
     // deterministik (prompt = WorkNotes + status + plan sudah ditempel
     // otomatis di awal giliran: MainActivity 1-1 awal + RENCANA AKTIF).
-    // Gate vc247 / cap langkah / claim-check TIDAK diubah.
+    // Gate vc247 / cap langkah TIDAK diubah.
     private var resumeOfferShownVc303 = false
     private fun offerResumeVc303() {
         try {
@@ -4747,7 +4736,6 @@ class MainActivity : Activity() {
         refreshLiveCard()
         autoContinueCount = 0
         malformedRetry = 0
-        gateRetryVc249 = 0
         refusalRetryVc251 = 0
         pendingAskVc229 = null
         addBubble(text, true)
@@ -4789,8 +4777,8 @@ class MainActivity : Activity() {
         stuckMap.clear()
         // VC303-P3-16/17/19: reset penjaga loop lapis kedua per giliran —
         // perpanjangan +10, klaster fuzzy, penolakan pola terkunci.
-        // (Pola terkunci + sidik jari klaim lintas giliran TIDAK direset:
-        // itu simpanan prefs per sesi, sengaja bertahan ke giliran berikut.)
+        // (Pola terkunci TIDAK direset: itu simpanan prefs per sesi,
+        // sengaja bertahan ke giliran berikut.)
         extendCountVc303 = 0
         extendOkMarkVc303 = 0
         lockedRefusalsVc303 = 0
@@ -4814,13 +4802,11 @@ class MainActivity : Activity() {
         openaiToolRepairVc5b = 0
         openaiRoleFallbackArmedVc5b = false
         openaiToolNamesVc5b.clear()
-        turnSystemNotesVc282.clear()
         turnSource = "" // vc232 S10(c): sumber turn lama tidak terbawa ke pill turn baru
         // vc306 Worker C: hitungan + registry auto-collapse giliran baru.
         turnProcessViewsVc306.clear(); thinkPillsVc306.clear()
         turnToolRowsVc306 = 0; turnMsgCountVc306 = 0; turnThinkBlocksVc306 = 0
         lastTurnContainerVc306 = null; lastTurnExpandedContentVc306 = null; lastTurnToggleVc306 = null
-        verifyTurn = false // vc232 S7: flag verifikasi tidak boleh bocor ke giliran berikut
         TurnMetrics.beginTurn(this)
         blockedAttempts = 0
         // vc265 V-m7 (vc299: plafon naik 50 → 200): cap dibatasi 200 (batas UI) — nilai restore/backup
@@ -5011,13 +4997,10 @@ class MainActivity : Activity() {
         // ikut di dalam blok). Ganti pemanggil vc301 langsung — isi baris +
         // status + cap SAMA (lihat AgentPrompt.workNotesBlockVc302).
         run { val wb = AgentPrompt.workNotesBlockVc302(this, currentSessionId); if (wb.isNotBlank()) prompt += wb + "\n\n" }
-        // VC303-P3-19 (LP-5a): larangan keras pola terkunci lintas giliran
-        // + VC303-P3-20 (LP-6): sidik jari klaim yang kena claim-stop —
-        // keduanya dibaca PAKSA di awal giliran berikut (seperti WorkNotes
-        // Fix C), supaya agen tidak mengulang pendekatan gagal yang sama
-        // dengan counter nol.
+        // VC303-P3-19 (LP-5a): larangan keras pola terkunci lintas giliran —
+        // dibaca PAKSA di awal giliran berikut (seperti WorkNotes Fix C),
+        // supaya agen tidak mengulang pendekatan gagal yang sama.
         run { val lb = lockedPatternsBlockVc303(currentSessionId); if (lb.isNotBlank()) prompt += lb + "\n\n" }
-        run { val cb = claimFingerprintsBlockVc303(currentSessionId); if (cb.isNotBlank()) prompt += cb + "\n\n" }
         if (ctxCheck.isChecked) {
             prompt += "Konteks HP saat ini:\n" +
                 "- " + Tools.execute(this, "get_current_app", JSONObject()) + "\n" +
@@ -8775,7 +8758,7 @@ class MainActivity : Activity() {
             // konservatif: memangkas ke 1000 mengurangi konteks model).
             // Kebijakan cap hasil yang didokumentasikan (satu rantai):
             // execute 9000 -> evidence 4000 -> JEJAK 4000/baris ->
-            // korpus reviewer 8000/hasil (ResultStore). Tiap pemotongan
+            // ResultStore 8000/hasil. Tiap pemotongan
             // membawa penanda sisa yang jujur + id get_result (O20(b)).
             val lines = steps.map { w ->
                 val rawEv = if (w.evidence.isNotBlank()) w.evidence else w.summary
@@ -8986,10 +8969,9 @@ class MainActivity : Activity() {
     // user + work-notes) dari dispatchTurn — HANYA giliran pertama 1-1
     // yang membawa delta; lanjutan tool (sendContinuation) membawa
     // deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu sudah
-    // delta vc316). vc330: verifikasi diri membawa delta
-    // (deltaVerifyPromptVc330 — tanpa ctxHist 20.000 char) dan tugas
-    // latar membawa delta (deltaExtractPromptVc330 — jendela 13 pesan,
-    // bukan 40/40.000); rescue tetap default null = prompt penuh.
+    // delta vc316). vc330: tugas latar membawa delta
+    // (deltaExtractPromptVc330 — jendela 13 pesan, bukan 40/40.000);
+    // rescue tetap default null = prompt penuh.
     // Delta vs penuh diputuskan dari riwayat pesan percakapan ini
     // (LlmEngineChat.historyBudget). Governor tetap dihitung dari
     // prompt penuh (konservatif — kuota tidak berubah).
@@ -9014,38 +8996,34 @@ class MainActivity : Activity() {
                 addBubble("⚠️ Provider '${prov.id}' belum punya API key. Atur via Setup > Model.", false, turn = true)
                 return
             }
-            val wantThink = (thinkingCheck.isChecked || autoThinkThisTurn) && !(internalTurn || verifyTurn)
+            val wantThink = (thinkingCheck.isChecked || autoThinkThisTurn) && !internalTurn
             // F5b: prompt penuh dibangun SEKALI per giliran — masuk
             // messages di sini; lanjutan hanya append (continueOpenaiVc5b),
-            // bukan kirim ulang prompt. Giliran senyap (verify/internal)
+            // bukan kirim ulang prompt. Giliran senyap (internal)
             // memakai daftar sekali-pakai sendiri (tidak mengotori riwayat
             // messages giliran utama).
-            if (!internalTurn && !verifyTurn) {
+            if (!internalTurn) {
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.add(ChatMessage("user", prompt))
             }
             val messagesVc5b: List<ChatMessage> =
-                if (internalTurn || verifyTurn) listOf(ChatMessage("user", prompt))
+                if (internalTurn) listOf(ChatMessage("user", prompt))
                 else openaiTurnMessagesVc5b.toList()
             val nativeVc5b = openaiNativeActiveVc5b()
             // F5b: tools + tool_choice NATIVE (ganti pseudo vc282).
             // - native: tools = ToolRegistry.ALL (helper mengonversi
             //   sendiri via toolsToJson → toolsJson, excluded tersaring).
             // - dialek teks: tools = null (katalog teks sudah di prompt).
-            // - verifyTurn: tools = null + tool_choice "none" (jawaban
-            //   final tanpa tool).
             // - internalTurn (ekstraksi): HANYA remember_fact/learn_rule
             //   + auto — keputusan koordinator merge ("none" mematikan
             //   ekstraksi native; lihat handleAgentResponse).
             // - forced tool: {"type":"function","function":{"name": ...}}.
             val toolsVc5b: List<ToolRegistry.ToolDef>? = when {
                 !nativeVc5b -> null
-                verifyTurn -> null
                 internalTurn -> ToolRegistry.ALL.filter { it.name == "remember_fact" || it.name == "learn_rule" }
                 else -> ToolRegistry.ALL
             }
             val toolChoiceVc5b: Any? = when {
-                verifyTurn -> "none"
                 forcedToolVc282 != null -> JSONObject().put("type", "function")
                     .put("function", JSONObject().put("name", forcedToolVc282))
                 else -> null
@@ -9295,78 +9273,6 @@ class MainActivity : Activity() {
 
 
     private fun extractTool(text: String): Pair<String, JSONObject?> = AgentPrompt.extractToolCall(text)
-
-    // cleanVerdict pindah ke VerifyVerdict.kt (F6) — dipakai kedua overload
-    // handleAgentResponse supaya parser verdict tidak bisa drift antar jalur.
-
-    // vc228 R-02(a): klaim faktual = kata penyelesaian/file/graph/laporan/
-    // tugas + angka, atau path file. Return null bila tidak ada klaim atau
-    // semua token bukti ditemukan di hasil tool giliran ini (evidence +
-    // hasil PENUH via ResultStore).
-    private fun vc228HasFactualClaim(text: String): Boolean {
-        val low = text.lowercase()
-        val strong = listOf("sudah dibuat", "sudah selesai", "sudah dikirim", "sudah tersimpan", "sudah dicatat", "sudah dihapus", "sudah dibaca", "sudah dianalisis")
-        if (strong.any { low.contains(it) }) return true
-        val keys = listOf("file", "graph", "laporan", "tugas", "jadwal", "pengingat", "skill", "dokumen")
-        val hasDigit = Regex("\\d").containsMatchIn(text)
-        if (hasDigit && keys.any { low.contains(it) }) return true
-        if (text.contains("/sdcard") || text.contains("/storage") || text.contains("Download/") || text.contains(".md") || text.contains(".docx") || text.contains(".txt")) return true
-        return false
-    }
-
-    private fun vc228ClaimWarning(finalText: String, work: List<WorkItem>): String? {
-        if (!vc228HasFactualClaim(finalText)) return null
-        val corpusSb = StringBuilder()
-        for (w in work) {
-            corpusSb.append(if (w.callId.isNotBlank()) "[HASIL TOOL " + w.callId + "] " else "").append(w.tool).append(" ").append(w.args).append(" ").append(w.summary).append(" ").append(w.evidence).append(" ")
-            if (w.resultId.isNotBlank()) {
-                try {
-                    val fullVc278 = ResultStore.get(this, w.resultId)?.text ?: ""
-                    corpusSb.append(if (fullVc278.length > 8000) fullVc278.take(8000) + "…(dipotong, sisa " + (fullVc278.length - 8000) + " char, baca via get_result[" + w.resultId + "] untuk sisanya)…" else fullVc278)
-                } catch (e: Exception) {}
-                corpusSb.append(" ")
-            }
-        }
-        // vc286 Fase 1 (d).4 poin 2: korpus angka diperluas dengan hasil
-        // tool PENUH 2 giliran sebelumnya dalam sesi 1-1 yang sama
-        // (ResultStore, cap 8.000 char per hasil seperti giliran ini).
-        // Angka dari giliran >2 ke belakang TIDAK masuk — model harus
-        // memanggil ulang tool-nya. Hanya jalur 1-1 (fungsi ini).
-        if (prevTurnResultIdsSessionVc286 == turnSessionId) {
-            for (ids in prevTurnResultIdsVc286) {
-                for (rid in ids) {
-                    try {
-                        val prevFullVc286 = ResultStore.get(this, rid)?.text ?: ""
-                        if (prevFullVc286.isNotBlank()) corpusSb.append(if (prevFullVc286.length > 8000) prevFullVc286.take(8000) + "…(dipotong, sisa " + (prevFullVc286.length - 8000) + " char, baca via get_result[" + rid + "] untuk sisanya)…" else prevFullVc286).append(" ")
-                    } catch (e: Exception) {}
-                }
-            }
-        }
-        // vc266: delegasi tipis ke claimWarningForCorpus — korpus dibangun
-        // dari loop di atas (termasuk ResultStore 8000 char), lalu teruskan
-        // FAKTA PIN penuh (bukan salinan potong) + pesan user giliran ini.
-        // vc286: aktifkan cek aritmetika turunan (hanya jalur 1-1 ini).
-        val pinnedVc266 = try { MemoryDb.get(this).pinnedFactsText() } catch (e: Exception) { "" }
-        return AgentPrompt.claimWarningForCorpus(finalText, work.map { it.tool }, corpusSb.toString(), pinnedVc266, currentTurnUser, enableArithmeticVc286 = true)
-    }
-
-    // vc228 R-02(d): jejak verifikasi dari hasil tool PENUH via ResultStore
-    // (bukan summary 120 char); fallback ke evidence/summary bila id hilang.
-    private fun vc228FullTrailText(work: List<WorkItem>): String {
-        if (work.isEmpty()) return "(tidak ada tool yang dijalankan giliran ini)"
-        val sb = StringBuilder()
-        for (w in work) {
-            sb.append("- ").append(if (w.callId.isNotBlank()) "[" + w.callId + "] " else "").append(w.tool).append(if (w.ok) " [ok] " else " [gagal] ")
-            if (w.resultId.isNotBlank()) {
-                val full = try { ResultStore.get(this, w.resultId)?.text?.let { if (it.length > 8000) it.take(8000) + "…(dipotong, sisa " + (it.length - 8000) + " char, baca via get_result[" + w.resultId + "] untuk sisanya)…" else it } } catch (e: Exception) { null }
-                sb.append(if (!full.isNullOrBlank()) full else if (w.evidence.isNotBlank()) w.evidence else w.summary)
-            } else {
-                sb.append(if (w.evidence.isNotBlank()) w.evidence else w.summary)
-            }
-            sb.append("\n")
-        }
-        return sb.toString()
-    }
 
     // vc228 R-03(e): persistensi usulan ekstraksi yang belum diputuskan user.
     private fun vc228PersistProposals(props: List<Pair<String, String>>) {
@@ -9783,7 +9689,7 @@ class MainActivity : Activity() {
             tools = tools,
             thinking = thinking,
             onPartial = { partial ->
-                if (internalTurn || verifyTurn) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
+                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…")
                 else updateStreamBubble(partial)
             },
             onToolCalls = { calls -> callsRef.set(calls) },
@@ -9802,7 +9708,7 @@ class MainActivity : Activity() {
             tools = null,
             thinking = thinking,
             onPartial = { partial ->
-                if (internalTurn || verifyTurn) updateStreamBubble(if (verifyTurn) "🔍 Memverifikasi jawaban…" else "🧠 Memproses di latar…")
+                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…")
                 else updateStreamBubble(partial)
             }
         )
@@ -9811,12 +9717,12 @@ class MainActivity : Activity() {
     /** F5b §2.5.1(b) + §8.2 butir 3: 400 menyebut tools → bubble jelas +
      *  tandai provider text_fallback (tersimpan, TERCATAT) + ulangi
      *  giliran ini dialek teks (tools=null, katalog teks, parse teks).
-     *  SEKALI per giliran; hanya untuk giliran utama (verify/internal
+     *  SEKALI per giliran; hanya untuk giliran utama (internal
      *  tidak diulang). Mengembalikan true bila retry dijalankan
      *  (pemanggil JANGAN menampilkan error terminal sesudahnya). */
     private fun retryTextFallbackVc5b(err: String): Boolean {
         if (openaiTextFallbackVc5b) return false
-        if (internalTurn || verifyTurn) return false
+        if (internalTurn) return false
         if (!isToolsUnsupportedErrorVc5b(err)) return false
         openaiTextFallbackVc5b = true
         val provId = try { LlmEngineChat.resolveProvider(this).id } catch (e: Exception) { "?" }
@@ -10047,59 +9953,6 @@ class MainActivity : Activity() {
      *    giliran (agentSteps naik di proceedTool/recordBatchOutcomeVc273
      *    seperti biasa — tidak ada penghitung baru). */
     private fun handleAgentResponse(resp: ChatResult) {
-        // Giliran verifikasi: jawaban final tanpa tool (request dikirim
-        // tool_choice "none"). Bila provider tetap mengembalikan tool_calls,
-        // JANGAN eksekusi — verifikasi tidak konklusif (cermin guard
-        // dialek teks).
-        // F6 (loop verifikasi vc332): verdict DITANGANI LANGSUNG di sini —
-        // JANGAN delegasi ke overload String. Delegasi dulu membuat
-        // "LULUS" dibaca sebagai jawaban final baru, lalu gerbang
-        // verifikasi :10502 nyala lagi (turnUsedTools masih true;
-        // allClaimsSupportedByMemory("LULUS") == false karena klaim
-        // kosong, AgentPrompt.kt:822) → verifikasi diulang tanpa henti.
-        // Verdict BUKAN jawaban baru: tidak ada gate bukti, reviewer,
-        // atau gerbang verifikasi di sini — langsung ekor giliran.
-        if (verifyTurn) {
-            verifyTurn = false
-            if (resp.toolCalls.isNotEmpty()) {
-                addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif (respons memuat tool call padahal tool_choice none)", "meta", turn = true)
-                endUserTurn()
-                return
-            }
-            turnThinking = ""
-            val verdictVc6 = VerifyVerdict.cleanVerdict(AgentPrompt.stripRawToolMarkupForDisplay(resp.content))
-            when (verdictVc6) {
-                "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
-                null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
-                else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$verdictVc6", false, turn = true)
-            }
-            // Ekor giliran — CERMIN cabang verifyTurn handler String
-            // (:10267 + :10521): ekstraksi latar bila pending, kalau tidak
-            // tutup giliran. Duplikat sadar: ekor ini milik bersama kedua
-            // overload; bila diubah di satu tempat, samakan di tempat lain.
-            val verdictTextVc6 = verdictVc6 ?: ""
-            if (pendingExtract) {
-                pendingExtract = false
-                // vc241 O7 + vc235 M2: sama seperti ekor handler String.
-                val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
-                if (!extractHasFactSignalVc241(hist)) {
-                    if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (verdictTextVc6.contains("?")) "pertanyaan-user" else "final"
-                    endUserTurn()
-                } else {
-                    internalTurn = true
-                    collectingExtract = true
-                    pendingExtractProposals.clear()
-                    // vc330 SESI: sama seperti ekor handler String.
-                    val histRecentVc330 = try { MemoryDb.get(this).historyTranscriptVc230(AgentPrompt.EXTRACT_WINDOW_N_VC330, AgentPrompt.EXTRACT_WINDOW_CHARS_VC330, turnSessionId) } catch (e: Exception) { "" }
-                    val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
-                    sendToAgent(fullExtractVc330, AgentPrompt.deltaExtractPromptVc330(currentTurnUser, histRecentVc330))
-                }
-            } else {
-                if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (verdictTextVc6.contains("?")) "pertanyaan-user" else "final"
-                endUserTurn()
-            }
-            return
-        }
         // Giliran internal (ekstraksi fakta): request dikirim HANYA tools
         // remember_fact/learn_rule + auto (keputusan koordinator merge).
         // Tool call native di sini diubah jadi proposal batch (sama seperti
@@ -10157,10 +10010,6 @@ class MainActivity : Activity() {
         if (resp.toolCalls.isNotEmpty()) {
             // Bubble content dulu (seperti jalur teks), lalu eksekusi.
             if (cleanedVc5b.isNotEmpty()) {
-                if (vc228HasFactualClaim(cleanedVc5b)) {
-                    val warnVc5b = vc228ClaimWarning(cleanedVc5b, turnWork.toList())
-                    if (warnVc5b != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnVc5b", "meta", turn = true)
-                }
                 addBubble(cleanedVc5b, false, turn = true)
             }
             if (resp.toolCalls.none { it.name == "make_plan" || it.name == "update_plan" }) {
@@ -10256,7 +10105,7 @@ class MainActivity : Activity() {
         // memanggilnya, SATU kali repair terarah; bila tetap tidak,
         // giliran lanjut jujur tanpa tool itu (instruksi + validasi
         // client-side, BUKAN enforcement server-side).
-        if (forcedToolVc282 != null && !internalTurn && !verifyTurn) {
+        if (forcedToolVc282 != null && !internalTurn) {
             val forcedVc282 = forcedToolVc282
             val parsedChoiceVc282 = AgentPrompt.parseWithRepair(resp)
             val calledVc282 = parsedChoiceVc282.calls.map { it.optString("tool") } + listOfNotNull(obj?.optString("tool"))
@@ -10282,20 +10131,12 @@ class MainActivity : Activity() {
                 if (propsVc228.isNotEmpty()) vc228ShowExtractionBatchDialog(propsVc228)
                 return
             }
-            if (verifyTurn) {
-                verifyTurn = false
-                when (val cleaned = VerifyVerdict.cleanVerdict(visible)) {
-                    "LULUS" -> addMsg("✓ Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): jawaban lolos verifikasi diri", "meta", turn = true)
-                    null -> addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
-                    else -> addBubble("🔍 Koreksi dari verifikasi diri model (bukan independen):\n$cleaned", false, turn = true)
-                }
-            } else if (visible.isNotEmpty()) {
+            if (visible.isNotEmpty()) {
                 // vc251 MODE BEBAS: jawaban refusal server -> 1x retry dengan
                 // reframe netral. Retry = panggilan model biasa
                 // (sendContinuation -> sendToAgent, masuk kuota Governor
                 // normal); jawaban kedua masuk pipeline final yang sama
-                // (gate bukti, reviewer konteks-nol, double-pass,
-                // claim-check) karena handleAgentResponse dipanggil lagi
+                // karena handleAgentResponse dipanggil lagi
                 // untuk respons kedua. Tidak ada loop: sekali saja.
                 if (AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 0 && AgentPrompt.isRefusalAnswer(visible)) {
                     refusalRetryVc251 = 1
@@ -10332,136 +10173,6 @@ class MainActivity : Activity() {
                 if (askPair != null) visible = askPair.second.ifBlank { askPair.first.optString("question") }
                 // vc229 R-05(e): beri tahu model (lewat riwayat) bila opsinya dipotong.
                 if (askPair != null && askPair.first.optBoolean("dipotong", false)) visible += "\n(hanya 4 opsi pertama ditampilkan — model memberi lebih dari 4 opsi)"
-                // vc266: FAKTA PIN penuh sekali di sini, dipakai ulang untuk
-                // warning (lewat vc228ClaimWarning) + reviewer + gate bukti +
-                // verifikasi diri — bukan salinan .take(4000).
-                val pinnedFullVc266 = try { MemoryDb.get(this).pinnedFactsText() } catch (e: Exception) { "" }
-                val allClaimsMemoryVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(visible), pinnedFullVc266.lines(), currentTurnUser)
-                val claimWarningVc228 = vc228ClaimWarning(visible, turnWork.toList()) // vc232 S6(a): ask juga diperiksa klaimnya (pengecualian lama dihapus)
-                // vc249: gate bukti — klaim faktual tanpa penanda bukti padahal pakai tool -> minta ulang SEKALI, jawaban pertama dibuang (belum tampil).
-                // vc266: jawaban yang seluruh klaimnya didukung memori tidak kena gate bukti.
-                if (askPair == null && claimWarningVc228 == null && gateRetryVc249 == 0 && vc228HasFactualClaim(visible) && turnUsedTools && !allClaimsMemoryVc266 && !AgentPrompt.evidenceMarkerPresent(visible)) {
-                    gateRetryVc249 = 1
-                    addMsg("🔁 Gate bukti: jawaban faktual belum mencantumkan bukti — sistem menyuruh agen mengulang sekali dengan format klaim → bukti.", "meta", turn = true)
-                    sendContinuation(AgentPrompt.EVIDENCE_GATE_NUDGE)
-                    return
-                }
-                // vc249: reviewer konteks-nol 1-1 — hanya klaim + bukti (jejak tool, pesan user, fakta PIN), tanpa riwayat penuh.
-                // vc287: ditambah bukti giliran sebelumnya (2 giliran terakhir sesi ini, anggaran 4.000 char) — sebelumnya klaim
-                // lintas-giliran yang lolos pill tetap dihapus reviewer karena buktinya hanya jejak giliran ini (Tes 1 vc286 GAGAL).
-                // Dijalankan di thread
-                // callback model (bukan UI thread) sehingga chatSync blokir aman. Dilewati untuk ask dan turn yang sudah dihentikan claim check.
-                if (askPair == null && claimWarningVc228 == null && (vc228HasFactualClaim(visible) || turnUsedTools)) {
-                    try {
-                        val claimsVc249 = AgentPrompt.splitClaims(visible)
-                        if (claimsVc249.isNotEmpty()) {
-                            val trailVc249 = vc228FullTrailText(turnWork.toList())
-                            val pinnedRevVc249 = pinnedFullVc266
-                            // vc287: bukti reviewer ikut jendela 2 giliran (cermin vc286 di vc228ClaimWarning).
-                            // Anggaran seksi ini maks 4.000 char agar jejak giliran ini + PESAN USER + FAKTA PIN tidak terdesak;
-                            // diletakkan sesudah jejak, sebelum PESAN USER. Cap akhir .take(16000) tetap.
-                            // Bila deque kosong atau sesi beda, seksi ini tidak ada (string kosong).
-                            val prevEvidenceVc287 = StringBuilder()
-                            if (prevTurnResultIdsSessionVc286 == turnSessionId) {
-                                for (ids in prevTurnResultIdsVc286) {
-                                    for (rid in ids) {
-                                        try {
-                                            val prevFullVc287 = ResultStore.get(this, rid)?.text ?: ""
-                                            if (prevFullVc287.isNotBlank()) prevEvidenceVc287.append(if (prevFullVc287.length > 8000) prevFullVc287.take(8000) + "…(dipotong, sisa " + (prevFullVc287.length - 8000) + " char, baca via get_result[" + rid + "] untuk sisanya)…" else prevFullVc287).append(" ")
-                                        } catch (e: Exception) {}
-                                    }
-                                }
-                            }
-                            val prevTextVc287 = prevEvidenceVc287.toString()
-                            // vc301 SF-D8: take(3950) → take(4000) agar header
-                            // "maks 4.000 char" benar, + penanda menyebut sisa
-                            // char (dulu "…(dipotong)…" tanpa jumlah sisa).
-                            val prevSectionVc287 = if (prevTextVc287.isBlank()) "" else "\nBUKTI GILIRAN SEBELUMNYA (hasil tool 2 giliran terakhir sesi 1-1 ini, maks 4.000 char):\n" + if (prevTextVc287.length > 4000) prevTextVc287.take(4000) + "…(dipotong, sisa " + (prevTextVc287.length - 4000) + " char)…" else prevTextVc287
-                            // vc301 SF-D8: .take(16000) dulu tanpa penanda —
-                            // korpus reviewer terpotong diam-diam. Kini sisa
-                            // char disebut eksplisit.
-                            val rawEvidenceVc301 = "JEJAK TOOL GILIRAN INI:\n" + trailVc249 + prevSectionVc287 + "\nPESAN USER:\n" + currentTurnUser + "\nFAKTA PIN:\n" + pinnedRevVc249
-                            val evidenceVc249 = if (rawEvidenceVc301.length > 16000) rawEvidenceVc301.take(16000) + "…(dipotong, sisa " + (rawEvidenceVc301.length - 16000) + " char)…" else rawEvidenceVc301
-                            // Fase 6 K1: reviewer konteks-nol lewat helper
-                            // Models API (independen, stateless); engine
-                            // lokal = reviewer dilewati dengan penanda jujur.
-                            val engineVc249 = AgentEngines.current(this)
-                            var unsVc249: List<Int> = emptyList()
-                            var concVc249 = false
-                            var reviewFailVc275 = false
-                            var indepNoteVc275 = ""
-                            var reviewerDoneVc249 = false
-                            if (engineVc249 == "openai") {
-                                // Gate over-cap per-provider (bucket reviewer):
-                                // refusal ditampilkan + reviewer dilewati;
-                                // provider null -> lanjut ke helper (helper
-                                // throw pesan kanonik -> penanda "belum
-                                // terverifikasi" via reviewFail di bawah).
-                                val providerVc249 = try { LlmEngineChat.resolveProvider(this) } catch (e: Exception) { null }
-                                val refusalVc249 = providerVc249?.let { Governor.refusalModels(this, it, Governor.MODELS_BUCKET_REVIEWER) }
-                                if (refusalVc249 != null) {
-                                    addMsg(refusalVc249, "meta", turn = true)
-                                } else {
-                                    // vc275 O11: verdict tak terparse -> retry
-                                    // 1x format ketat; tetap gagal -> penanda
-                                    // "belum terverifikasi", bukan lolos diam-diam.
-                                    try {
-                                        val rawVc249 = LlmEngineChat.chatSyncForEngine(this, AgentPrompt.zeroCtxReviewPrompt(claimsVc249, evidenceVc249), LlmCallKind.REVIEWER)
-                                        val (u1Vc275, c1Vc275) = AgentPrompt.parseZeroCtxReview(rawVc249)
-                                        if (c1Vc275) { unsVc249 = u1Vc275; concVc249 = true } else {
-                                            val raw2Vc275 = LlmEngineChat.chatSyncForEngine(this, AgentPrompt.reviewerRetryPrompt(claimsVc249, evidenceVc249), LlmCallKind.REVIEWER)
-                                            val (u2Vc275, c2Vc275) = AgentPrompt.parseZeroCtxReview(raw2Vc275)
-                                            if (c2Vc275) { unsVc249 = u2Vc275; concVc249 = true } else reviewFailVc275 = true
-                                        }
-                                    } catch (e: Exception) { reviewFailVc275 = true }
-                                    // openai = reviewer independen (stateless,
-                                    // tanpa sesi server bersama giliran agen).
-                                    indepNoteVc275 = ""
-                                    reviewerDoneVc249 = true
-                                }
-                            } else {
-                                // Fase 6 K1: engine lokal — reviewer butuh Models API.
-                                addMsg("⚠️ Reviewer dilewati — engine lokal (atur provider Models API di Setup > 73).", "meta", turn = true)
-                            }
-                            if (reviewerDoneVc249) {
-                                // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                                val unsVc249FiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsVc249, unsVc249, pinnedFullVc266.lines(), currentTurnUser)
-                                // vc282: pesan sistem sebagai bukti reviewer — klaim
-                                // yang mengutip peringatan sistem giliran ini
-                                // (StuckDetector, kunci giliran, cap langkah)
-                                // tidak dihapus filter [KLAIM DIHAPUS].
-                                val unsVc249FiltVc282 = AgentPrompt.dropSystemBackedClaims(claimsVc249, unsVc249FiltVc266, turnSystemNotesVc282.toList() + listOfNotNull(turnStoppedReason))
-                                if (reviewFailVc275) addMsg(AgentPrompt.reviewerNotVerifiedNote() + indepNoteVc275, "meta", turn = true)
-                                else if (unsVc249FiltVc282.isNotEmpty()) {
-                                    // vc250: double-pass — jawaban yang tampil (dan tersimpan di riwayat) hanya berisi klaim yang lolos; klaim gagal diganti penanda, bukan dihapus diam-diam.
-                                    visible = AgentPrompt.applyDoublePass(visible, claimsVc249, unsVc249FiltVc282)
-                                    // vc288 Fase 2: footer "Yang belum diketahui" — HANYA bila double-pass benar-benar menghapus klaim.
-                                    // Maks 3 baris; bagian dari jawaban yang tampil + tersimpan di riwayat (bukan bubble meta), sebelum pill.
-                                    val footerVc288 = AgentPrompt.unknownFooterVc288(claimsVc249, unsVc249FiltVc282, turnWork.map { it.tool })
-                                    if (footerVc288.isNotEmpty() && !visible.contains("Yang belum diketahui:")) {
-                                        visible = visible.trimEnd() + "\n\n" + footerVc288
-                                    }
-                                    addMsg(AgentPrompt.reviewerNoteText(claimsVc249, unsVc249FiltVc282) + indepNoteVc275, "meta", turn = true)
-                                } else if (indepNoteVc275.isNotBlank()) addMsg("🔍 Reviewer konteks-nol: verdict diterima" + indepNoteVc275 + ".", "meta", turn = true)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        addMsg(AgentPrompt.reviewerNotVerifiedNote(), "meta", turn = true)
-                    }
-                }
-                if (claimWarningVc228 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $claimWarningVc228", "meta", turn = true)
-                if (askPair == null && claimWarningVc228 != null) turnStoppedReason = "klaim tidak didukung hasil tool di giliran ini. Detail: $claimWarningVc228" // vc232 S4 (ask tidak dihentikan: turn menunggu user)
-                // VC303-P3-20 (LP-6): sidik jari klaim gagal — simpan hash
-                // kalimat klaim yang kena claim-stop per sesi; setelah 2 stop
-                // BERUNTUN atas klaim yang sama, alasan berhenti meminta
-                // keputusan user (bukan coba lagi). Gate claim-check sendiri
-                // TIDAK diubah — hanya pencatatan + eskalasi teks. Peringatan
-                // dini di giliran berikut tampil via claimFingerprintsBlockVc303
-                // di awal giliran (onUserMessage).
-                if (askPair == null && claimWarningVc228 != null) {
-                    val repeatStopsVc303 = try { recordClaimStopVc303(visible, claimWarningVc228) } catch (e: Exception) { 0 }
-                    if (repeatStopsVc303 >= 2) turnStoppedReason = (turnStoppedReason ?: "") + " — INI STOP KE-2 BERUNTUN atas klaim yang sama; JANGAN coba lagi tanpa bukti tool baru — MINTA KEPUTUSAN USER (lanjut dengan bukti / ubah klaim / batalkan tugas)."
-                }
                 // vc252 D-M8: jawaban kedua masih refusal — tampilkan apa
                 // adanya + satu baris jujur sebagai META (addMsg "meta"),
                 // BUKAN ditempel ke visible. visible disimpan ke riwayat
@@ -10471,7 +10182,7 @@ class MainActivity : Activity() {
                 // "meta" hanya tampil di layar, tidak masuk riwayat.
                 // JANGAN memalsukan jawaban.
                 val stillRefusalVc252 = AgentPrompt.modeBebasOn(this) && refusalRetryVc251 == 1 && AgentPrompt.isRefusalAnswer(visible)
-                addAnswerBubble(visible, askPair == null && claimWarningVc228 != null) // vc232 S3
+                addAnswerBubble(visible)
                 if (stillRefusalVc252) addMsg("Mode Bebas aktif, tapi model tetap menolak topik ini.", "meta", turn = true)
                 emitPhase("report")
                 if (askPair != null) addMsg("❓ Agen menunggu pilihanmu — ketuk salah satu opsi di pesannya, atau ketik jawaban bebas.", "meta", turn = true)
@@ -10479,7 +10190,6 @@ class MainActivity : Activity() {
                     addMsg("⛔ Dihentikan: $turnStoppedReason", "meta", turn = true) // vc232 S4: satu pemilih pill akhir; S2: detail klaim dibawa di pill ini
                     addTurnEndVc306() // vc306 C8: ringkasan + footnote (durasi/langkah/sumber dipertahankan)
                 } else addTurnEndVc306() // vc306 C8: menggantikan meta "✓ Selesai dalam N detik • via <sumber>" — info durasi + sumber pindah ke footnote, bukan hilang
-                if (askPair == null && claimWarningVc228 != null) addMsg("🔍 Verifikasi dilewati: turn ini sudah dihentikan claim check, jadi tidak ada pill verifikasi.", "meta", turn = true) // vc232 S1: netral, sekali saja
                 if (askPair != null) pendingEndReason = "ask"
                 val workItemsF = turnWork.toList()
                 val baseWorkF = WorkLog.turnJson(workItemsF, turnElapsedMs(workItemsF))
@@ -10515,24 +10225,7 @@ class MainActivity : Activity() {
                 if (!activityResumed || !SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) notifyTurnDone(visible)
                 // vc304 B2: VO jawaban hanya dibacakan di sesi pemilik.
                 if (::voiceCheck.isInitialized && voiceCheck.isChecked && SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) {
-                    if (askPair == null && claimWarningVc228 != null) speak("Peringatan: jawaban ini tidak didukung hasil tool. $visible") else speak(visible) // vc232 S3
-                }
-                if (askPair == null && claimWarningVc228 == null && !allClaimsMemoryVc266 && ::verifyCheck.isInitialized && verifyCheck.isChecked && (turnUsedTools || vc228HasFactualClaim(visible))) { // vc232 S1: turn kena claimWarning tidak diverifikasi; vc266: jawaban yang seluruh klaimnya didukung memori dilewati dari verifikasi (prompt verifikasi tidak membawa FAKTA PIN)
-                    verifyTurn = true
-                    emitPhase("verify")
-                    // vc235 M2: verifikasi memakai transkrip Vc230 atas sesi
-                    // pemilik giliran (turnSessionId), bukan sesi aktif saat ini.
-                    val ctxHist = try { MemoryDb.get(this).historyTranscriptVc230(20, 20000, turnSessionId) } catch (e: Exception) { "" }
-                    val trailTxt = synchronized(turnWork) { vc228FullTrailText(turnWork.toList()) }
-                    val wsLineVc228 = try { WorldState.line(this) } catch (e: Exception) { "" }
-                    // vc330 SESI: verifikasi kini membawa DELTA (jangkar +
-                    // jejak + WorldState + jawaban final — TANPA ctxHist
-                    // 20.000 char). Prompt PENUH tetap teks lama lengkap
-                    // (fallback bila wadah belum primed).
-                    val fullVerifyVc330 = "VERIFIKASI DIRI (pemeriksaan oleh model yang sama — bukan independen; jangan menyapa, JANGAN pakai tool): Periksa JAWABAN FINAL di bawah terhadap JEJAK TOOL PENUH & RIWAYAT di bawah ini. Klaim yang cocok dengan JEJAK TOOL = DIDUKUNG (hasil tool memang tidak selalu tercatat sebagai baris riwayat terpisah). Klaim soal kondisi HP saat ini (persentase baterai, jam) HANYA didukung bila cocok persis dengan nilai WorldState giliran ini: " + wsLineVc228 + " — bila tidak cocok, itu TIDAK didukung. Ada klaim/angka yang TIDAK didukung hasil tool?\nATURAN OUTPUT KETAT: WAJIB Bahasa Indonesia. DILARANG menulis proses berpikir, draf, analisis, atau catatan meta dalam bahasa apa pun. Output HANYA SATU baris: 'LULUS' bila semua klaim didukung, atau 'KOREKSI: <satu kalimat koreksi yang jelas untuk user>' bila ada yang menyimpang. Tidak ada teks lain.\n\nJEJAK TOOL GILIRAN INI:\n$trailTxt\n\nRIWAYAT:\n$ctxHist\n\nJAWABAN FINAL YANG DIPERIKSA:\n$visible"
-                    val deltaVerifyVc330 = AgentPrompt.deltaVerifyPromptVc330(currentTurnUser, trailTxt, wsLineVc228, visible)
-                    sendToAgent(fullVerifyVc330, deltaVerifyVc330)
-                    return
+                    speak(visible)
                 }
             }
             if (pendingExtract) {
@@ -10543,7 +10236,7 @@ class MainActivity : Activity() {
                 // sesi 1, padahal sesi aktif bisa bukan 1).
                 val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
                 if (!extractHasFactSignalVc241(hist)) {
-                    if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (visible.contains("?")) "pertanyaan-user" else "final"
+                    if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final"
                     endUserTurn()
                 } else {
                     internalTurn = true
@@ -10561,18 +10254,9 @@ class MainActivity : Activity() {
                     sendToAgent(fullExtractVc330, AgentPrompt.deltaExtractPromptVc330(currentTurnUser, histRecentVc330))
                 }
             } else {
-                if (pendingEndReason == null) pendingEndReason = if (turnStoppedReason?.startsWith("klaim tidak didukung") == true) "dihentikan-klaim" else if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
+                if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
                 endUserTurn()
             }
-            return
-        }
-        // vc232 S7: respons giliran verifikasi TIDAK BOLEH mengeksekusi tool apa pun.
-        // (verifyTurn hanya bisa masih true di sini bila respons verifikasi memuat tool,
-        // karena cabang verifyTurn di atas sudah mengosongkannya untuk respons bersih.)
-        if (verifyTurn) {
-            verifyTurn = false
-            addMsg("🔍 Verifikasi diri (pemeriksaan oleh model yang sama — bukan independen): verifikasi tidak konklusif", "meta", turn = true)
-            endUserTurn()
             return
         }
         // vc273 O6: >1 tool per respons di lane 1-1 DIEKSEKUSI sebagai batch
@@ -10594,12 +10278,8 @@ class MainActivity : Activity() {
         }
         if (multiVc229.size > 1) {
             if (useBatchVc273(multiVc229)) {
-                if (visible.isNotEmpty() && vc228HasFactualClaim(visible)) {
-                    val warnBatchVc273 = vc228ClaimWarning(visible, turnWork.toList())
-                    if (warnBatchVc273 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnBatchVc273", "meta", turn = true)
-                }
                 if (visible.isNotEmpty()) addBubble(visible, false, turn = true)
-                if (!internalTurn && !verifyTurn) {
+                if (!internalTurn) {
                     AgentPrompt.extractAsk(visible)?.let { pendingAskVc229 = it.first }
                 }
                 execBatchAndContinueVc273(multiVc229)
@@ -10607,10 +10287,6 @@ class MainActivity : Activity() {
             }
             addMsg("🔁 Respons memuat ${multiVc229.size} panggilan tool — batch tidak dipakai untuk kombinasi ini (tool jalur-khusus atau giliran internal): hanya tool pertama yang dijalankan, kirim ulang sisanya di giliran berikutnya.", "meta", turn = true)
             // jatuh ke jalur tunggal di bawah (obj sudah = call pertama)
-        }
-        if (visible.isNotEmpty() && vc228HasFactualClaim(visible)) { // vc232 S6(b)
-            val warnVc232 = vc228ClaimWarning(visible, turnWork.toList())
-            if (warnVc232 != null) addMsg("⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnVc232", "meta", turn = true)
         }
         if (visible.isNotEmpty()) addBubble(visible, false, turn = true)
         val tool = obj.optString("tool")
@@ -11247,9 +10923,7 @@ class MainActivity : Activity() {
     private var openaiToolRepairVc5b: Int = 0
     private var openaiRoleFallbackArmedVc5b: Boolean = false
     private var openaiToolNamesVc5b: MutableMap<String, String> = HashMap()
-    private var turnSystemNotesVc282 = ArrayList<String>() // vc282: teks peringatan sistem giliran ini (StuckDetector/dll.) — bukti reviewer, bukan klaim yang dihapus
     private var malformedRetry = 0  // v4.18.3: pantulan panggilan tool rusak per pesan user
-    private var gateRetryVc249 = 0  // vc249: gate bukti sudah dipakai sekali giliran ini
     private var refusalRetryVc251 = 0  // vc251: retry refusal Mode Bebas sudah dipakai sekali giliran ini
     private var pendingAskVc229: JSONObject? = null  // vc229 R-05(e): ask se-respons dengan tool — dirender setelah tool dieksekusi.
     private var bgSecondConfirmShownVc229 = false  // vc229 R-04(g): guard dialog konfirmasi kedua sekali tampil.
@@ -11960,7 +11634,7 @@ class MainActivity : Activity() {
     // VC303-P3 — Penjaga loop lapis kedua + integritas: semua helper murni
     // penyimpanan prefs per sesi (SharedPreferences "harness"). Sengaja
     // TIDAK memakai WorkNotesVc301/formatLine (wilayah P1/P2) dan TIDAK
-    // mengubah gate claim-check / StuckWatch itu sendiri.
+    // mengubah StuckWatch itu sendiri.
     private fun okCountVc303(): Int {
         return try { synchronized(turnWork) { turnWork.count { it.ok } } } catch (e: Exception) { 0 }
     }
@@ -12006,59 +11680,6 @@ class MainActivity : Activity() {
             sb.append("- ").append(tool).append(" ").append(preview).append("\n")
         }
         sb.append("JANGAN panggil tool+argumen di atas di ").append(AgentPrompt.LOCKED_PATTERN_FIRST_STEPS_VC303).append(" langkah pertama giliran ini — sistem akan menolaknya. Pakai tool/argumen/strategi yang BERBEDA, atau jawab final ke user.")
-        return sb.toString()
-    }
-    private fun readClaimEntriesVc303(sessionId: Long): LinkedHashMap<String, Pair<Int, String>> {
-        val out = LinkedHashMap<String, Pair<Int, String>>()
-        try {
-            val raw = getSharedPreferences("harness", MODE_PRIVATE).getString("claimFingerprintsVc303_" + sessionId, "") ?: ""
-            for (line in raw.lines()) {
-                if (line.isBlank()) continue
-                val p = line.split("|", limit = 3)
-                if (p.size < 3) continue
-                out[p[0]] = (p[1].toIntOrNull() ?: 1) to p[2]
-            }
-        } catch (e: Exception) {}
-        return out
-    }
-    // VC303-P3-20 (LP-6): sidik jari klaim yang kena claim-stop. Return
-    // jumlah stop BERUNTUN atas klaim yang sama (stop dihitung beruntun
-    // hanya bila klaim-stop sebelumnya — giliran mana pun — adalah klaim
-    // yang sama; klaim lain di antaranya mereset ke 1). Gate claim-check
-    // sendiri TIDAK diubah — fungsi ini hanya mencatat + menghitung.
-    private fun recordClaimStopVc303(visible: String, warning: String?): Int {
-        return try {
-            val claims = AgentPrompt.splitClaims(visible).take(5)
-            if (claims.isEmpty()) return 0
-            val fps = claims.map { AgentPrompt.claimFingerprintVc303(it) to it }
-            val prefs = getSharedPreferences("harness", MODE_PRIVATE)
-            val stored = readClaimEntriesVc303(currentSessionId)
-            val lastHash = prefs.getString("lastClaimStopHashVc303_" + currentSessionId, "") ?: ""
-            val nums = warning?.let { Regex("[0-9][0-9,.]*").findAll(it).map { m -> m.value }.toList() } ?: emptyList()
-            val pick = fps.firstOrNull { (_, c) -> nums.any { n -> c.contains(n) } }
-                ?: fps.firstOrNull { (h, _) -> h in stored }
-                ?: fps.first()
-            val (hash, preview) = pick
-            val prevStops = stored[hash]?.first ?: 0
-            val stops = if (hash == lastHash && prevStops > 0) prevStops + 1 else 1
-            stored.remove(hash)
-            stored[hash] = stops to preview.take(120).replace("|", "/").replace("\n", " ")
-            val trimmed = LinkedHashMap<String, Pair<Int, String>>()
-            stored.entries.toList().takeLast(10).forEach { trimmed[it.key] = it.value }
-            val text = trimmed.entries.joinToString("\n") { (h, v) -> h + "|" + v.first + "|" + v.second }
-            prefs.edit().putString("claimFingerprintsVc303_" + currentSessionId, text).putString("lastClaimStopHashVc303_" + currentSessionId, hash).apply()
-            stops
-        } catch (e: Exception) { 0 }
-    }
-    private fun claimFingerprintsBlockVc303(sessionId: Long): String {
-        val entries = readClaimEntriesVc303(sessionId)
-        if (entries.isEmpty()) return ""
-        val sb = StringBuilder()
-        sb.append("⚠️ KLAIM YANG PERNAH KENA CLAIM-STOP (vc303 P3, lintas giliran — sesi ini):\n")
-        for ((_, v) in entries.entries.toList().takeLast(5)) {
-            sb.append("- \"").append(v.second).append("\" (stop ").append(v.first).append("x)\n")
-        }
-        sb.append("Bila klaim yang sama muncul lagi TANPA hasil tool pendukung baru, WAJIB sertakan bukti (nama tool + hasil/R-id) atau nyatakan sebagai dugaan — jangan ulangi klaim itu apa adanya. Setelah 2 stop beruntun atas klaim yang sama, MINTA KEPUTUSAN USER sebelum mencoba lagi.")
         return sb.toString()
     }
     // VC303-P3-19 (LP-5b): jejak baca per agen room + pola terkunci room.
@@ -12255,7 +11876,7 @@ class MainActivity : Activity() {
     // (planner, foto, hapus sesi) punya eksekutor sendiri di jalur tunggal
     // dan tidak boleh masuk batch.
     private fun useBatchVc273(calls: List<JSONObject>): Boolean {
-        if (internalTurn || verifyTurn) return false
+        if (internalTurn) return false
         val special = setOf("make_plan", "update_plan", "analyze_photo", "delete_session")
         if (calls.any { it.optString("tool") in special }) return false
         if (calls.any { it.optString("tool").isBlank() }) return false
@@ -12569,10 +12190,8 @@ class MainActivity : Activity() {
         EventDb.get(this).add("tool", packageName, oc.tool + " -> " + displayResult.take(200))
         val isUnknown = oc.result.startsWith("Tool tidak dikenal")
         // vc282: pembatalan timeout BUKAN putaran — tidak dihitung
-        // StuckDetector (prinsip O18 jalur tunggal). Teks peringatan
-        // sistem dikumpulkan sebagai bukti reviewer (prioritas 6).
+        // StuckDetector (prinsip O18 jalur tunggal).
         val stuck = if (oc.prereqFailed) "" else stuckSuffix(oc.tool, oc.args, oc.result, countIdent = !isUnknown, skipStuckVc278 = WorkLog.isTimeoutResult(oc.result))
-        if (stuck.isNotBlank()) turnSystemNotesVc282.add(stuck)
         if (stuck.contains("🛑")) turnStuckBlocked = true
         // VC303-P3-19 (LP-5a): kunci giliran = pola ini disimpan lintas giliran.
         if (stuck.contains("🛑")) try { recordLockedPatternVc303(oc.tool, oc.args) } catch (e: Exception) {}
@@ -12860,10 +12479,7 @@ class MainActivity : Activity() {
                     // detektor putaran (loop), yang perilakunya tidak diubah.
                     val isUnknown = result.startsWith("Tool tidak dikenal")
                     val stuck = stuckSuffix(tool, args, result, countIdent = !isUnknown, skipStuckVc278 = timedOutVc278)
-                    // vc282: teks peringatan sistem dikumpulkan sebagai
-                    // bukti reviewer (prioritas 6).
-                    if (stuck.isNotBlank()) turnSystemNotesVc282.add(stuck)
-                    if (stuck.contains("🛑")) turnStuckBlocked = true
+                                if (stuck.contains("🛑")) turnStuckBlocked = true
                     // VC303-P3-19 (LP-5a): kunci giliran = pola ini disimpan lintas giliran.
                     if (stuck.contains("🛑")) try { recordLockedPatternVc303(tool, args) } catch (e: Exception) {}
                     TurnMetrics.recordStep(tool, isUnknown, prootCutOf(result), argsHash(args), isAutoRetry)
@@ -16276,231 +15892,14 @@ internal fun showApiTokenDialog() {
             val answerNoAskVc246 = askPairVc246?.second ?: answer
             val (visible, toolObj) = AgentPrompt.extractToolCall(answerNoAskVc246)
             val multiRoomVc249 = try { AgentPrompt.extractToolCalls(answerNoAskVc246) } catch (e: Exception) { emptyList() }
-            // vc275 O12(a): jawaban faktual room DITAHAN sampai verdict reviewer kembali (double-pass SEBELUM tampil, seperti 1-1) — kecuali jawaban membawa tool (prosa sebelum tool; jawaban final menyusul di giliran berikut) atau jawaban non-faktual (tampil langsung). Pesan yang ditahan ditampilkan di akhir Thread reviewer di bawah. Kasus tepi: jawaban non-faktual padahal tool sudah dipakai di room ini tetap tampil langsung + direview async seperti dulu (didokumentasikan di BUILD-VC275.md).
-            val holdRoomVc275 = visible.isNotBlank() && toolObj == null && multiRoomVc249.size <= 1 && AgentPrompt.hasFactualClaim(visible)
-            if (visible.isNotBlank() && !holdRoomVc275) Automation.appendMessage(this, room.optString("id"), roomSub, agentName, visible, effSess)
+            // vc333: jawaban room tampil apa adanya (penahanan reviewer vc275 dihapus).
+            if (visible.isNotBlank()) Automation.appendMessage(this, room.optString("id"), roomSub, agentName, visible, effSess)
             if (askPairVc246 != null) {
                 try {
                     val aq = askPairVc246.first
                     val askJson = org.json.JSONObject().put("question", aq.optString("question")).put("options", aq.optJSONArray("options") ?: org.json.JSONArray())
                     Automation.appendMessage(this, room.optString("id"), roomSub, "ask", askJson.toString(), effSess)
                 } catch (e: Exception) {}
-            }
-            // vc249: korpus bukti room = pesan sistem 🔧 di room/sesi ini.
-            val corpusRoomVc249 = StringBuilder()
-            val toolsRoomVc249 = ArrayList<String>()
-            try {
-                val msgsRoomVc249 = Automation.loadMessages(this, room.optString("id"))
-                for (i in 0 until msgsRoomVc249.length()) {
-                    val mmRoomVc249 = msgsRoomVc249.optJSONObject(i) ?: continue
-                    if (mmRoomVc249.optString("sub") != roomSub) continue
-                    if (mmRoomVc249.optString("sender") != "sistem") continue
-                    val txRoomVc249 = mmRoomVc249.optString("text")
-                    // vc254: format aktivitas baru ("▸ Judul — ✓ …") ikut
-                    // jadi korpus — parser lama "🔧 " dipertahankan untuk
-                    // pesan yang sudah tersimpan sebelum vc254.
-                    val actVc254 = ActivityTitle.parseText(txRoomVc249)
-                    if (actVc254 != null) {
-                        corpusRoomVc249.append(txRoomVc249).append("\n")
-                        if (actVc254.tool.isNotBlank()) toolsRoomVc249.add(actVc254.tool)
-                        continue
-                    }
-                    if (!txRoomVc249.startsWith("🔧 ")) continue
-                    corpusRoomVc249.append(txRoomVc249).append("\n")
-                    val tnRoomVc249 = txRoomVc249.removePrefix("🔧 ").substringBefore(" →").substringBefore(" [").trim()
-                    if (tnRoomVc249.isNotBlank()) toolsRoomVc249.add(tnRoomVc249)
-                }
-            } catch (e: Exception) {}
-            // vc274 O6+O7: >1 tool per respons di lane room DIEKSEKUSI
-            // sebagai batch per agen per sesi (BatchToolVc274 — aturan
-            // sama seperti 1-1 vc273; tiap call = 1 langkah cap 50
-            // kumulatif per sesi). Batch HANYA bila semua call SAFE
-            // (level + blocklist dicek di muka — di bawah GATES_DISABLED
-            // semua level SAFE, jadi cek ini hidup terutama untuk
-            // blocklist dan bila gerbang dihidupkan lagi); bila tidak,
-            // jatuh ke jalur tunggal di bawah (toolObj = call pertama,
-            // termasuk dialog REVIEW / penahanan seperti biasa).
-            // Bentuk continuation room: riwayat room adalah continuation
-            // agen berikutnya — hasil batch ditempel sebagai SATU pesan
-            // sistem gabungan (prefix "🔧 " agar masuk korpus bukti
-            // reviewer room seperti pesan tool biasa). Reviewer ASYNC
-            // room (O12, vc275) TIDAK diubah: hasil batch tetap melewati
-            // jalur review async yang sudah ada.
-            if (multiRoomVc249.size > 1) {
-                val roomNowBatchVc274 = Automation.roomById(this, roomId) ?: room
-                val blockedBatchVc274 = ArrayList<String>()
-                val blArrBatchVc274 = roomNowBatchVc274.optJSONArray("blocklist") ?: org.json.JSONArray()
-                for (biVc274 in 0 until blArrBatchVc274.length()) blockedBatchVc274.add(blArrBatchVc274.optString(biVc274))
-                // vc316 N9-B1/C1 + N9-C2: batch room TIDAK BOLEH berisi (a)
-                // op Concat yang butuh konfirmasi khusus — dialog hanya
-                // ada di jalur tunggal, batch akan melewatinya diam-diam;
-                // (b) tool WRITE Concat apa pun — batch mengeksekusi tulis
-                // sekuensial di UI thread (BatchToolVc274.runBatch, jalur
-                // sekuensial), risiko ANR yang sama seperti N9-C2; jalur
-                // tunggal sudah dipindah ke worker thread. Batch seperti
-                // itu jatuh ke jalur tunggal di bawah: hanya call pertama
-                // yang dieksekusi (pola yang sama seperti batch berisi tool
-                // non-SAFE). READ Concat tetap boleh di batch (kelompok
-                // baca jalan di pool thread, bukan UI thread).
-                val roomBatchHasConcatConfirmVc316 = multiRoomVc249.any { oVc274 -> ConcatTools.requiresSpecialConfirmVc316(oVc274.optString("tool"), oVc274.optJSONObject("args") ?: org.json.JSONObject()) }
-                val roomBatchHasConcatWriteVc316 = multiRoomVc249.any { oVc274 -> val tVc274 = oVc274.optString("tool"); tVc274.startsWith("concat_") && tVc274 !in Tools.READ_TOOLS }
-                val roomBatchOkVc274 = BatchToolVc274.useBatch(multiRoomVc249) && !roomBatchHasConcatConfirmVc316 && !roomBatchHasConcatWriteVc316 && multiRoomVc249.all { oVc274 ->
-                    val tVc274 = oVc274.optString("tool")
-                    tVc274 !in blockedBatchVc274 && ToolGate.level(tVc274, oVc274.optJSONObject("args") ?: org.json.JSONObject(), this) == RiskLevel.SAFE
-                }
-                if (roomBatchOkVc274) {
-                    val roomBudgetKeyVc274 = "roomSteps_" + room.optString("id") + "_" + effSess
-                    val roomWatchVc274 = roomStuckWatchesVc263.getOrPut(effSess + "|" + agentName) { AgentPrompt.StuckWatch() }
-                    val usedRoomVc274 = HashSet<String>()
-                    val callIdsRoomVc274 = multiRoomVc249.map { BatchToolVc274.nextCallId(it.optString("id"), usedRoomVc274).also { usedRoomVc274.add(it) } }
-                    val reportRoomVc274 = BatchToolVc274.runBatch(
-                        multiRoomVc249, callIdsRoomVc274,
-                        stepsLeft = { 50 - getSharedPreferences("harness", MODE_PRIVATE).getInt(roomBudgetKeyVc274, 0) },
-                        executeOne = { t, a, c, dep ->
-                            BatchToolVc274.runOne(this, t, a, c, dep) { tt, aa, cc -> Tools.execute(this, tt, aa, cc) }
-                        },
-                        recordOutcome = { oc ->
-                            try { val bpRoomVc274 = getSharedPreferences("harness", MODE_PRIVATE); bpRoomVc274.edit().putInt(roomBudgetKeyVc274, bpRoomVc274.getInt(roomBudgetKeyVc274, 0) + 1).apply() } catch (e: Exception) {}
-                            Automation.logAction(this, room.optString("id"), agentName, "eksekusi tool", oc.tool + " → " + oc.result.take(120), effSess)
-                            // VC303-P2-9 (CX-2): kumpulkan jejak tool room (jalur batch).
-                            roomTurnWorkVc303.getOrPut(effSess + "|" + agentName) { ArrayList() }.add(WorkItem(oc.tool, oc.ms, oc.ok, RedactSecrets.redact(oc.result).take(120), evidence = oc.result, args = oc.args.toString().take(4000), resultId = oc.resultId ?: "", totalChars = oc.resultTotal, callId = oc.callId))
-                            if (oc.result.startsWith("Gagal:")) {
-                                val hkRoomVc274 = agentName + "|" + oc.tool
-                                val hcRoomVc274 = (healCounts[hkRoomVc274] ?: 0) + 1; healCounts[hkRoomVc274] = hcRoomVc274
-                                Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool " + oc.tool + " gagal — agen dapat mencoba pendekatan lain pada pesan berikutnya.", effSess)
-                                if (hcRoomVc274 >= 3) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Self-healing: tool " + oc.tool + " sudah gagal identik " + hcRoomVc274 + " kali (pola StuckDetector) — jangan ulangi pendekatan yang sama.", effSess)
-                            }
-                            // VC303-P3-19 (LP-5b): jejak baca batch per agen
-                            // (diletakkan SEBELUM observe — nilai balik lambda
-                            // ini adalah teks stuck dari observe, jadi baris
-                            // ini tidak boleh jadi ekspresi terakhir).
-                            try { noteRoomReadVc303(room.optString("id"), effSess, agentName, oc.tool, oc.args, oc.result) } catch (e: Exception) {}
-                            if (oc.prereqFailed) "" else roomWatchVc274.observe(oc.tool, oc.args, oc.result)
-                        }
-                    )
-                    Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "🔧 " + BatchToolVc274.combinedMessage("room", reportRoomVc274), effSess)
-                    // vc277 O17(c): 🛑 di dalam batch room mengunci giliran
-                    // (sesi, agen) — tool berikutnya ditolak tanpa eksekusi.
-                    if (reportRoomVc274.outcomes.any { AgentPrompt.StuckWatch.isStop(it.stuckText) }) {
-                        roomStuckLocksVc277[effSess + "|" + agentName] = true
-                        // VC303-P3-19 (LP-5a room): simpan pola pertama yang mengunci.
-                        try { reportRoomVc274.outcomes.firstOrNull { AgentPrompt.StuckWatch.isStop(it.stuckText) }?.let { recordRoomLockedPatternVc303(room.optString("id"), effSess, agentName, it.tool, it.args) } } catch (e: Exception) {}
-                        Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⛔ Giliran room dikunci StuckDetector — tool berikutnya ditolak tanpa dieksekusi (tidak memakan langkah).", effSess)
-                    }
-                    renderMessages(); scrollBottom()
-                    return
-                }
-            }
-            // vc266: FAKTA PIN penuh + pesan user terakhir sub-room ini, untuk pengecualian klaim memori (warning + filter reviewer).
-            val pinnedRoomVc266 = try { MemoryDb.get(this).pinnedFactsText() } catch (e: Exception) { "" }
-            val userRoomVc266 = try { val mm = Automation.loadMessages(this, room.optString("id")); var u = ""; for (i in mm.length() - 1 downTo 0) { val m = mm.optJSONObject(i) ?: continue; if (m.optString("sub") != roomSub) continue; if (m.optString("sender") == "user") { u = m.optString("text"); break } }; u } catch (e: Exception) { "" }
-            // vc249: claim check room (deterministik, aman di UI thread) — hanya anotasi, tidak menghentikan room.
-            if (visible.isNotBlank() && AgentPrompt.hasFactualClaim(visible)) {
-                val warnRoomVc249 = AgentPrompt.claimWarningForCorpus(visible, toolsRoomVc249, corpusRoomVc249.toString(), pinnedRoomVc266, userRoomVc266)
-                if (warnRoomVc249 != null) Automation.appendMessage(this, room.optString("id"), roomSub, "sistem", "⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di room ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnRoomVc249", effSess)
-            }
-            // vc275 O12(a): reviewer konteks-nol room — jawaban FAKTUAL
-            // DITAHAN sampai verdict kembali (double-pass SEBELUM tampil,
-            // seperti 1-1), bukan async pasca-tampil. Penahanan hanya untuk
-            // jawaban final tanpa tool (holdRoomVc275 di atas); jawaban yang
-            // membawa tool atau non-faktual tetap tampil langsung, dan jalur
-            // review-nya tetap async seperti di bawah ini.
-            // Batas tunggu = timeout reviewer (chatSync 240 dtk); lewat itu
-            // atau bila reviewer gagal, jawaban tampil dengan penanda
-            // "belum terverifikasi" (O11), bukan lolos diam-diam.
-            // Bukti memuat PESAN USER terakhir di sub-room ini.
-            if (visible.isNotBlank() && (AgentPrompt.hasFactualClaim(visible) || toolsRoomVc249.isNotEmpty())) {
-                val ctxRoomVc249 = this
-                val reviewAnswerVc249 = visible
-                val reviewEvidenceVc249 = corpusRoomVc249.toString()
-                val reviewHeadVc249 = visible.take(120)
-                Thread {
-                    var showTextRoomVc275: String? = null
-                    var noteRoomVc249 = ""
-                    var correctedRoomVc262 = ""
-                    try {
-                        // F2b B4: engine dibaca SEKALI — openai lewat
-                        // LlmEngineChat (Models API, reviewer independen);
-                        // engine lokal = reviewer dilewati (else di bawah).
-                        // vc262 N-M11: pesan user terakhir di sub-room ini masuk bukti (dihitung sekali di atas sebagai userRoomVc266).
-                        val engineRoomVc249 = AgentEngines.current(ctxRoomVc249)
-                        val userRoomVc262 = userRoomVc266
-                        val claimsRoomVc249 = AgentPrompt.splitClaims(reviewAnswerVc249)
-                        if (claimsRoomVc249.isNotEmpty()) {
-                            val pinnedRoomR = try { RedactSecrets.redact(MemoryDb.get(ctxRoomVc249).pinnedFactsText()) } catch (e: Exception) { "" }
-                            // vc301 SF-D8: sama seperti korpus reviewer
-                            // 1-1 — .take(16000) dulu tanpa penanda; kini
-                            // sisa char disebut eksplisit.
-                            val rawEvRoomVc301 = "HASIL TOOL ROOM:\n" + reviewEvidenceVc249 + "\nPESAN USER:\n" + userRoomVc262 + "\nFAKTA PIN:\n" + pinnedRoomR
-                            val evRoomVc249 = if (rawEvRoomVc301.length > 16000) rawEvRoomVc301.take(16000) + "…(dipotong, sisa " + (rawEvRoomVc301.length - 16000) + " char)…" else rawEvRoomVc301
-                            var unsRoomVc249: List<Int> = emptyList()
-                            var concRoomVc249 = false
-                            var reviewFailRoomVc275 = false
-                            var indepRoomVc275 = ""
-                            var reviewerDoneRoomVc249 = false
-                            if (engineRoomVc249 == "openai") {
-                                // Gate over-cap per-provider (bucket reviewer):
-                                // refusal ditampilkan sebagai note + jawaban
-                                // ditahan tampil "belum terverifikasi";
-                                // provider null -> lanjut ke helper (helper
-                                // throw pesan kanonik -> penanda "belum
-                                // terverifikasi" via reviewFail di bawah).
-                                val providerRoomVc249 = try { LlmEngineChat.resolveProvider(ctxRoomVc249) } catch (e: Exception) { null }
-                                val refusalRoomVc249 = providerRoomVc249?.let { Governor.refusalModels(ctxRoomVc249, it, Governor.MODELS_BUCKET_REVIEWER) }
-                                if (refusalRoomVc249 != null) {
-                                    noteRoomVc249 = refusalRoomVc249
-                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — kuota reviewer habis)"
-                                } else {
-                                    // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi".
-                                    try {
-                                        val raw1RoomVc275 = LlmEngineChat.chatSyncForEngine(ctxRoomVc249, AgentPrompt.zeroCtxReviewPrompt(claimsRoomVc249, evRoomVc249), LlmCallKind.REVIEWER)
-                                        val (u1RoomVc275, c1RoomVc275) = AgentPrompt.parseZeroCtxReview(raw1RoomVc275)
-                                        if (c1RoomVc275) { unsRoomVc249 = u1RoomVc275; concRoomVc249 = true } else {
-                                            val raw2RoomVc275 = LlmEngineChat.chatSyncForEngine(ctxRoomVc249, AgentPrompt.reviewerRetryPrompt(claimsRoomVc249, evRoomVc249), LlmCallKind.REVIEWER)
-                                            val (u2RoomVc275, c2RoomVc275) = AgentPrompt.parseZeroCtxReview(raw2RoomVc275)
-                                            if (c2RoomVc275) { unsRoomVc249 = u2RoomVc275; concRoomVc249 = true } else reviewFailRoomVc275 = true
-                                        }
-                                    } catch (e: Exception) { reviewFailRoomVc275 = true }
-                                    // openai = reviewer independen (stateless,
-                                    // tanpa sesi server bersama giliran agen).
-                                    indepRoomVc275 = ""
-                                    reviewerDoneRoomVc249 = true
-                                }
-                            } else {
-                                // Fase 6 K1: engine lokal — reviewer butuh Models API.
-                                noteRoomVc249 = "⚠️ Reviewer dilewati — engine lokal (atur provider Models API di Setup > 73)."
-                                if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak jalan: engine lokal)"
-                            }
-                            if (reviewerDoneRoomVc249) {
-                                // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                                val unsRoomFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsRoomVc249, unsRoomVc249, pinnedRoomR.lines(), userRoomVc262)
-                                if (reviewFailRoomVc275) {
-                                    noteRoomVc249 = AgentPrompt.reviewerNotVerifiedNote() + indepRoomVc275
-                                    if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — reviewer tidak memberi verdict)"
-                                } else if (unsRoomFiltVc266.isNotEmpty()) {
-                                    noteRoomVc249 = AgentPrompt.reviewerNoteText(claimsRoomVc249, unsRoomFiltVc266) + indepRoomVc275 + "\n(untuk jawaban: \"$reviewHeadVc249…\")"
-                                    correctedRoomVc262 = AgentPrompt.applyDoublePass(reviewAnswerVc249, claimsRoomVc249, unsRoomFiltVc266)
-                                    // vc289 Fase 3: footer "Yang belum diketahui" di room (paritas 1-1 vc288) — HANYA bila ada klaim dihapus.
-                                    // Ditempel ke jawaban yang dikoreksi reviewer (baik yang ditahan maupun koreksi susulan).
-                                    // Korpus room sudah mencakup seluruh sesi sub-room (superset jendela 2 giliran 1-1),
-                                    // jadi tidak ada perubahan jendela di room.
-                                    val footerRoomVc289 = AgentPrompt.unknownFooterVc288(claimsRoomVc249, unsRoomFiltVc266, toolsRoomVc249)
-                                    if (footerRoomVc289.isNotEmpty()) correctedRoomVc262 = correctedRoomVc262 + "\n\n" + footerRoomVc289
-                                    if (holdRoomVc275) showTextRoomVc275 = correctedRoomVc262
-                                } else if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249
-                            }
-                        } else if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249
-                    } catch (e: Exception) {
-                        noteRoomVc249 = AgentPrompt.reviewerNotVerifiedNote()
-                        if (holdRoomVc275) showTextRoomVc275 = reviewAnswerVc249 + "\n\n⚠️ (belum terverifikasi — panggilan reviewer gagal)"
-                    }
-                    runOnUiThread {
-                        if (holdRoomVc275 && showTextRoomVc275 != null) Automation.appendMessage(ctxRoomVc249, room.optString("id"), roomSub, agentName, showTextRoomVc275 ?: reviewAnswerVc249, effSess)
-                        if (noteRoomVc249.isNotBlank()) Automation.appendMessage(ctxRoomVc249, room.optString("id"), roomSub, "sistem", noteRoomVc249, effSess)
-                        if (!holdRoomVc275 && correctedRoomVc262.isNotBlank()) Automation.appendMessage(ctxRoomVc249, room.optString("id"), roomSub, "sistem", "🔍 Koreksi reviewer (double-pass) atas jawaban \"" + reviewHeadVc249 + "…\":\n" + correctedRoomVc262, effSess)
-                        renderMessages(); scrollBottom()
-                    }
-                }.start()
             }
             if (toolObj != null) {
                 val tool = toolObj.optString("tool")

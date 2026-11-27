@@ -505,69 +505,6 @@ object OcCoord {
                 Checkpoint.discard(ctx, task.id)
             }
         }
-        // vc275 O12(b): claim warning + gate bukti koordinator SEBELUM hasil
-        // ditulis ke riwayat/notifikasi/laporan. Hasil koordinator datang
-        // dari OpenCode (bukan tool app), jadi tidak ada daftar tool giliran
-        // untuk diperiksa penanda buktinya — pemeriksanya adalah
-        // claimWarningForCorpus dengan daftar tool kosong: klaim faktual
-        // yang tidak didukung memori sama sekali mendapat peringatan jujur
-        // di kepala hasil (bukan dibuang, bukan diblokir).
-        // StuckDetector untuk ISI kerja OpenCode TETAP TIDAK ADA (OpenCode
-        // punya loop sendiri) — yang diverifikasi di sini hanya HASIL,
-        // bukan pengawasan proses.
-        if (AgentPrompt.hasFactualClaim(resultFull)) {
-            val pinnedOcWarnVc275 = try { mdb(ctx).pinnedFactsText() } catch (e: Exception) { "" }
-            val warnOcVc275 = AgentPrompt.claimWarningForCorpus(resultFull, emptyList(), "TUGAS KOORDINATOR:\n" + task.text + "\nHASIL:\n" + resultFull, pinnedOcWarnVc275, task.text)
-            if (warnOcVc275 != null) resultFull = "⚠️ Peringatan sistem (koordinator): klaim faktual di hasil ini tidak didukung bukti tool app (" + warnOcVc275 + ") — OpenCode mengerjakan tugas di luar app, jadi periksa file/hasilnya sebelum dipakai sebagai fakta.\n\n" + resultFull
-        }
-        // vc262 N-M13: reviewer konteks-nol koordinator — klaim + bukti
-        // (teks tugas + hasil), lewat helper Models API (stateless),
-        // lalu double-pass sebelum hasil ditulis ke
-        // riwayat/notifikasi/laporan.
-        if (AgentPrompt.hasFactualClaim(resultFull)) {
-            try {
-                val claimsVc262 = AgentPrompt.splitClaims(resultFull)
-                if (claimsVc262.isNotEmpty()) {
-                    // F2c (K1, Fase 6): reviewer lewat helper Models API —
-                    // tanpa slot. Reviewer stateless (independen).
-                    // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
-                    val providerOcVcF2c = try { LlmEngineChat.resolveProvider(ctx) } catch (e: Exception) { null }
-                    val refusalOcVcF2c = providerOcVcF2c?.let { try { Governor.refusalModels(ctx, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
-                    if (refusalOcVcF2c != null) {
-                        resultFull = refusalOcVcF2c + "\n\n" + resultFull
-                    } else {
-                        // vc266: FAKTA PIN masuk bukti reviewer + klaim yang didukung memori dikeluarkan dari daftar tak didukung.
-                        val pinnedOcVc266 = try { mdb(ctx).pinnedFactsText() } catch (e: Exception) { "" }
-                        val evVc262 = ("TUGAS KOORDINATOR:\n" + task.text + "\nHASIL:\n" + resultFull + "\nFAKTA PIN:\n" + pinnedOcVc266).take(16000)
-                        // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi". (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
-                        var unsVc262: List<Int> = emptyList()
-                        var concVc262 = false
-                        var reviewFailOcVc275 = false
-                        try {
-                            val rawVc262 = LlmEngineChat.chatSyncForEngine(ctx, AgentPrompt.zeroCtxReviewPrompt(claimsVc262, evVc262), LlmCallKind.REVIEWER)
-                            val (u1OcVc275, c1OcVc275) = AgentPrompt.parseZeroCtxReview(rawVc262)
-                            if (c1OcVc275) { unsVc262 = u1OcVc275; concVc262 = true } else {
-                                val rawOc2Vc275 = LlmEngineChat.chatSyncForEngine(ctx, AgentPrompt.reviewerRetryPrompt(claimsVc262, evVc262), LlmCallKind.REVIEWER)
-                                val (u2OcVc275, c2OcVc275) = AgentPrompt.parseZeroCtxReview(rawOc2Vc275)
-                                if (c2OcVc275) { unsVc262 = u2OcVc275; concVc262 = true } else reviewFailOcVc275 = true
-                            }
-                        } catch (e: Exception) { reviewFailOcVc275 = true }
-                        val unsVc262FiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsVc262, unsVc262, pinnedOcVc266.lines(), task.text)
-                        if (reviewFailOcVc275) resultFull = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + resultFull
-                        else if (unsVc262FiltVc266.isNotEmpty()) {
-                            // vc289 Fase 3: footer "Yang belum diketahui" di koordinator (paritas 1-1 vc288) — HANYA bila ada klaim dihapus.
-                            // Jendela 2 giliran TIDAK berlaku di sini: hasil koordinator datang dari OpenCode tanpa giliran tool app,
-                            // jadi tidak ada "2 giliran sebelumnya" untuk diperluas; bukti = teks tugas + hasil + FAKTA PIN.
-                            val correctedOcVc289 = AgentPrompt.applyDoublePass(resultFull, claimsVc262, unsVc262FiltVc266)
-                            val footerOcVc289 = AgentPrompt.unknownFooterVc288(claimsVc262, unsVc262FiltVc266, emptyList())
-                            resultFull = AgentPrompt.reviewerNoteText(claimsVc262, unsVc262FiltVc266) + "\n\n" + correctedOcVc289 + (if (footerOcVc289.isNotEmpty()) "\n\n" + footerOcVc289 else "")
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                resultFull = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + resultFull
-            }
-        }
         // vc277 O17(d): hasil berputar (>=3x pola sama) = partial + alasan.
         val spinningVc277 = spinningPatternVc277(result)
         // Slice 12 (vc329): prefix spinning + status jujur lewat seam

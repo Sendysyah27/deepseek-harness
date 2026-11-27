@@ -4,7 +4,7 @@ package com.senzwh.deepharness
  * vc298 BAGIAN 3 — Auto-save deterministik "ingat:" + koreksi -> lesson.
  *
  * Kotlin MURNI (tanpa Android, tanpa DB, tanpa jaringan) — bisa unit-test
- * standalone seperti MemoryLoopVc294 / ReviewerVc298. Fungsi di sini
+ * standalone seperti MemoryLoopVc294. Fungsi di sini
  * HANYA mendeteksi + memetakan; eksekusi simpan dilakukan pemanggil
  * (MainActivity.onUserMessage untuk 1-1, Tools.execute untuk guard
  * panggilan-ulang agen).

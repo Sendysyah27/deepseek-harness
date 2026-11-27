@@ -117,29 +117,9 @@ object TeamRun {
         sb.append("\nKamu mengerjakan SATU sub-tugas dari tujuan tim yang lebih besar. Fokus hanya pada sub-tugasmu; agen lain mengerjakan bagian lain secara paralel.")
         sb.append("\n[USER — SUB-TUGAS VERBATIM]:\n").append(lane.task).append("\n[/USER]")
         val transcript = StringBuilder("Sub-tugas ruang ${lane.agentName}: ${lane.task}")
-        var gateRetriedVc249 = false
         val usedToolsVc249 = ArrayList<String>()
-        // vc298 BAGIAN 1 (1B): jejak tool lane TERSTRUKTUR untuk reviewer.
-        // Temuan: bukti reviewer lane dulu = transcript mentah (.take
-        // 16000 dari kepala) — barisnya "[HASIL TOOL] <tool>: <hasil>"
-        // TANPA penanda [ok]/[gagal], tanpa label sumber yang dikenal
-        // prompt reviewer, dan hasil tool AKHIR (yang paling relevan
-        // dengan klaim jawaban final) terpotong karena transcript
-        // kepalanya dipenuhi narasi + hasil awal. Akibatnya aturan
-        // JEJAK TOOL vc257 ("<tool> [ok]" pada file yang sama = DIDUKUNG)
-        // tidak pernah menyala untuk lane, dan klaim berbukti tool
-        // dihapus reviewer. Jejak ini dicatat di TIAP eksekusi tool
-        // (jalur tunggal + batch) dengan format yang SAMA seperti jejak
-        // 1-1 (vc228FullTrailText): "- <tool> [ok|gagal] <hasil ringkas>".
-        val toolTraceVc298 = StringBuilder()
-        fun appendTraceVc298(tool: String, ok: Boolean, result: String) {
-            toolTraceVc298.append(ReviewerVc298.formatTraceStep(tool, ok, RedactSecrets.redact(result)))
-        }
-        var modelFinalVc249 = false
         // vc263 (N-m21): detektor putaran per lane tim.
         val stuckWatchTeamVc263 = AgentPrompt.StuckWatch()
-        // vc266: FAKTA PIN penuh sekali per lane — dipakai gate bukti, warning, dan filter reviewer.
-        val pinnedTeamVc266 = try { MemoryDb.get(app).pinnedFactsText() } catch (e: Exception) { "" }
         var prompt = sb.toString()
         // vc277 O15(a): cap tim naik 6 -> 20 (tugas tim memang
         // multi-langkah; tetap di bawah cap 1-1/latar 50).
@@ -188,8 +168,6 @@ object TeamRun {
                     usedToolsVc249.add(oc.tool)
                     // VC303-P2-11 (CX-5): R-id lane (jalur batch).
                     oc.resultId?.takeIf { it.isNotBlank() }?.let { if (it !in laneRidsVc303) laneRidsVc303.add(it) }
-                    // vc298 (1B): tiap outcome batch masuk jejak tool lane.
-                    appendTraceVc298(oc.tool, oc.ok, oc.result)
                     if (oc.prereqFailed) "" else stuckWatchTeamVc263.observe(oc.tool, oc.args, oc.result)
                 }
             )
@@ -234,21 +212,8 @@ object TeamRun {
                 continue
             }
             if (obj == null) {
-                modelFinalVc249 = true
                 val rawTeamVc262 = visible.ifBlank { resp.trim() }
                 var fTeamVc249 = if (rawTeamVc262.length > 20000) rawTeamVc262.take(20000) + "…(dipotong, jawaban akhir tim melebihi 20000 karakter — sisa tidak ditampilkan)…" else rawTeamVc262
-                // vc266: jawaban yang seluruh klaimnya didukung memori tidak kena gate bukti.
-                val allMemTeamVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(fTeamVc249), pinnedTeamVc266.lines(), lane.task)
-                if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(fTeamVc249) && usedToolsVc249.isNotEmpty() && !allMemTeamVc266 && !AgentPrompt.evidenceMarkerPresent(fTeamVc249)) {
-                    gateRetriedVc249 = true
-                    transcript.append("\n[SISTEM] ").append(AgentPrompt.EVIDENCE_GATE_NUDGE)
-                    prompt = rebuildPrompt(app, lane, transcript)
-                    continue
-                }
-                if (AgentPrompt.hasFactualClaim(fTeamVc249)) {
-                    val warnTeamVc249 = AgentPrompt.claimWarningForCorpus(fTeamVc249, usedToolsVc249, transcript.toString(), pinnedTeamVc266, lane.task)
-                    if (warnTeamVc249 != null) fTeamVc249 = "⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnTeamVc249\n\n" + fTeamVc249
-                }
                 finalText = fTeamVc249; break
             }
             val tool = obj.optString("tool")
@@ -290,8 +255,6 @@ object TeamRun {
                 if (ridAfterTeamVc303 != null && ridAfterTeamVc303 != ridBeforeTeamVc303 && ridAfterTeamVc303 !in laneRidsVc303) laneRidsVc303.add(ridAfterTeamVc303)
             }
             transcript.append("\n[HASIL TOOL] $tool" + (if (callIdTeamVc272.isNotBlank()) " [$callIdTeamVc272]" else "") + ": ").append(result.take(4000))
-            // vc298 (1B): jalur tunggal ikut masuk jejak tool lane.
-            appendTraceVc298(tool, !result.startsWith("Gagal:"), result)
             // vc263 (N-m21): putaran terdeteksi = suffix ke transkrip
             // (peringatan) atau hentikan lane ini (tanda berhenti).
             val stuckTeamVc263 = stuckWatchTeamVc263.observe(tool, args, result)
@@ -306,53 +269,6 @@ object TeamRun {
             prompt = rebuildPrompt(app, lane, transcript)
         }
         var outTeamVc249 = finalText ?: "Ruang ${lane.agentName}: tanpa hasil."
-        // vc249: reviewer konteks-nol tim — hanya klaim + bukti (sub-tugas, jejak tool lane, fakta PIN); reviewer lewat helper Models API
-        // (Fase 6 K1: tanpa slot — reviewer stateless, independen).
-        if (modelFinalVc249 && (AgentPrompt.hasFactualClaim(outTeamVc249) || usedToolsVc249.isNotEmpty())) {
-            try {
-                val claimsTeamVc249 = AgentPrompt.splitClaims(outTeamVc249)
-                if (claimsTeamVc249.isNotEmpty()) {
-                    // F2c (K1, Fase 6): reviewer lewat helper Models API —
-                    // tanpa slot. Reviewer stateless (independen).
-                    // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
-                    val providerTeamVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
-                    val refusalTeamVcF2c = providerTeamVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
-                    if (refusalTeamVcF2c != null) {
-                        outTeamVc249 = refusalTeamVcF2c + "\n\n" + outTeamVc249
-                    } else {
-                        val pinnedTeamR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                        // vc298 (1B): bukti reviewer lane = JEJAK TOOL LANE
-                        // terstruktur (didahulukan — bukan transcript mentah
-                        // yang terpotong dari kepala) + jawaban akhir lane
-                        // + FAKTA PIN. Format jejak sama seperti 1-1
-                        // ("- <tool> [ok|gagal] <hasil>") supaya aturan
-                        // JEJAK TOOL vc257 di prompt reviewer menyala.
-                        val traceTeamVc298 = toolTraceVc298.toString()
-                        val evTeam = ReviewerVc298.buildLaneEvidence(lane.task, traceTeamVc298, outTeamVc249, pinnedTeamR)
-                        // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
-                        var unsTeam: List<Int> = emptyList()
-                        var concTeam = false
-                        var reviewFailTeamVc275 = false
-                        try {
-                            val rawTeam = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
-                            val (u1TeamVc275, c1TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam)
-                            if (c1TeamVc275) { unsTeam = u1TeamVc275; concTeam = true } else {
-                                val rawTeam2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsTeamVc249, evTeam), LlmCallKind.REVIEWER)
-                                val (u2TeamVc275, c2TeamVc275) = AgentPrompt.parseZeroCtxReview(rawTeam2Vc275)
-                                if (c2TeamVc275) { unsTeam = u2TeamVc275; concTeam = true } else reviewFailTeamVc275 = true
-                            }
-                        } catch (e: Exception) { reviewFailTeamVc275 = true }
-                        // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                        val unsTeamFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsTeamVc249, unsTeam, pinnedTeamR.lines(), lane.task)
-                        // F2c: reviewer Models API independen dari giliran lane — tanpa label "tidak independen".
-                        if (reviewFailTeamVc275) outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + outTeamVc249
-                        else if (unsTeamFiltVc266.isNotEmpty()) outTeamVc249 = AgentPrompt.reviewerNoteText(claimsTeamVc249, unsTeamFiltVc266) + "\n\n" + AgentPrompt.applyDoublePass(outTeamVc249, claimsTeamVc249, unsTeamFiltVc266)
-                    }
-                }
-            } catch (e: Exception) {
-                outTeamVc249 = AgentPrompt.reviewerNotVerifiedNote() + "\n\n" + outTeamVc249
-            }
-        }
         return outTeamVc249 to laneRidsVc303
     }
 

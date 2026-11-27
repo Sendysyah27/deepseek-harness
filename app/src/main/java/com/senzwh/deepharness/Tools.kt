@@ -3455,7 +3455,7 @@ object Tools {
         }
         // vc276 O13(a): tempel flag read-back di akhir hasil tool. Flag
         // ikut ke model (hasil tool), ke ResultStore (baca ulang utuh),
-        // dan ke WorkItem.evidence (korpus claim-check + JEJAK).
+        // dan ke WorkItem.evidence (jejak tool).
         val rawVc276 = verifyWriteEffectVc276(ctx, name, args, raw)?.let { raw + it } ?: raw
         // vc260: jejak audit tulis/hapus memori — VISIBILITAS saja (bukan
         // gerbang): semua lane (1-1, latar, grup, room, tim) melewati

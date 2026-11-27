@@ -39,7 +39,7 @@ object ToolGate {
     // autoAllow, atau antrean persetujuan yang menghalangi eksekusi tool.
     // Revert: set GATES_DISABLED = false, atau install ulang vc246.
     // Flag ini BUKAN pengaman lain: penolakan password, StuckDetector,
-    // batas langkah, kuota Governor, label claim-check, larangan kamera,
+    // batas langkah, kuota Governor, larangan kamera,
     // dan prompt guard TETAP berlaku di situs masing-masing.
     const val GATES_DISABLED = true
     private val HIGH_TOOLS = setOf(

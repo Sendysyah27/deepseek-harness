@@ -50,6 +50,9 @@ abstract class Context {
     open val cacheDir: java.io.File
         get() = java.io.File(System.getProperty("java.io.tmpdir") ?: ".")
 
+    // vc333: AgentPrompt memakai ctx.packageName (path proot) — stub.
+    open val packageName: String get() = "com.senzwh.deepharness"
+
     open fun getDatabasePath(name: String): java.io.File = java.io.File(name)
 }
 

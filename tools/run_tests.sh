@@ -59,6 +59,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/AndroidStubs6.kt" \
   "$PROJ/app/src/test/AndroidStubs7.kt" \
   "$PROJ/app/src/test/AndroidStubs8.kt" \
+  "$PROJ/app/src/test/AgentPromptStubs.kt" \
   "$PROJ/app/src/test/FakeAndroid.kt" \
   "$PROJ/app/src/main/java/harness/core/RustCore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/SqliteSeam.kt" \
@@ -72,7 +73,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/main/java/com/senzwh/deepharness/SecureStore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmProviderStore.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/AgentEngine.kt" \
-  "$PROJ/app/src/main/java/com/senzwh/deepharness/VerifyVerdict.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/Behaviors.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/AgentPrompt.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelCaps.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/VisionFiles.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmEngineChat.kt" \
@@ -91,7 +93,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/RoomTeamGraphMigrationTest.kt" \
   "$PROJ/app/src/test/ModelPickerControllerTest.kt" \
   "$PROJ/app/src/test/ToolFallbackTest.kt" \
-  "$PROJ/app/src/test/VerifyLoopTest.kt" \
+  "$PROJ/app/src/test/VerificationRemovedTest.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -134,8 +136,8 @@ java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ModelPickerControllerTe
 echo "== jalankan ToolFallbackTest =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.ToolFallbackTestKt
 
-echo "== jalankan VerifyLoopTest =="
-java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.VerifyLoopTestKt
+echo "== jalankan VerificationRemovedTest =="
+java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.VerificationRemovedTestKt
 
 echo "== jalankan BrainBackupG7Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt

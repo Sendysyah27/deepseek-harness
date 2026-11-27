@@ -303,11 +303,8 @@ object GroupChat {
                         var finalText: String? = null
                         var toolIter = 0
                         var proseBeforeTool = ""
-                        var gateRetriedVc249 = false
                         val roundToolsVc249 = ArrayList<String>()
                         val roundCorpusVc249 = StringBuilder()
-                        // vc266: FAKTA PIN penuh sekali per giliran anggota — dipakai gate bukti, warning, dan filter reviewer.
-                        val pinnedGrpVc266 = try { MemoryDb.get(app).pinnedFactsText() } catch (e: Exception) { "" }
                         // vc263 (N-m21): detektor putaran per ronde anggota.
                         val stuckWatchGrpVc263 = AgentPrompt.StuckWatch()
                         // vc277 O17(c): pengunci giliran grup — sekali 🛑, tool
@@ -322,7 +319,7 @@ object GroupChat {
                         // harus BERHENTI sekarang (StuckDetector —
                         // finalText sudah diisi di sini).
                         // Hasil per call dicatat seperti jalur tunggal
-                        // (pesan tool + korpus reviewer per call), lalu
+                        // (pesan tool + korpus per call), lalu
                         // SATU continuation gabungan (combinedMessage)
                         // ditempel ke prompt berikutnya.
                         fun execBatchGrpVc274(calls: List<JSONObject>, visibleGrpVc274: String): Boolean {
@@ -384,15 +381,6 @@ object GroupChat {
                                 continue
                             }
                             if (toolObj == null) {
-                                // vc266: jawaban yang seluruh klaimnya didukung memori tidak kena gate bukti.
-                                val allMemGrpVc266 = AgentPrompt.allClaimsSupportedByMemory(AgentPrompt.splitClaims(visible), pinnedGrpVc266.lines(), userText)
-                                if (!gateRetriedVc249 && AgentPrompt.hasFactualClaim(visible) && roundToolsVc249.isNotEmpty() && !allMemGrpVc266 && !AgentPrompt.evidenceMarkerPresent(visible)) {
-                                    gateRetriedVc249 = true
-                                    // vc321 IXL: nudge gate bukti = delta,
-                                    // bukan rebuild prompt penuh.
-                                    prompt = continuationPromptVc321(userText, AgentPrompt.EVIDENCE_GATE_NUDGE)
-                                    continue
-                                }
                                 finalText = visible.trim(); break
                             }
                             if (toolIter >= 3) { finalText = ((visible.trim()) + "\n\n⛔ " + honestCapStopGrpVc277()).trim(); break }
@@ -442,8 +430,7 @@ object GroupChat {
                                 roundWorkVc303.add(WorkItem(tool, msGrpVc254, !WorkLog.isFailed(result), RedactSecrets.redact(result).take(120), evidence = result, args = args.toString().take(4000), resultId = grpRidVc303, totalChars = if (grpRidVc303.isBlank()) 0 else grpTotal, callId = callIdGrpVc272))
                             }
                             // vc254: teks simpanan grup jadi format aktivitas
-                            // (judul + status + argumen + hasil). Korpus
-                            // reviewer (roundCorpusVc249) TIDAK diubah.
+                            // (judul + status + argumen + hasil).
                             val toolText = ActivityTitle.formatText(tool, args, RedactSecrets.redact(result), msGrpVc254, !WorkLog.isFailed(result))
                             try { mdb.addGroupMsg("tool", m.name, toolText) } catch (e: Exception) {}
                             listener.onTool(m.name, m.accent, toolText)
@@ -463,69 +450,7 @@ object GroupChat {
                         // melarang blok json) sehingga ask di sini praktis
                         // hanya muncul di mode Eksekusi.
                         val askPair = try { AgentPrompt.extractAsk(cleanRaw) } catch (e: Exception) { null }
-                        var filteredGrpVc250 = ""
-                        // vc249: claim check + reviewer konteks-nol grup, SEBELUM tampil (catatan sistem mendahului pesan agen, seperti pill 1-1).
-                        val cleanVc249 = askPair?.second?.trim() ?: cleanRaw
-                        if (cleanVc249.isNotEmpty() && AgentPrompt.hasFactualClaim(cleanVc249)) {
-                            val warnGrpVc249 = AgentPrompt.claimWarningForCorpus(cleanVc249, roundToolsVc249, roundCorpusVc249.toString(), pinnedGrpVc266, userText)
-                            if (warnGrpVc249 != null) {
-                                val noteGrpClaim = "⚠️ Peringatan sistem: klaim ini tidak didukung hasil tool di giliran ini — perbaiki atau nyatakan sebagai dugaan. Detail: $warnGrpVc249"
-                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpClaim) } catch (e: Exception) {}
-                                listener.onSystem(noteGrpClaim)
-                            }
-                        }
-                        if (cleanVc249.isNotEmpty() && (AgentPrompt.hasFactualClaim(cleanVc249) || roundToolsVc249.isNotEmpty())) {
-                            try {
-                                val claimsGrpVc249 = AgentPrompt.splitClaims(cleanVc249)
-                                if (claimsGrpVc249.isNotEmpty()) {
-                                    // F2c (K1, Fase 6): reviewer lewat helper Models API —
-                                    // tanpa slot. Reviewer stateless (independen).
-                                    // Gate over-cap openai: refusal per-provider bucket reviewer; provider null → lanjut ke helper (throw-nya tertangkap catch → penanda "belum terverifikasi").
-                                    val providerGrpVcF2c = try { LlmEngineChat.resolveProvider(app) } catch (e: Exception) { null }
-                                    val refusalGrpVcF2c = providerGrpVcF2c?.let { try { Governor.refusalModels(app, it, Governor.MODELS_BUCKET_REVIEWER) } catch (e: Exception) { null } }
-                                    if (refusalGrpVcF2c != null) {
-                                        try { mdb.addGroupMsg("sistem", "Sistem", refusalGrpVcF2c) } catch (e: Exception) {}
-                                        listener.onSystem(refusalGrpVcF2c)
-                                    } else {
-                                        val pinnedGrpR = try { RedactSecrets.redact(MemoryDb.get(app).pinnedFactsText()) } catch (e: Exception) { "" }
-                                        val evGrp = ("HASIL TOOL GRUP:\n" + roundCorpusVc249.toString() + "\nPESAN USER:\n" + userText + "\nFAKTA PIN:\n" + pinnedGrpR).take(16000)
-                                        // vc275 O11: verdict tak terparse -> retry 1x format ketat; tetap gagal -> penanda "belum terverifikasi", bukan lolos diam-diam. (Helper: kind REVIEWER → bucket reviewer, jawaban kosong = error.)
-                                        var unsGrp: List<Int> = emptyList()
-                                        var concGrp = false
-                                        var reviewFailGrpVc275 = false
-                                        try {
-                                            val rawGrp = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.zeroCtxReviewPrompt(claimsGrpVc249, evGrp), LlmCallKind.REVIEWER)
-                                            val (u1GrpVc275, c1GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp)
-                                            if (c1GrpVc275) { unsGrp = u1GrpVc275; concGrp = true } else {
-                                                val rawGrp2Vc275 = LlmEngineChat.chatSyncForEngine(app, AgentPrompt.reviewerRetryPrompt(claimsGrpVc249, evGrp), LlmCallKind.REVIEWER)
-                                                val (u2GrpVc275, c2GrpVc275) = AgentPrompt.parseZeroCtxReview(rawGrp2Vc275)
-                                                if (c2GrpVc275) { unsGrp = u2GrpVc275; concGrp = true } else reviewFailGrpVc275 = true
-                                            }
-                                        } catch (e: Exception) { reviewFailGrpVc275 = true }
-                                        // vc266: klaim yang didukung memori dikeluarkan dari daftar tak didukung reviewer.
-                                        val unsGrpFiltVc266 = AgentPrompt.filterUnsupportedByMemory(claimsGrpVc249, unsGrp, pinnedGrpR.lines(), userText)
-                                        // F2c: reviewer Models API independen dari giliran agen (stateless, tanpa slot) — tanpa label "tidak independen".
-                                        if (reviewFailGrpVc275) {
-                                            val noteGrpInc = AgentPrompt.reviewerNotVerifiedNote()
-                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpInc) } catch (e: Exception) {}
-                                            listener.onSystem(noteGrpInc)
-                                        } else if (unsGrpFiltVc266.isNotEmpty()) {
-                                            val noteGrpRev = AgentPrompt.reviewerNoteText(claimsGrpVc249, unsGrpFiltVc266)
-                                            try { mdb.addGroupMsg("sistem", "Sistem", noteGrpRev) } catch (e: Exception) {}
-                                            listener.onSystem(noteGrpRev)
-                                            // vc250: double-pass — pesan agen yang tampil hanya berisi klaim yang lolos.
-                                            filteredGrpVc250 = AgentPrompt.applyDoublePass(cleanVc249, claimsGrpVc249, unsGrpFiltVc266)
-                                        }
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                val noteGrpErr = AgentPrompt.reviewerNotVerifiedNote()
-                                try { mdb.addGroupMsg("sistem", "Sistem", noteGrpErr) } catch (e: Exception) {}
-                                listener.onSystem(noteGrpErr)
-                            }
-                        }
                         var clean = askPair?.second?.trim() ?: cleanRaw
-                        if (filteredGrpVc250.isNotBlank()) clean = filteredGrpVc250
                         if (clean.isNotEmpty()) {
                             try { mdb.addGroupMsg("agen", m.name, clean) } catch (e: Exception) {}
                             listener.onAgent(m.name, m.accent, clean)
