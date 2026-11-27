@@ -138,6 +138,9 @@ object ConcatTools {
      *    edit yang belum disimpan DIBUANG; save=true aman.
      *  - concat_edit_apply (C1): hanya bila op-nya ada di denylist
      *    DESTRUCTIVE_EDIT_OPS_VC316; op "batch" dicek isinya (rekursif).
+     *  - delete_skill (vc334 R5 F2): SELALU — penghapusan skill agen
+     *    tidak punya varian aman; dialog Ya/Batal sekali per panggilan
+     *    walau GATES_DISABLED=true (fail-closed).
      *  - Tool lain (READ + WRITE non-destruktif): false.
      *  Murni fungsi atas (tool, args) — tanpa Context, tanpa I/O —
      *  supaya bisa dites di JVM. */
@@ -151,6 +154,11 @@ object ConcatTools {
             else if (op == "batch") jsonHasDestructiveOpVc316(args.opt("args"))
             else false
         }
+        // vc334 R5 F2: delete_skill ikut pengecualian konfirmasi khusus
+        // (hipotesis H-1 audit W3: satu panggilan model = satu skill
+        // hilang seketika di semua lane selagi GATES_DISABLED=true).
+        // SELALU true — penghapusan skill tidak punya varian aman.
+        "delete_skill" -> true
         else -> false
     }
 
@@ -174,6 +182,8 @@ object ConcatTools {
                     "Menjalankan perintah edit \"$op\" pada proyek \"$proj\" — $d. Isi yang dihapus tidak bisa dikembalikan kecuali undo (concat_edit_undo) sebelum proyek ditutup."
                 }
             }
+            // vc334 R5 F2: teks dialog hapus skill — menyebut id + arsip.
+            "delete_skill" -> "Menghapus skill #${args.optLong("id", -1)} secara permanen — skill hilang dari tabel skills. Hapusan diarsipkan 30 hari — pulihkan lewat Setup 66."
             else -> ""
         }
     }

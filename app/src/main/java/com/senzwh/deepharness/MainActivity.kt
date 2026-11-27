@@ -5865,9 +5865,18 @@ class MainActivity : Activity() {
         // dan eval TIDAK ada di sana, jadi daftar dibaca langsung dari DB
         // (query yang sudah ada). Parameter st dipertahankan supaya
         // call-site refreshSetupNative() tidak berubah.
-        val all = try { MemoryDb.get(this).skills() } catch (e: Exception) { emptyList<Skill>() }
+        // vc334 R5 F1: baca error-aware — query gagal tampil sebagai kartu
+        // error (BUKAN "Belum ada skill" diam-diam seperti dulu).
+        val resVc334R5 = try { MemoryDb.get(this).skillsResult() } catch (e: Exception) { kotlin.Result.failure<List<Skill>>(e) }
+        val all = resVc334R5.getOrDefault(emptyList())
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        if (all.isEmpty()) {
+        if (resVc334R5.isFailure) {
+            val errVc334R5 = resVc334R5.exceptionOrNull()?.message ?: resVc334R5.exceptionOrNull()?.javaClass?.simpleName ?: "tidak diketahui"
+            val errCard = cardBoxT()
+            errCard.addView(tv("Gagal membaca tabel skills", 14f, th.text, true))
+            errCard.addView(tv("Gagal membaca tabel skills: $errVc334R5 — tabel mungkin rusak; coba tutup-buka app, bila tetap gagal laporkan.", 12.5f, th.dim))
+            wrap.addView(errCard)
+        } else if (all.isEmpty()) {
             val empty = cardBoxT()
             empty.addView(tv("Belum ada skill", 14f, th.text, true))
             empty.addView(tv("Belum ada skill — impor file .md atau minta agen membuatkan satu.", 12.5f, th.dim))
@@ -12707,21 +12716,29 @@ class MainActivity : Activity() {
     // ditutup tanpa tombol, giliran akan menggantung tanpa hasil tool.
     private fun askConcatDestructiveConfirmVc316(tool: String, args: JSONObject, callId: String = "") {
         val descVc316 = ConcatTools.describeDestructiveConcatCallVc316(tool, args)
+        // vc334 R5 F2: dialog yang sama dipakai delete_skill — judul +
+        // pesan menyesuaikan tool (Concat tetap seperti dulu).
+        val isDeleteSkillVc334R5 = tool == "delete_skill"
+        val titleVc334R5 = if (isDeleteSkillVc334R5) "Hapus skill?" else "Jalankan perintah Concat yang merusak?"
+        val noteVc334R5 = if (isDeleteSkillVc334R5) "Skill dihapus dari tabel skills — hapusan diarsipkan 30 hari, pulihkan lewat Setup 66. Bila ragu, tekan Batal."
+            else "Perintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save)."
+        val yesLabelVc334R5 = if (isDeleteSkillVc334R5) "Ya, hapus" else "Ya, jalankan"
+        val denyKindVc334R5 = if (isDeleteSkillVc334R5) "konfirmasi khusus hapus skill" else "konfirmasi khusus Concat"
         runOnUiThread {
             try {
                 AlertDialog.Builder(this)
-                    .setTitle("Jalankan perintah Concat yang merusak?")
-                    .setMessage(descVc316 + "\n\nPerintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save).")
-                    .setPositiveButton("Ya, jalankan") { _, _ -> execToolAndContinue(tool, args, callId) }
+                    .setTitle(titleVc334R5)
+                    .setMessage(descVc316 + "\n\n" + noteVc334R5)
+                    .setPositiveButton(yesLabelVc334R5) { _, _ -> execToolAndContinue(tool, args, callId) }
                     .setNegativeButton("Batal") { _, _ ->
-                        addMsg("⏹️ $tool tidak dijalankan (ditolak user — konfirmasi khusus Concat).", "meta", turn = true)
-                        sendContinuation("User MENOLAK aksi tool $tool (konfirmasi khusus Concat: perintah ini merusak). Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.")
+                        addMsg("⏹️ $tool tidak dijalankan (ditolak user — $denyKindVc334R5).", "meta", turn = true)
+                        sendContinuation("User MENOLAK aksi tool $tool ($denyKindVc334R5: perintah ini merusak). Jangan coba lagi aksi itu; jawab user dengan penjelasan / alternatif.")
                     }
                     .setCancelable(false)
                     .create().show()
             } catch (e: Exception) {
-                addMsg("⏹️ $tool tidak dijalankan (konfirmasi khusus Concat tidak bisa tampil — app tidak di depan).", "meta", turn = true)
-                sendContinuation("Tool $tool TIDAK dijalankan: perintah Concat ini merusak dan butuh konfirmasi user, tetapi dialog konfirmasinya tidak bisa tampil (app sedang tidak di depan). Minta user membuka app lalu memicu ulang tugasnya; jangan ulangi panggilan ini sendiri.")
+                addMsg("⏹️ $tool tidak dijalankan ($denyKindVc334R5 tidak bisa tampil — app tidak di depan).", "meta", turn = true)
+                sendContinuation("Tool $tool TIDAK dijalankan: perintah ini merusak dan butuh konfirmasi user, tetapi dialog konfirmasinya tidak bisa tampil (app sedang tidak di depan). Minta user membuka app lalu memicu ulang tugasnya; jangan ulangi panggilan ini sendiri.")
             }
         }
     }
@@ -16405,21 +16422,29 @@ internal fun showApiTokenDialog() {
                 // (N9-C2, Concat selalu lewat runRoomSafeToolVc316).
                 fun askRoomConcatConfirmVc316(roomSubVc316: String, agentNameVc316: String, toolVc316: String, argsVc316: org.json.JSONObject, effSessVc316: String, roomNowVc316: org.json.JSONObject, callIdVc316: String, t0Vc316: Long) {
                     val descVc316 = ConcatTools.describeDestructiveConcatCallVc316(toolVc316, argsVc316)
+                    // vc334 R5 F2: dialog yang sama dipakai delete_skill —
+                    // judul + pesan menyesuaikan tool (Concat tetap dulu).
+                    val isDeleteSkillVc334R5 = toolVc316 == "delete_skill"
+                    val titleVc334R5 = if (isDeleteSkillVc334R5) "Hapus skill di room?" else "Jalankan perintah Concat yang merusak di room?"
+                    val noteVc334R5 = if (isDeleteSkillVc334R5) "Skill dihapus dari tabel skills — hapusan diarsipkan 30 hari, pulihkan lewat Setup 66. Bila ragu, tekan Batal."
+                        else "Perintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save)."
+                    val yesLabelVc334R5 = if (isDeleteSkillVc334R5) "Ya, hapus" else "Ya, jalankan"
+                    val denyKindVc334R5 = if (isDeleteSkillVc334R5) "konfirmasi khusus hapus skill" else "konfirmasi khusus Concat"
                     val showVc316 = {
                         try {
                             AlertDialog.Builder(this)
-                                .setTitle("Jalankan perintah Concat yang merusak di room?")
-                                .setMessage("Agen $agentNameVc316 di room ini ingin menjalankan:\n$descVc316\n\nPerintah ini TIDAK BISA dibatalkan otomatis. Bila ragu, tekan Batal — agen bisa menyimpan dulu proyeknya (concat_project_save).")
-                                .setPositiveButton("Ya, jalankan") { _, _ -> runRoomSafeToolVc316(toolVc316, argsVc316, callIdVc316, t0Vc316) }
+                                .setTitle(titleVc334R5)
+                                .setMessage("Agen $agentNameVc316 di room ini ingin menjalankan:\n$descVc316\n\n$noteVc334R5")
+                                .setPositiveButton(yesLabelVc334R5) { _, _ -> runRoomSafeToolVc316(toolVc316, argsVc316, callIdVc316, t0Vc316) }
                                 .setNegativeButton("Batal") { _, _ ->
-                                    Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 ditolak user (konfirmasi khusus Concat) — tidak dieksekusi di room.", effSessVc316)
+                                    Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 ditolak user ($denyKindVc334R5) — tidak dieksekusi di room.", effSessVc316)
                                     Automation.logAction(this, roomNowVc316.optString("id"), agentNameVc316, "tool ditolak", toolVc316, effSessVc316)
                                     renderMessages(); scrollBottom()
                                 }
                                 .setCancelable(false)
                                 .create().show()
                         } catch (e: Exception) {
-                            Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 butuh konfirmasi khusus Concat — jalankan dari chat 1-1 (dialog tidak bisa tampil di room).", effSessVc316)
+                            Automation.appendMessage(this, roomNowVc316.optString("id"), roomSubVc316, "sistem", "⏸ Tool $toolVc316 butuh $denyKindVc334R5 — jalankan dari chat 1-1 (dialog tidak bisa tampil di room).", effSessVc316)
                             Automation.logAction(this, roomNowVc316.optString("id"), agentNameVc316, "tool ditahan", toolVc316, effSessVc316)
                             renderMessages(); scrollBottom()
                         }

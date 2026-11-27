@@ -79,6 +79,9 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelCaps.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/VisionFiles.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/Vc334R4Pure.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/Vc334R5Pure.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/ConcatApiClient.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/ConcatTools.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/LlmEngineChat.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/FirstRunState.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/ModelPickerController.kt" \
@@ -100,6 +103,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/StopButtonVc334R2Test.kt" \
   "$PROJ/app/src/test/PerfMechanicsVc334R3Test.kt" \
   "$PROJ/app/src/test/VisionPathsVc334R4Test.kt" \
+  "$PROJ/app/src/test/SkillsVc334R5Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -156,6 +160,9 @@ java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.Perf
 
 echo "== jalankan VisionPathsVc334R4Test =="
 java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.VisionPathsVc334R4TestKt
+
+echo "== jalankan SkillsVc334R5Test =="
+java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.SkillsVc334R5TestKt
 
 echo "== jalankan BrainBackupG7Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt

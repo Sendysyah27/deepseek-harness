@@ -753,7 +753,14 @@ object GroupChat {
         return try {
             // Slice 12 (vc329): keputusan rute lewat seam Rust;
             // ledger/eksekusi/dialog listener tetap Kotlin.
-            val route = runGroupToolDecision(app, tool, args)
+            // vc334 R5 F2: konfirmasi khusus (delete_skill) berlaku juga
+            // di grup walau GATES_DISABLED=true — arahkan ke dialog
+            // listener (Ya/Batal) alih-alih "execute_gates". Dicek
+            // SEBELUM runGroupToolDecision supaya seam Rust pun tidak
+            // bisa mengembalikan "execute" untuk tool ini.
+            val route = if (ToolGate.GATES_DISABLED && ConcatTools.requiresSpecialConfirmVc316(tool, args)) {
+                "dialog" to null
+            } else runGroupToolDecision(app, tool, args)
             when (route.first) {
                 "msg_analyze_photo" -> route.second ?: ""
                 // vc247: gate dimatikan — eksekusi langsung tanpa syarat

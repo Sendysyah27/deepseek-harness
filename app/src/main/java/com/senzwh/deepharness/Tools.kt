@@ -2186,11 +2186,19 @@ object Tools {
                     SkillImport.importFromSkillExport(ctx, args.optString("file").trim())
                 }
                 "list_skills" -> {
-                    val rows = MemoryDb.get(ctx).skills()
-                    if (rows.isEmpty()) "Belum ada skill."
-                    // vc302 Fix D: katalog sukses = bukti baca live untuk
-                    // semua slug di giliran ini.
-                    else { try { LiveReadGateVc302.noteListRead(TurnMetrics.currentTurnNo()) } catch (e: Exception) {}; rows.joinToString("\n") { "- #${it.id} ${it.name}${if (it.enabled) "" else " (nonaktif)"}: ${(if (it.descr.isNotBlank()) it.descr else it.instruction).take(120)}${SkillJudge.evalSummary(it.evalJson)}" } }
+                    // vc334 R5 F1+F4: baca error-aware — query gagal JANGAN
+                    // dijawab pesan kosong; semua nonaktif JANGAN dijawab
+                    // pesan kosong (penanda penutup F4).
+                    val resVc334R5 = MemoryDb.get(ctx).skillsResult()
+                    if (resVc334R5.isFailure) {
+                        Vc334R5Pure.formatListSkills(emptyList(), resVc334R5.exceptionOrNull()?.message ?: resVc334R5.exceptionOrNull()?.javaClass?.simpleName ?: "tidak diketahui")
+                    } else {
+                        val rows = resVc334R5.getOrThrow()
+                        // vc302 Fix D: katalog sukses = bukti baca live untuk
+                        // semua slug di giliran ini.
+                        if (rows.isNotEmpty()) { try { LiveReadGateVc302.noteListRead(TurnMetrics.currentTurnNo()) } catch (e: Exception) {} }
+                        Vc334R5Pure.formatListSkills(rows.map { Vc334R5Pure.SkillListRow(it.id, it.name, it.enabled, (if (it.descr.isNotBlank()) it.descr else it.instruction).take(120) + SkillJudge.evalSummary(it.evalJson)) }, null)
+                    }
                 }
                 // vc300 BAGIAN B: daftar versi tersimpan satu skill (append-only,
                 // teks lama tidak pernah hilang). Tanpa versi = jujur: skill lama

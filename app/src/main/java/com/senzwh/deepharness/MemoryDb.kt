@@ -1826,6 +1826,19 @@ class MemoryDb private constructor(ctx: Context) :
     // Setup 17 "Hapus memori?" menulis "dihapus permanen" sebelum wipeAll
     // dipanggil). Tidak ada arsip — ini reset asisten yang diminta eksplisit.
     fun wipeAll() {
+        // vc334 R5 F3 (varian aman): SEBELUM arsip ikut ter-wipe, salin
+        // ringkasan entri arsip skill (kind/nama/ref/waktu hapus) ke
+        // EventDb (harness.db — file terpisah, retensi 30 hari, TIDAK
+        // ikut di-wipe) supaya penghapusan sebelum wipe tetap terlacak.
+        // Semantik wipe TIDAK berubah: baris deleted_archive tetap
+        // dihapus di bawah. Gagal baca/tulis ringkasan tidak menggagalkan
+        // wipe (blok try sendiri).
+        try {
+            val summaryVc334R5 = Vc334R5Pure.wipeSkillArchiveSummary(
+                listArchived().map { Vc334R5Pure.SkillArchiveEntry(it.id, it.kind, it.ref, it.payload, it.deletedTs) }
+            )
+            if (summaryVc334R5 != null) EventDb.get(appCtx).add("db", "wipe", summaryVc334R5)
+        } catch (e: Exception) {}
         try {
             val db = writableDatabase
             db.delete("facts", null, null); db.delete("history", null, null); db.delete("reminders", null, null)
@@ -2447,15 +2460,36 @@ class MemoryDb private constructor(ctx: Context) :
         } catch (e: Exception) {}
     }
 
-    fun skills(): List<Skill> {
+    // vc334 R5 F1: query mentah — MELEMPAR bila gagal (dipakai skills()
+    // yang menelan + skillsResult() yang error-aware; JANGAN tambah
+    // try/catch di sini — penelanan/pencatatan milik pemanggil).
+    private fun readSkillsRows(): List<Skill> {
+        ensureSkillCols()
         val out = ArrayList<Skill>()
-        try {
-            ensureSkillCols()
-            val c = readableDatabase.rawQuery("SELECT id,name,instruction,descr,enabled,eval FROM skills ORDER BY id", null)
-            while (c.moveToNext()) out.add(Skill(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getInt(4) != 0, c.getString(5) ?: ""))
-            c.close()
-        } catch (e: Exception) {}
+        val c = readableDatabase.rawQuery("SELECT id,name,instruction,descr,enabled,eval FROM skills ORDER BY id", null)
+        while (c.moveToNext()) out.add(Skill(c.getLong(0), c.getString(1) ?: "", c.getString(2) ?: "", c.getString(3) ?: "", c.getInt(4) != 0, c.getString(5) ?: ""))
+        c.close()
         return out
+    }
+
+    fun skills(): List<Skill> {
+        return try {
+            readSkillsRows()
+        } catch (e: Exception) { emptyList() }
+    }
+
+    // vc334 R5 F1: varian error-aware untuk pemakaian diagnostik
+    // (list_skills, Settings > Skill Agen). Gagal query -> Result.failure
+    // + jejak ke EventDb (type='db', file harness.db — TIDAK ikut
+    // di-wipe oleh wipeAll) — TIDAK PERNAH jadi list kosong diam-diam.
+    // Pemanggil lain tetap pakai skills() lama (perilaku tak berubah).
+    fun skillsResult(): kotlin.Result<List<Skill>> {
+        return try {
+            kotlin.Result.success(readSkillsRows())
+        } catch (e: Exception) {
+            try { EventDb.get(appCtx).add("db", "skills", "skills() gagal: ${e.message ?: e.javaClass.simpleName}") } catch (ignored: Exception) {}
+            kotlin.Result.failure(e)
+        }
     }
 
     // vc237 M9: deleteSkill mentah — penelepon WAJIB mengarsip dulu lewat

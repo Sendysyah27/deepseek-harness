@@ -797,7 +797,15 @@ object BgBrain {
             // eksekusi/parkir/notifikasi tetap Kotlin. Fallback = `when`
             // asli bila seam tak-tersedia.
             val propBgVc329 = Tools.factProposalForMemoryTool(tool, args)
-            val routeBgVc329 = bgToolRouteDecision(
+            // vc334 R5 F2: konfirmasi khusus (delete_skill dkk) berlaku
+            // juga di latar walau GATES_DISABLED=true — TAPI latar tidak
+            // punya dialog: fail-closed = TIDAK dieksekusi, kembalikan
+            // pesan penolakan ke model (bukan parkir, bukan execute).
+            // Dicek SEBELUM bgToolRouteDecision supaya seam Rust pun
+            // tidak bisa mengembalikan "execute" untuk tool ini.
+            val routeBgVc329 = if (ToolGate.GATES_DISABLED && ConcatTools.requiresSpecialConfirmVc316(tool, args)) {
+                "msg_special_confirm" to "Tool $tool butuh konfirmasi user (hapus skill) — tidak dijalankan di mode latar. Minta user menghapusnya dari chat 1-1 atau Settings > Skill Agen; jangan ulangi panggilan ini sendiri."
+            } else bgToolRouteDecision(
                 tool, ToolGate.GATES_DISABLED, Tools.isMemoryWrite(tool),
                 jobTools, Tools.isRisky(tool, args), autoAllowed(ctx, tool), propBgVc329
             )
@@ -806,6 +814,7 @@ object BgBrain {
                     "execute" -> Tools.execute(ctx, tool, args, callIdBgVc272)
                     "msg_analyze_photo" -> routeBgVc329.second ?: ""
                     "msg_delete_session" -> routeBgVc329.second ?: ""
+                    "msg_special_confirm" -> routeBgVc329.second ?: ""
                     "park_memory_jobtools", "park_memory_noprop", "park_risky" -> {
                         if (!park(ctx, task, origin, notifTitle, transcript, steps, tool, args, visible, jobId, jobTools, sessionId)) deliver(ctx, origin, notifTitle, sessionId, "⛔ Tugas latar dibatalkan: antrean persetujuan Otak Latar penuh (maks 8) — tool $tool tidak diparkir dan tidak dieksekusi.", jobId, "dibatalkan")
                         return
