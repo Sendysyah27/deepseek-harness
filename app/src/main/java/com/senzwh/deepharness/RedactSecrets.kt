@@ -63,7 +63,12 @@ object RedactSecrets {
         }
     }
 
+    /** vc334 R3 (L9, diagnostik tes): jumlah pemanggilan redact(). */
+    @Volatile var redactCallsVc334 = 0
+        private set
+
     fun redact(s: String): String {
+        redactCallsVc334++
         rustRedact(s)?.let { return it }
         return redactKotlin(s)
     }

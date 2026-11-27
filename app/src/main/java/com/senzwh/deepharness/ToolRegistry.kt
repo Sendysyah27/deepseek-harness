@@ -677,14 +677,41 @@ object ToolRegistry {
 
     /** Seluruh tool (default [ALL]) sebagai payload OpenAI `tools`.
      *  Tool di [NATIVE_TOOLS_EXCLUDED] selalu disaring, termasuk bila
-     *  disertakan eksplisit di `include` — mereka tidak pernah native. */
+     *  disertakan eksplisit di `include` — mereka tidak pernah native.
+     *
+     *  vc334 R3 (L5): hasil di-CACHE per daftar `include` — dulu skema
+     *  ±193 ToolDef dibangun ulang dari nol tiap panggilan LLM (tiap
+     *  langkah tool). Registry statis (ALL immutable, tanpa titik
+     *  mutasi) — jadi cache aman; invalidasi per giliran dari
+     *  MainActivity.resetTurnStateVc334 (bila suatu hari registry bisa
+     *  berubah runtime, panggil invalidateToolsJsonCache() di titik
+     *  mutasi itu). Instans yang dikembalikan READ-ONLY menurut
+     *  kontrak — pemanggil JANGAN memutasi (satu-satunya pemanggil,
+     *  LlmEngineChat.toolsToJson -> buildChatBody, hanya membaca). */
+    @Volatile private var cachedToolsJson: JSONArray? = null
+    @Volatile private var cachedToolsJsonKey: List<ToolDef>? = null
+    /** vc334 R3 (L5, diagnostik tes): berapa kali toolsJson benar-benar dibangun. */
+    @Volatile var toolsJsonBuildsVc334 = 0
+        private set
+
     fun toolsJson(include: List<ToolDef> = ALL): JSONArray {
+        val cached = cachedToolsJson
+        if (cached != null && cachedToolsJsonKey == include) return cached
         val arr = JSONArray()
         for (def in include) {
             if (def.name in NATIVE_TOOLS_EXCLUDED) continue
             arr.put(toolJsonSchema(def))
         }
+        toolsJsonBuildsVc334++
+        cachedToolsJson = arr
+        cachedToolsJsonKey = include
         return arr
+    }
+
+    /** Kosongkan cache [toolsJson] (dipanggil per giliran — lihat L5). */
+    fun invalidateToolsJsonCache() {
+        cachedToolsJson = null
+        cachedToolsJsonKey = null
     }
 
     /** Satu [ToolDef] → `{"type":"function","function":{"name":...,

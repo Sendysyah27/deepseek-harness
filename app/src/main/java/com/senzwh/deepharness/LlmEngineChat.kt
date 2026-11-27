@@ -265,7 +265,11 @@ object LlmEngineChat {
             onDeltaToolCall = { },
             onDone = { r -> resultRef.set(r); latch.countDown() },
             onError = { e -> errRef.set(e); latch.countDown() },
-            toolChoice = toolChoice
+            toolChoice = toolChoice,
+            // vc334 R3 (P-4): timeout helper diteruskan ke socket client
+            // (dulu: socket selalu 120 dtk walau pemanggil minta lebih
+            // kecil — latch bisa habis sementara socket masih menunggu).
+            timeoutMs = timeoutMs
         )
         val done = try {
             latch.await(timeoutMs.toLong() + 30_000L, TimeUnit.MILLISECONDS)
@@ -277,7 +281,10 @@ object LlmEngineChat {
             // vc334 R1 (A1): latch tak terbangun karena user membatalkan —
             // itu BUKAN timeout provider; jangan lempar pesan menyesatkan.
             if (OpenAiCompatClient.isChatCancelled()) throw UserCancelledException()
-            throw RuntimeException("Provider '${provider.id}' timeout (${timeoutMs} ms) — tidak ada jawaban.")
+            // vc334 R3 (P-4): pesan menyebut waktu tunggu SEBENARNYA
+            // (timeoutMs + 30 dtk grace latch — dulu hanya timeoutMs,
+            // padahal latch menunggu lebih lama dari itu).
+            throw RuntimeException("Provider '${provider.id}' timeout (${timeoutMs + 30_000} ms) — tidak ada jawaban.")
         }
         errRef.get()?.let { rawErr ->
             // vc334 R1 (A1): user-cancel diteruskan sebagai

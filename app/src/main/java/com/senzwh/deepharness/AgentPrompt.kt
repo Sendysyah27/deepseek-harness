@@ -639,6 +639,25 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
             .replace("/data/data/com.senzwh.deepharness/files/proot/ubuntu", ctx.packageName + "/files/proot/ubuntu")
     }
 
+    /** vc334 R3 (L7): catatan dialek teks untuk prompt retry (satu pesan
+     *  — BUKAN katalog penuh; katalog ringkas sudah ada di dalam prompt
+     *  hasil rebuild). */
+    const val TEXT_RETRY_NOTE_VC334 = "\n\n[SISTEM (dialek teks — provider ini tidak mendukung function calling native): pakai format teks berikut untuk memanggil tool, BUKAN function calling. Instruksi 'function calling native' di pesan sebelumnya TIDAK berlaku.]"
+
+    /** vc334 R3 (L7): prompt retry dialek teks dari prompt awal giliran
+     *  ini — katalog native di prompt awal diganti katalog teks RINGKAS
+     *  (selectCatalog 6.000+6.000), blok lain (skills/fakta/riwayat/
+     *  digest/work-notes) dipertahankan utuh. Dulu retry mengirim prompt
+     *  penuh varian native + katalog teks PENUH ±95rb char sebagai pesan
+     *  kedua (±155-185rb char satu panggilan); kini SATU pesan ≈ prompt
+     *  teks ringkas (hemat ±60-90rb char). Null bila katalog native
+     *  tidak ditemukan di prompt awal (pemanggil membangun ulang via
+     *  buildSystemPrompt nativeTools=false). Murni, tanpa Context. */
+    fun textRetryPromptVc334(firstPrompt: String, nativeCatalog: String, textCatalog: String): String? {
+        if (nativeCatalog.isBlank() || !firstPrompt.contains(nativeCatalog)) return null
+        return firstPrompt.replace(nativeCatalog, textCatalog) + TEXT_RETRY_NOTE_VC334
+    }
+
     // vc316 IXL — katalog tool per tugas, DIPERBAIKI (ukur dulu, baru
     // perbaiki — lihat UKURAN-INPUT-VC316.md):
     // (1) Katalog PENUH (94.817 char ≈ 27.887 token) HANYA bila pesan
@@ -864,8 +883,11 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
      *  membaca instruksi auto-save + isi simpanan, dan tetap
      *  menyampaikan konfirmasi simpanan ke user dalam jawaban final —
      *  tanpa mengirim prompt penuh ~90k. Bila bukan auto-save, hasilnya
-     *  PERSIS deltaTurnPromptVc322 (tanpa tambahan apa pun). Murni,
-     *  tanpa Context — bisa diuji di JVM. */
+     *  PERSIS deltaTurnPromptVc322 (tanpa tambahan apa pun).
+     *  vc334 R3 (B7): delta ini SAAT INI TIDAK DIPAKAI — sendToAgent
+     *  tidak lagi menerima delta; fungsi dipertahankan (mesin delta
+     *  menunggu keputusan D1 — jangan hapus). Murni, tanpa Context —
+     *  bisa diuji di JVM. */
     fun deltaTurnPromptVc327(userCommand: String, workNotes: String, autoSaveBlock: String?): String {
         val base = deltaTurnPromptVc322(userCommand, workNotes)
         if (autoSaveBlock.isNullOrBlank()) return base
@@ -875,7 +897,7 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
     // ---- vc330 (fix boros konteks: verifikasi + ekstraksi delta +
     // katup pengaman; bukti live user 17 Nov 09:07, vc329) ----
     // AKAR: giliran VERIFIKASI DIRI + TUGAS LATAR (ekstraksi) mengirim
-    // prompt PENUH tanpa deltaPrompt — verifikasi membawa ulang ctxHist
+    // prompt PENUH (tanpa varian delta) — verifikasi membawa ulang ctxHist
     // 20.000 char, ekstraksi membawa ulang hist 40 pesan / 40.000 char.
     // Begitu akumulasi + prompt penuh > cap riwayat (historyBudget),
     // guard memotong riwayat — konteks giliran lalu hilang padahal
@@ -893,10 +915,12 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
      *  instruksi ekstraksi yang sama seperti prompt penuh + jendela
      *  RIWAYAT BARU sejak ekstraksi terakhir SAJA (13 pesan terakhir,
      *  cap 8.000 char — BUKAN 40 pesan / 40.000 char). Riwayat lebih
-     *  lama SUDAH ada di riwayat pesan percakapan ini. Prompt PENUH
-     *  (40/40.000) tetap dikirim sebagai argumen pertama sendToAgent —
-     *  fallback bila percakapan belum membawa prompt penuh. Murni,
-     *  tanpa Context — bisa diuji di JVM. */
+     *  lama SUDAH ada di riwayat pesan percakapan ini.
+     *  vc334 R3 (B7): delta ini SAAT INI TIDAK DIPAKAI — sendToAgent
+     *  tidak lagi menerima delta; yang dikirim hanya prompt penuh
+     *  (40/40.000). Fungsi dipertahankan (mesin delta menunggu
+     *  keputusan D1 — jangan hapus). Murni, tanpa Context — bisa
+     *  diuji di JVM. */
     fun deltaExtractPromptVc330(userCommand: String, recentHist: String): String {
         val sb = StringBuilder()
         sb.append(continuationAnchorVc316(userCommand))
@@ -956,7 +980,21 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
         return "PERSONA & INSTRUKSI DARI USER (ikuti gaya dan instruksi ini selama tidak bertentangan dengan aturan tool di bawah):\n$capped\n\n"
     }
 
-    fun buildSystemPrompt(ctx: Context, slimWorldStateVc240: Boolean = false, taskTextVc241: String = "", dropGoalTopVc241: Boolean = false, nativeTools: Boolean = false): String {
+    fun buildSystemPrompt(ctx: Context, slimWorldStateVc240: Boolean = false, taskTextVc241: String = "", dropGoalTopVc241: Boolean = false, nativeTools: Boolean = false): String =
+        buildSystemPromptWithLengths(ctx, slimWorldStateVc240, taskTextVc241, dropGoalTopVc241, nativeTools).first
+
+    /** vc334 R3 (L3): bangun prompt sistem SEKALI + ukur dari hasil yang
+     *  SAMA — mengembalikan (prompt, panjang sistem, panjang katalog).
+     *  Dulu MainActivity membangun ulang buildSystemPrompt +
+     *  catalogForTask di tiap pass guard/semantik hanya untuk mengukur
+     *  panjangnya — dan build ukur itu memakai nativeTools=false
+     *  (default) padahal prompt kirim memakai nativeTools=native-aktif,
+     *  jadi ukurannya salah (katalog teks penuh ±95rb char ikut
+     *  dihitung) + mahal (selectCatalog + baca ulang file otak).
+     *  SATU-SATUNYA komposisi di sini — buildSystemPrompt di atas
+     *  mendelegasikan ke fungsi ini, supaya tidak ada dua komposisi
+     *  yang bisa drift. */
+    fun buildSystemPromptWithLengths(ctx: Context, slimWorldStateVc240: Boolean = false, taskTextVc241: String = "", dropGoalTopVc241: Boolean = false, nativeTools: Boolean = false): Triple<String, Int, Int> {
         val prefs = ctx.getSharedPreferences("harness", Context.MODE_PRIVATE)
         val persona = prefs.getString("persona", "")?.trim().orEmpty()
         val personaBlock = personaBlockText(persona)
@@ -964,8 +1002,10 @@ PANGGILAN GANDA (multi-tool, vc273/vc274): dalam SATU respons kamu BOLEH memangg
         // userName kosong, baris tidak ada (perilaku = mainline).
         val ownerName = prefs.getString("userName", "")?.trim().orEmpty()
         val ownerLine = if (ownerName.isNotEmpty()) "Nama pemilik HP: $ownerName. Sapa dengan nama itu sesekali, jangan di tiap kalimat.\n\n" else ""
+        val catalog = catalogForTask(ctx, taskTextVc241, nativeTools)
 
-        return personaBlock + ownerLine + Behaviors.block(prefs.getString("behaviorPack", "asisten") ?: "asisten") + AgentBrain.promptBlocks(ctx) + catalogForTask(ctx, taskTextVc241, nativeTools) + WorldState.line(ctx, slimWorldStateVc240, dropGoalTopVc241) + Connectors.catalogLine(ctx) + BATCH_TERMINAL_RULE_VC302 + "\n\n" + modeBebasBlock(ctx)
+        val sys = personaBlock + ownerLine + Behaviors.block(prefs.getString("behaviorPack", "asisten") ?: "asisten") + AgentBrain.promptBlocks(ctx) + catalog + WorldState.line(ctx, slimWorldStateVc240, dropGoalTopVc241) + Connectors.catalogLine(ctx) + BATCH_TERMINAL_RULE_VC302 + "\n\n" + modeBebasBlock(ctx)
+        return Triple(sys, sys.length, catalog.length)
     }
 
     // vc251 MODE BEBAS: framing permisif — HANYA bila pref modeBebas aktif.

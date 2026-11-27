@@ -4150,6 +4150,10 @@ class MainActivity : Activity() {
     }
 
     private fun beginStreamBubble() {
+        // vc334 R3 (L4): akumulator direset tiap giliran — SEBELUM
+        // penjaga sesi, supaya giliran baru selalu mulai dari nol
+        // walau bubble-nya tidak dirender di sesi ini.
+        streamAccumVc334.reset()
         // vc304 B2: placeholder streaming hanya di sesi pemilik giliran;
         // di sesi lain streamTv tetap null sehingga updateStreamBubble
         // jadi no-op (tanpa bocor ke tampilan sesi baru).
@@ -4223,24 +4227,46 @@ class MainActivity : Activity() {
         return t
     }
 
-    private fun updateStreamBubble(partial: String) {
-        val clean = sanitizePartial(partial)
+    // vc334 R3 (L4): bubble menampilkan teks yang TUMBUH — fragmen SSE
+    // diakumulasi ke streamAccumVc334 (SATU StringBuilder per giliran),
+    // UI menampilkan snapshot akumulasi. Dulu `streamTv.text = clean`
+    // atas SATU fragmen (assignment tanpa akumulator) — user hanya
+    // melihat potongan terakhir yang berkedip. sanitizePartial jalan
+    // atas AKUMULASI (bukan per fragmen) supaya indexOf("{\"tool\"") /
+    // "```" tidak memotong fragmen di tengah — dan hanya saat tick UI
+    // jatuh tempo (250 ms), supaya snapshot + sanitize O(n) tidak
+    // dibayar per fragmen. journalStream ikut pindah ke tick UI (kadar
+    // 1.500 ms-nya tetap terjaga karena tick datang tiap 250 ms).
+    // Placeholder internalTurn (accumulate=false) tetap perilaku lama
+    // (bukan bagian akumulasi).
+    private fun updateStreamBubble(partial: String, accumulateVc334: Boolean = true) {
+        val snapshot: String
+        if (accumulateVc334) {
+            streamAccumVc334.append(partial)
+            // vc304 B2: jejak streaming tetap masuk jurnal persisten, tapi
+            // update UI + scroll hanya di sesi pemilik giliran.
+            if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
+            // v4.15.0 (R2): tulis UI maks tiap 120 ms — potongan SSE bisa
+            // datang belasan kali per detik; bubble final tetap menggantikan.
+            // vc283: 120 -> 250 ms + scroll hanya bila di dekat bawah — tiap
+            // set text memicu measure ulang SELURUH daftar chat (LinearLayout
+            // tanpa recycling), jadi update streaming adalah sumber jank utama
+            // saat jawaban panjang.
+            val nowS = System.currentTimeMillis()
+            if (nowS - lastStreamUiMs < 250) return
+            snapshot = streamAccumVc334.snapshot()
+        } else {
+            if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
+            val nowS = System.currentTimeMillis()
+            if (nowS - lastStreamUiMs < 250) return
+            snapshot = partial
+        }
+        val clean = sanitizePartial(snapshot)
         // vc306 (C4): potongan kosong — jangan buat teks asisten kosong;
         // biarkan 3 titik typing tetap tampil.
         if (clean.isBlank()) return
+        lastStreamUiMs = System.currentTimeMillis()
         journalStream(clean)
-        // vc304 B2: jejak streaming tetap masuk jurnal persisten, tapi
-        // update UI + scroll hanya di sesi pemilik giliran.
-        if (!SessionBackgroundVc304.renderAllowed(turnSessionId, currentSessionId)) return
-        // v4.15.0 (R2): tulis UI maks tiap 120 ms — potongan SSE bisa
-        // datang belasan kali per detik; bubble final tetap menggantikan.
-        // vc283: 120 -> 250 ms + scroll hanya bila di dekat bawah — tiap
-        // set text memicu measure ulang SELURUH daftar chat (LinearLayout
-        // tanpa recycling), jadi update streaming adalah sumber jank utama
-        // saat jawaban panjang.
-        val nowS = System.currentTimeMillis()
-        if (nowS - lastStreamUiMs < 250) return
-        lastStreamUiMs = nowS
         runOnUiThread {
             streamLastChunkMsVc306 = System.currentTimeMillis()
             if (streamTv == null) {
@@ -4808,6 +4834,9 @@ class MainActivity : Activity() {
         turnUsedTools = false
         retriedTools.clear()
         autoRetryTools.clear()
+        // vc334 R3 (L5): cache toolsJson diinvalidasi per giliran (satu
+        // reset bersama — lihat ToolRegistry.toolsJson).
+        ToolRegistry.invalidateToolsJsonCache()
     }
 
     private fun onUserMessage(text: String) {
@@ -4935,7 +4964,21 @@ class MainActivity : Activity() {
         // (tanpa daftar tool teks, skema dikirim sebagai `tools`) bila
         // provider mendukung native; teks bila dialek teks. Engine
         // Dialek teks selalu memakai katalog teks lama (tidak berubah).
-        var prompt = AgentPrompt.buildSystemPrompt(this, true, text, nativeTools = openaiNativeActiveVc5b()) + "\n\n"
+        // vc334 R3 (L3): prompt sistem dibangun SEKALI — panjang sistem
+        // + katalog diukur dari hasil yang SAMA (sysLenVc334/catLenVc334
+        // dipakai ulang di semua pass guard/semantik di bawah). Dulu:
+        // build ukur nativeTools=false diulang di tiap pass, padahal
+        // prompt kirim memakai nativeTools=native-aktif — ukurannya
+        // salah (katalog teks penuh ±95rb char ikut dihitung) + mahal
+        // (selectCatalog + baca ulang file otak + redact).
+        // Build pertama tetap sinkron di UI thread: dispatchTurn langsung
+        // menyimpan checkpoint sesudahnya, jadi rotasi/proses-mati di
+        // tengah giliran tetap bisa resume via maybeResumeTurn (bila
+        // build dipindah ke latar tanpa sinkronisasi, checkpoint bisa
+        // belum ada saat proses mati). Tidak ada lagi build kedua —
+        // jadi tidak ada yang perlu dipindah ke latar.
+        val (sysPromptVc334, sysLenVc334, catLenVc334) = AgentPrompt.buildSystemPromptWithLengths(this, true, text, nativeTools = openaiNativeActiveVc5b())
+        var prompt = sysPromptVc334 + "\n\n"
         prompt += AgentPrompt.CTX_LABEL_RULES + "\n\n"
         // vc302 Fix B: aturan total paging (total dari header, jangan jumlahkan).
         prompt += AgentPrompt.PAGING_TOTAL_RULE_VC302 + "\n\n"
@@ -5113,8 +5156,9 @@ class MainActivity : Activity() {
                     try { addMsg("⚠️ Guard prompt memangkas riwayat percakapan (sekali per episode guard): sebagian riwayat lama dibuang agar prompt muat di cap — ringkasan riwayat lama dibuat terpisah bila potongannya cukup besar; jawaban giliran ini memakai riwayat yang tersisa.", "meta", turn = true) } catch (e: Exception) {}
                 }
             }
-            val sysLen = AgentPrompt.buildSystemPrompt(this, true, text).length
-            val catLen = AgentPrompt.catalogForTask(this, text).length
+            // vc334 R3 (L3): pakai ulang hasil ukur build pertama (bukan build ulang).
+            val sysLen = sysLenVc334
+            val catLen = catLenVc334
             TurnMetrics.recordPrompt(initialLayersVc238(prompt, sysLen, catLen, prompt.length, 0))
             TurnMetrics.recordPromptTotal(prompt.length)
             TurnMetrics.recordExtra(AgentPrompt.personaLength(this), planItems.joinToString("\n").length, 0)
@@ -5190,8 +5234,9 @@ class MainActivity : Activity() {
                     try { addMsg("⚠️ Guard prompt gagal-terbuka: prompt sistem saja sudah melebihi cap " + cap + " char, jadi prompt giliran ini dikirim utuh tanpa pemangkasan — kurangi persona atau skill aktif bila ini sering muncul.", "meta", turn = true) } catch (e: Exception) {}
                 }
             }
-            val sysLen = AgentPrompt.buildSystemPrompt(this, true, text).length
-            val catLen = AgentPrompt.catalogForTask(this, text).length
+            // vc334 R3 (L3): pakai ulang hasil ukur build pertama (bukan build ulang).
+            val sysLen = sysLenVc334
+            val catLen = catLenVc334
             TurnMetrics.recordPrompt(initialLayersVc238(prompt, sysLen, catLen, prompt.length, 0))
             TurnMetrics.recordPromptTotal(prompt.length)
             TurnMetrics.recordExtra(AgentPrompt.personaLength(this), planItems.joinToString("\n").length, 0)
@@ -5241,8 +5286,9 @@ class MainActivity : Activity() {
                         val markerVc240 = "KONTEKS SEMANTIK DILEWATI KARENA CAP (hasil semantik/kata kunci ada tapi tidak muat).\n\n"
                         extra = if (basePrompt.length + markerVc240.length + suffixLenVc228 <= capVc228) markerVc240 else ""
                     }
-                    val sysLenVc238 = AgentPrompt.buildSystemPrompt(this, true, text).length
-                    val catLenVc238 = AgentPrompt.catalogForTask(this, text).length
+                    // vc334 R3 (L3): pakai ulang hasil ukur build pertama.
+                    val sysLenVc238 = sysLenVc334
+                    val catLenVc238 = catLenVc334
                     TurnMetrics.recordPrompt(initialLayersVc238(basePrompt + extra, sysLenVc238, catLenVc238, basePrompt.length + extra.length + suffixLenVc228, extra.length))
                     TurnMetrics.recordPromptTotal(basePrompt.length + extra.length + suffixLenVc228)
                     dispatchTurn(basePrompt + extra, agentText)
@@ -5268,8 +5314,9 @@ class MainActivity : Activity() {
                     extraVc240 = ex
                 }
             }
-            val sysLenVc238 = AgentPrompt.buildSystemPrompt(this, true, text).length
-            val catLenVc238 = AgentPrompt.catalogForTask(this, text).length
+            // vc334 R3 (L3): pakai ulang hasil ukur build pertama.
+            val sysLenVc238 = sysLenVc334
+            val catLenVc238 = catLenVc334
             TurnMetrics.recordPrompt(initialLayersVc238(prompt + extraVc240, sysLenVc238, catLenVc238, prompt.length + extraVc240.length + 6 + agentText.length, extraVc240.length))
             TurnMetrics.recordPromptTotal(prompt.length + extraVc240.length + 6 + agentText.length)
             dispatchTurn(prompt + extraVc240, agentText)
@@ -9070,15 +9117,20 @@ class MainActivity : Activity() {
         // jujur: persona sudah ada di POST awal); rencana + trailer
         // seperti dulu.
         TurnMetrics.recordExtra(0, planItems.joinToString("\n").length, PENTING_TRAILER.length)
-        // vc327 SESI (H3): lanjutan dikirim sebagai DELTA (deltaPrompt =
-        // finalTxt — teksnya SUDAH delta vc316). Klien memutuskan dari
+        // vc327 SESI (H3): lanjutan dikirim sebagai DELTA vc316 (teksnya
+        // SUDAH delta — jangkar + perintah user + work-notes, tanpa
+        // pengiriman ulang katalog/memori/riwayat). Klien memutuskan dari
         // keadaan wadah (tersimpan + primed): delta tidak pernah memicu
         // guard reset — reset hanya bila accum + teks ini benar-benar
         // melewati cap, sama seperti sebelum vc327 (string SAMA ->
         // panjang SAMA -> hasil guard SAMA; dibuktikan numerik probe
         // vc327 K4==L4b). Yang dikunci di sini adalah klasifikasi:
         // lanjutan adalah langkah delta, bukan prompt penuh.
-        sendToAgent(finalTxt, finalTxt)
+        // vc334 R3 (B7): parameter delta DIHAPUS — tidak pernah
+        // dibaca di badan fungsi ini (hanya diteruskan sebagai klaim di
+        // komentar). Mesin delta (AgentPrompt.deltaTurnPromptVc327 /
+        // deltaExtractPromptVc330) dipertahankan, menunggu keputusan D1.
+        sendToAgent(finalTxt)
     }
 
     /** 4.48.9 (titik-kirim): ring buffer kirim API — HANYA panjang + 16 hex
@@ -9102,17 +9154,15 @@ class MainActivity : Activity() {
         } catch (e: Exception) {}
     }
 
-    // vc322: deltaPrompt = prompt delta giliran 1-1 (jangkar + perintah
-    // user + work-notes) dari dispatchTurn — HANYA giliran pertama 1-1
-    // yang membawa delta; lanjutan tool (sendContinuation) membawa
-    // deltaPrompt = teks lanjutannya sendiri (vc327 — teks itu sudah
-    // delta vc316). vc330: tugas latar membawa delta
-    // (deltaExtractPromptVc330 — jendela 13 pesan, bukan 40/40.000);
-    // rescue tetap default null = prompt penuh.
-    // Delta vs penuh diputuskan dari riwayat pesan percakapan ini
-    // (LlmEngineChat.historyBudget). Governor tetap dihitung dari
-    // prompt penuh (konservatif — kuota tidak berubah).
-    private fun sendToAgent(prompt: String, deltaPrompt: String? = null) {
+    // vc322: delta giliran 1-1 dulu dikirim lewat parameter kedua
+    // sendToAgent (jangkar + perintah user + work-notes) — vc334 R3
+    // (B7): parameter itu DIHAPUS karena tidak pernah dibaca di badan
+    // sendToAgent; yang dikirim selalu prompt penuh. Mesin delta
+    // (AgentPrompt.deltaTurnPromptVc327 / deltaExtractPromptVc330)
+    // dipertahankan, menunggu keputusan D1 — jangan hapus.
+    // Governor tetap dihitung dari prompt penuh (konservatif — kuota
+    // tidak berubah).
+    private fun sendToAgent(prompt: String) {
         statusTv.text = "Models API: berpikir…"
         beginStreamBubble()
         // FULL MIGRATION: engine "openai" = otak Models API (OpenAI-compatible).
@@ -9278,6 +9328,9 @@ class MainActivity : Activity() {
 
     @Volatile private var lastJournalStreamMs = 0L
     @Volatile private var lastStreamUiMs = 0L  // v4.15.0 (R2): throttle tulis UI bubble streaming
+    // vc334 R3 (L4): akumulator teks streaming — SATU StringBuilder per
+    // giliran (lihat StreamAccumVc334); direset beginStreamBubble.
+    private val streamAccumVc334 = StreamAccumVc334()
     private fun journalStream(text: String) {
         val now = System.currentTimeMillis()
         if (now - lastJournalStreamMs < 1500) return
@@ -9403,16 +9456,13 @@ class MainActivity : Activity() {
         // yang memutuskan. Prompt PENUH tetap dikirim bila ini giliran
         // pertama di percakapan baru / sesudah reset.
         // vc327 (H3): giliran auto-save vc298 ("ingat:" / koreksi) TIDAK
-        // LAGI memaksa prompt penuh — delta kini membawa blok
+        // LAGI memaksa prompt penuh — dulu delta membawa blok
         // "[SISTEM — AUTO-SAVE]" ringkas (dicap 2000 char, isi simpanan
-        // ikut; lihat AgentPrompt.deltaTurnPromptVc327). Model tetap
-        // membaca instruksi auto-save + menyampaikan konfirmasi simpanan
-        // ke user; yang hilang hanya pengiriman ulang ~90k char prompt
-        // penuh tiap auto-save. Bila percakapan belum membawa prompt
-        // penuh, klien tetap mengirim PENUH (delta diabaikan) —
-        // konfirmasi tidak pernah hilang.
-        val deltaVc322 = AgentPrompt.deltaTurnPromptVc327(rawUser, AgentPrompt.workNotesBlockVc302(this, currentSessionId), AgentPrompt.autoSaveBlockVc327(promptNoUser))
-        sendToAgent(toSendVc240, deltaVc322)
+        // ikut; lihat AgentPrompt.deltaTurnPromptVc327). vc334 R3 (B7):
+        // delta TIDAK LAGI dikirim (param sendToAgent dihapus — tidak
+        // pernah dibaca); yang dikirim prompt penuh seperti biasa.
+        // Mesin delta dipertahankan, menunggu keputusan D1.
+        sendToAgent(toSendVc240)
     }
 
 
@@ -9833,7 +9883,9 @@ class MainActivity : Activity() {
             tools = tools,
             thinking = thinking,
             onPartial = { partial ->
-                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…")
+                // vc334 R3 (L4): placeholder latar BUKAN fragmen jawaban —
+                // jangan masuk akumulator (accumulate=false).
+                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…", accumulateVc334 = false)
                 else updateStreamBubble(partial)
             },
             onToolCalls = { calls -> callsRef.set(calls) },
@@ -9852,7 +9904,9 @@ class MainActivity : Activity() {
             tools = null,
             thinking = thinking,
             onPartial = { partial ->
-                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…")
+                // vc334 R3 (L4): placeholder latar BUKAN fragmen jawaban —
+                // jangan masuk akumulator (accumulate=false).
+                if (internalTurn) updateStreamBubble("🧠 Memproses di latar…", accumulateVc334 = false)
                 else updateStreamBubble(partial)
             }
         )
@@ -9873,24 +9927,28 @@ class MainActivity : Activity() {
         addBubble("⚠️ Provider '$provId' menolak function calling (model ini tidak mendukung tools). Ganti model atau provider di Setup > 73. Melanjutkan giliran ini dengan dialek teks (tanpa function calling) — provider ditandai text_fallback.", false, turn = true)
         try { EventDb.get(this).add("llm", packageName, "provider $provId menolak tools ($err) → text_fallback, giliran diulang dialek teks") } catch (e: Exception) {}
         markProviderToolsSupportVc5b("text_fallback")
-        // Ulangi dari prompt awal giliran ini. Prompt awal membawa varian
-        // katalog NATIVE (tanpa daftar tool teks) — jadi katalog teks
-        // disisipkan eksplisit sebagai pesan berikut + instruksi dialek.
-        // (Perbaikan bersih: pembangun prompt menerima nativeTools=false
-        // lalu giliran diulang dari onUserMessage — tidak dilakukan di
-        // sini karena pembangun prompt inline di onUserMessage; lihat
-        // laporan F5b.)
+        // vc334 R3 (L7): ulangi dari prompt awal giliran ini, DIBANGUN
+        // ULANG sebagai dialek teks (nativeTools=false) — SATU pesan.
+        // Dulu: prompt penuh native + katalog teks PENUH ±95rb char
+        // sebagai pesan kedua (total ±155–185rb char). Kini:
+        // AgentPrompt.textRetryPromptVc334 menukar katalog native di
+        // prompt awal dengan katalog teks ringkas + catatan dialek —
+        // hemat ±60–90rb char. Fallback bila katalog native tak
+        // ditemukan di prompt awal: buildSystemPrompt(nativeTools=false)
+        // + blok [USER] verbatim (bukan prompt lama yang ditambal).
         val firstPrompt = openaiTurnMessagesVc5b.firstOrNull()?.content ?: lastUserText
+        val retryPromptVc334 = AgentPrompt.textRetryPromptVc334(
+            firstPrompt,
+            AgentPrompt.toolCatalogNative(this),
+            AgentPrompt.catalogForTask(this, lastUserText) // teks ringkas (selectCatalog 6000+6000)
+        ) ?: (AgentPrompt.buildSystemPrompt(this, true, lastUserText, nativeTools = false) + "\n\n[USER]\n" + firstPrompt)
         // vc334 R1: generasi giliran saat thread retry ini dimulai.
         val genVc334 = turnGenerationVc334
         // vc334 R1: token giliran saat thread retry ini dimulai — hasil telat dibuang.
         val tokenVc334 = turnTokenVc334
         Thread {
             try {
-                val retryMessages = listOf(
-                    ChatMessage("user", firstPrompt),
-                    ChatMessage("user", "SISTEM (dialek teks — provider ini tidak mendukung function calling native): pakai format teks berikut untuk memanggil tool, BUKAN function calling. Instruksi 'function calling native' di pesan sebelumnya TIDAK berlaku.\n" + AgentPrompt.toolCatalogText(this))
-                )
+                val retryMessages = listOf(ChatMessage("user", retryPromptVc334))
                 val text = callTextVc5b(retryMessages, false)
                 if (tokenVc334 != turnTokenVc334) return@Thread
                 turnThinking = ""
@@ -10135,6 +10193,44 @@ class MainActivity : Activity() {
      *  - maxToolSteps dihitung dari NativeToolCall yang dieksekusi per
      *    giliran (agentSteps naik di proceedTool/recordBatchOutcomeVc273
      *    seperti biasa — tidak ada penghitung baru). */
+    /** vc334 R3 (B5): finalisasi SATU definisi untuk jawaban final teks —
+     *  dipakai cabang JSON-teks native (handleAgentResponse ChatResult)
+     *  DAN overload String. Keputusan yang sama di kedua jalur (pelajaran
+     *  R2: satu definisi, jangan blok inline ganda):
+     *  - pendingExtract menyala → gate sinyal fakta atas transkrip penuh
+     *    (40/40.000): tanpa sinyal → endUserTurn(); ada sinyal → mulai
+     *    ekstraksi internalTurn (prompt penuh 40/40.000; varian delta
+     *    vc330 TIDAK dipakai sejak B7 — lihat AgentPrompt).
+     *  - pendingExtract mati → endUserTurn() langsung.
+     *  pendingEndReason diisi ("pertanyaan-user"/"final") bila masih null,
+     *  sebelum endUserTurn() — sama seperti blok inline lama. */
+    private fun finishFinalTurnVc334(visible: String) {
+        if (pendingExtract) {
+            pendingExtract = false
+            // vc241 O7: jendela 13 pesan (10 sejak ekstraksi terakhir +
+            // overlap 3, dulu 16); pemicu per-sesi vc235 tidak diubah.
+            // Tanpa sinyal fakta di pesan user, lewati panggilan LLM
+            // ekstraksi sama sekali.
+            // vc235 M2: ekstraksi memakai transkrip Vc230 atas sesi
+            // pemilik giliran (dulu: tanpa argumen sesi sehingga default
+            // sesi 1, padahal sesi aktif bisa bukan 1).
+            val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
+            if (!extractHasFactSignalVc241(hist)) {
+                if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final"
+                endUserTurn()
+            } else {
+                internalTurn = true
+                collectingExtract = true
+                pendingExtractProposals.clear()
+                val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
+                sendToAgent(fullExtractVc330)
+            }
+        } else {
+            if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
+            endUserTurn()
+        }
+    }
+
     private fun handleAgentResponse(resp: ChatResult) {
         // vc334 R1: hasil model yang tiba sesudah stop diminta dibuang —
         // tanpa eksekusi tool, tanpa bubble, tanpa dialog. (Jalur utama
@@ -10259,8 +10355,9 @@ class MainActivity : Activity() {
         if (AgentPrompt.extractToolCalls(cleanedVc5b).isNotEmpty()) {
             addMsg("ℹ️ Model mengembalikan blok JSON teks (bukan function calling native) — ditampilkan apa adanya, tidak dieksekusi.", "meta", turn = true)
             addBubble(cleanedVc5b, false, turn = true)
-            if (pendingEndReason == null) pendingEndReason = if (cleanedVc5b.contains("?")) "pertanyaan-user" else "final"
-            endUserTurn()
+            // vc334 R3 (B5): finalisasi disamakan dengan jalur teks —
+            // ekstraksi fakta + pembersihan checkpoint (lewat endUserTurn).
+            finishFinalTurnVc334(cleanedVc5b)
             return
         }
         handleAgentResponse(cleanedVc5b)
@@ -10419,35 +10516,9 @@ class MainActivity : Activity() {
                     speak(visible)
                 }
             }
-            if (pendingExtract) {
-                pendingExtract = false
-                // vc241 O7: jendela 13 pesan (10 sejak ekstraksi terakhir + overlap 3, dulu 16); pemicu per-sesi vc235 tidak diubah. Tanpa sinyal fakta di pesan user, lewati panggilan LLM ekstraksi sama sekali.
-                // vc235 M2: ekstraksi memakai transkrip Vc230 atas sesi
-                // pemilik giliran (dulu: tanpa argumen sesi sehingga default
-                // sesi 1, padahal sesi aktif bisa bukan 1).
-                val hist = try { MemoryDb.get(this).historyTranscriptVc230(40, 40000, turnSessionId) } catch (e: Exception) { "" }
-                if (!extractHasFactSignalVc241(hist)) {
-                    if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final"
-                    endUserTurn()
-                } else {
-                    internalTurn = true
-                    collectingExtract = true
-                    pendingExtractProposals.clear()
-                    // vc330 SESI: ekstraksi kini membawa DELTA (jangkar +
-                    // jendela 13 pesan terakhir, cap 8.000 — BUKAN
-                    // 40/40.000). Prompt PENUH tetap teks lama lengkap
-                    // (40/40.000, fallback bila wadah belum primed).
-                    // Gate sinyal fakta tetap memakai hist penuh (tidak
-                    // berubah); jendela delta diambil dari transkrip
-                    // yang sama (13 pesan terakhir).
-                    val histRecentVc330 = try { MemoryDb.get(this).historyTranscriptVc230(AgentPrompt.EXTRACT_WINDOW_N_VC330, AgentPrompt.EXTRACT_WINDOW_CHARS_VC330, turnSessionId) } catch (e: Exception) { "" }
-                    val fullExtractVc330 = "TUGAS LATAR (jangan menyapa user, jangan menjawab pertanyaan apa pun): Berikut riwayat percakapan terakhir user dengan asisten. Ekstrak fakta BARU tentang user yang layak disimpan permanen (nama/panggilan, preferensi, jadwal rutin, orang penting, keputusan). Untuk SETIAP fakta panggil tool remember_fact (key singkat, value jelas). Koreksi gaya/aturan pakai learn_rule. Usulanmu DIKUMPULKAN untuk persetujuan batch user sebelum tersimpan — jadi usulkan semua fakta, jangan berhenti di satu. Kalau tidak ada yang baru, jawab persis: TIDAK ADA.\n\nRIWAYAT:\n$hist"
-                    sendToAgent(fullExtractVc330, AgentPrompt.deltaExtractPromptVc330(currentTurnUser, histRecentVc330))
-                }
-            } else {
-                if (pendingEndReason == null) pendingEndReason = if (visible.contains("?")) "pertanyaan-user" else "final" // vc232 S5
-                endUserTurn()
-            }
+            // vc334 R3 (B5): finalisasi disamakan dengan cabang JSON-teks —
+            // satu definisi finishFinalTurnVc334 (ekstraksi + endUserTurn).
+            finishFinalTurnVc334(visible)
             return
         }
         // vc273 O6: >1 tool per respons di lane 1-1 DIEKSEKUSI sebagai batch

@@ -259,11 +259,15 @@ object OpenAiCompatClient {
                      onDeltaToolCall: (NativeToolCall) -> Unit,
                      onDone: (ChatResult) -> Unit,
                      onError: (String) -> Unit,
-                     toolChoice: Any? = null) {
+                     toolChoice: Any? = null,
+                     // vc334 R3 (P-4): timeout socket — diteruskan ke
+                     // chatInternal (dulu: selalu CHAT_READ_TIMEOUT_MS
+                     // 120 dtk, apa pun timeoutMs pemanggil).
+                     timeoutMs: Int = CHAT_READ_TIMEOUT_MS) {
         val endpoint = normalizeBaseUrl(baseUrl) + "/chat/completions"
         try {
             val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
-                toolChoice, stream = true, onPartial, onDeltaToolCall, timeoutMs = CHAT_READ_TIMEOUT_MS)
+                toolChoice, stream = true, onPartial, onDeltaToolCall, timeoutMs = timeoutMs)
             onDone(result)
         } catch (e: UserCancelledException) {
             // vc334 R1 (A1): dibatalkan user — JANGAN fallback non-stream
@@ -281,11 +285,22 @@ object OpenAiCompatClient {
                 onError(USER_CANCELLED_MARKER)
                 return
             }
+            // vc334 R3 (P-1): HTTP 4xx deterministik (auth ditolak /
+            // model tak ada / kuota 429) — mengulang request yang sama
+            // akan gagal sama; langsung error, tanpa POST ulang penuh
+            // non-stream. (Versi TERBATAS L6 — penghapusan total
+            // fallback = NEEDS-DECISION D3, jangan lakukan: 5xx +
+            // gagal transport tetap fallback sekali di bawah.)
+            val statusCode = (e as? HttpStatusException)?.code
+            if (statusCode != null && statusCode in 400..499) {
+                onError(sanitize(e.message ?: "HTTP $statusCode"))
+                return
+            }
             // Fallback non-streaming sekali (stream gagal karena jaringan/HTTP).
             try {
                 val result = chatInternal(endpoint, apiKey, model, messages, tools, thinkingEnabled,
                     toolChoice, stream = false, onPartial = {}, onDeltaToolCall = {},
-                    timeoutMs = CHAT_READ_TIMEOUT_MS)
+                    timeoutMs = timeoutMs)
                 onDone(result)
             } catch (e2: Exception) {
                 onError(sanitize(e2.message ?: e.message ?: "gagal terhubung ke provider"))
@@ -514,8 +529,19 @@ object OpenAiCompatClient {
             val delta = choice.optJSONObject("delta") ?: continue
             val c = delta.optString("content", "")
             if (c.isNotEmpty()) {
-                contentBuf.append(c)
-                onPartial(RedactSecrets.redact(c))
+                // vc334 R3 (L9): redact SEKALI per fragmen — hasil redact
+                // dipakai baik untuk onPartial maupun akumulasi; konten
+                // penuh TIDAK di-redact ulang (dulu: 6 regex per fragmen
+                // + ulang atas konten penuh — pindai ganda atas teks yang
+                // sama). Keterbatasan jujur: rahasia yang TERBELAH di
+                // antara dua fragmen lolos dari redact per-fragmen
+                // (pola butuh teks utuh); redact ulang penuh tidak
+                // dipakai karena redact() tidak idempotent (lihat catatan
+                // idempotence di atas — redact atas teks yang sudah
+                // ter-redact mengotori marker [REDAKSI: ...]).
+                val redacted = RedactSecrets.redact(c)
+                contentBuf.append(redacted)
+                onPartial(redacted)
             }
             val t = delta.optString("reasoning_content", "")
             if (t.isNotEmpty()) thinkBuf.append(t)
@@ -544,8 +570,11 @@ object OpenAiCompatClient {
                 argumentsBroken = isArgumentsBroken(args)))
         }
         val result = ChatResult(
-            content = RedactSecrets.redact(contentBuf.toString()),
-            thinking = RedactSecrets.redact(thinkBuf.toString().trim()),
+            content = contentBuf.toString(),
+            // vc334 R3 (L9): thinking di-redact SEKALI di sini (tidak
+            // pernah di-redact per fragmen) — dan tidak dipanggil bila
+            // kosong, supaya hitungan redact = jumlah fragmen content.
+            thinking = if (thinkBuf.isEmpty()) "" else RedactSecrets.redact(thinkBuf.toString().trim()),
             model = modelOut,
             toolCalls = toolCalls,
             finishReason = finishReason

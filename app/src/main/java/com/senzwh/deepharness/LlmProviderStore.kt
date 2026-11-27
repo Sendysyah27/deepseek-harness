@@ -40,10 +40,14 @@ object LlmProviderStore {
 
     fun setApiKey(ctx: Context, id: String, key: String) {
         SecureStore.put(ctx, keyStorageKey(id), key)
+        // vc334 R3 (L8): key ikut dibaca hydrate — perubahan key mengotori cache.
+        invalidateHydrateCache()
     }
 
     fun deleteApiKey(ctx: Context, id: String) {
         SecureStore.delete(ctx, keyStorageKey(id))
+        // vc334 R3 (L8): lihat setApiKey.
+        invalidateHydrateCache()
     }
 
     // Entri cache model memakai ModelCaps.CachedModel (JVM-murni) supaya
@@ -165,6 +169,8 @@ object LlmProviderStore {
                 .putString(CFG_PREFIX + provider.id, obj.toString())
                 .apply()
             if (!provider.apiKey.isNullOrBlank()) setApiKey(ctx, provider.id, provider.apiKey!!)
+            // vc334 R3 (L8): cfg_ berubah — hydrate berikut wajib parse ulang.
+            invalidateHydrateCache()
             null
         } catch (e: Exception) {
             val reason = e.message ?: e.toString()
@@ -215,6 +221,8 @@ object LlmProviderStore {
 
     /** Hapus provider kustom + API key + cache model + counter Governor. */
     fun delete(ctx: Context, id: String) {
+        // vc334 R3 (L8): cfg_ berubah — hydrate berikut wajib parse ulang.
+        invalidateHydrateCache()
         try {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .remove(CFG_PREFIX + id)
@@ -232,24 +240,58 @@ object LlmProviderStore {
      * Mengembalikan daftar id provider yang dilewati (gagal parse atau
      * gagal addCustom — mis. id tidak valid) supaya pemanggil bisa
      * menampilkannya, bukan menghilangkan diam-diam.
+     *
+     * vc334 R3 (L8): hasil di-CACHE (daftar id dilewati) + dirty-flag —
+     * dulu tiap panggilan mengiterasi seluruh prefs + JSON-parse semua
+     * provider + baca SecureStore per provider (6-10x per giliran,
+     * sebagian di UI thread). Cache aman karena: (a) SEMUA mutasi
+     * prefs cfg_ lewat store ini (save/delete/setActive/setApiKey/
+     * deleteApiKey mengotori cache — tidak ada penulis langsung
+     * "llm_provider_cfg" di luar store); (b) hydrate TIDAK PERNAH
+     * menghapus registry (hanya add) — mutasi registry langsung
+     * (addCustom) tetap terlihat walau cache hidup; (c) setActive
+     * prefs ikut mengotori (activeId dibaca ulang di hydrate).
      */
+    @Volatile private var hydrateDirtyVc334 = true
+    @Volatile private var hydrateSkippedCacheVc334: List<String>? = null
+    /** vc334 R3 (L8, diagnostik tes): berapa kali hydrate benar-benar parse. */
+    @Volatile var hydrateParsesVc334 = 0
+        private set
+
+    /** Kosongkan cache [hydrate] (dipanggil semua titik mutasi — lihat L8). */
+    fun invalidateHydrateCache() {
+        hydrateDirtyVc334 = true
+        hydrateSkippedCacheVc334 = null
+    }
+
     fun hydrate(ctx: Context): List<String> {
-        val skipped = mutableListOf<String>()
-        val (loaded, skippedParse) = loadCustomWithSkipped(ctx)
-        skipped.addAll(skippedParse)
-        for (p in loaded) {
-            try {
-                LlmProviders.addCustom(
-                    p.id, p.label, p.baseUrl, p.apiKey, p.model, p.enabled,
-                    p.dailyCapUnits, p.maxPromptChars, p.maxOutputTokens,
-                    p.thinkingParam, p.toolsSupport, p.vision, p.toolRoleFallback
-                )
-            } catch (e: IllegalArgumentException) {
-                skipped.add(p.id)
-            }
+        if (!hydrateDirtyVc334) {
+            hydrateSkippedCacheVc334?.let { return it }
         }
-        try { LlmProviders.setActive(activeId(ctx)) } catch (e: IllegalArgumentException) {}
-        return skipped
+        synchronized(this) {
+            if (!hydrateDirtyVc334) {
+                hydrateSkippedCacheVc334?.let { return it }
+            }
+            hydrateParsesVc334++
+            val skipped = mutableListOf<String>()
+            val (loaded, skippedParse) = loadCustomWithSkipped(ctx)
+            skipped.addAll(skippedParse)
+            for (p in loaded) {
+                try {
+                    LlmProviders.addCustom(
+                        p.id, p.label, p.baseUrl, p.apiKey, p.model, p.enabled,
+                        p.dailyCapUnits, p.maxPromptChars, p.maxOutputTokens,
+                        p.thinkingParam, p.toolsSupport, p.vision, p.toolRoleFallback
+                    )
+                } catch (e: IllegalArgumentException) {
+                    skipped.add(p.id)
+                }
+            }
+            try { LlmProviders.setActive(activeId(ctx)) } catch (e: IllegalArgumentException) {}
+            hydrateSkippedCacheVc334 = skipped
+            hydrateDirtyVc334 = false
+            return skipped
+        }
     }
 
     /**
@@ -314,6 +356,8 @@ object LlmProviderStore {
         // BUKAN fallback ke provider bawaan.
         val resolved = if (trimmed.isNotBlank() && LlmProviders.find(trimmed) != null) trimmed else ""
         ctx.getSharedPreferences(KEY_PREF, Context.MODE_PRIVATE).edit().putString(KEY_PREFS_ACTIVE, resolved).apply()
+        // vc334 R3 (L8): activeId dibaca ulang di hydrate — perubahan aktif mengotori cache.
+        invalidateHydrateCache()
     }
 
     fun activeId(ctx: Context): String =
