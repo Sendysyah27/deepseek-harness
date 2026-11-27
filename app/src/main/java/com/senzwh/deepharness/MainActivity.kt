@@ -4723,6 +4723,93 @@ class MainActivity : Activity() {
         stepBudget = getSharedPreferences("harness", MODE_PRIVATE).getIntSafe("maxToolSteps", 50).coerceIn(5, 200)
     }
 
+    // vc334 R2 (B8+B11): SATU-SATUNYA blok reset per-giliran — dipakai
+    // onUserMessage DAN maybeResumeTurn. Jangan menulis blok reset kedua
+    // (pelajaran vc332 §6: dua blok drift). Isinya = pembuka giliran
+    // (turnActive, generasi+token, stop bersih) + semua penghitung/
+    // penjaga sekali-per-giliran dari blok lama onUserMessage.
+    // YANG SENGAJA TIDAK DI-RESET (terdokumentasi, bukan kelupaan):
+    //  - planItems / turnWork: resume MEMULIHKAN rencana (restorePlan)
+    //    + jejak (turnJournal); onUserMessage menghitung digest/flush
+    //    dari turnWork SEBELUM reset ini dipanggil, lalu flushTurnWork
+    //    yang membersihkannya. Reset ini tidak menyentuh keduanya.
+    //  - pendingExtract: pemicu ekstraksi milik hitungan pesan per sesi
+    //    (onUserMessage, tiap 10 pesan) — resume tidak memaksa maupun
+    //    menghapusnya; ekstraksi yang sempat tertunda di giliran
+    //    terputus tetap jalan di akhir normal giliran resume.
+    //  - Pola terkunci (prefs per sesi): sengaja bertahan lintas giliran.
+    //  - autoThinkThisTurn / thinkTouchedByUser: routing thinking
+    //    tergantung teks user — hanya onUserMessage yang mengaturnya.
+    //  - internalTurn / turnThinking: bukan state giliran 1-1.
+    private fun resetTurnStateVc334() {
+        turnActive = true
+        userTurnActive = true
+        // vc334 R1: generasi giliran naik tiap giliran baru dibuka —
+        // thread basi dari giliran lama dikenali lewat gen ini dan tidak
+        // boleh menutup giliran baru. Resume = generasi baru juga.
+        turnGenerationVc334++
+        turnTokenVc334 = turnGenerationVc334
+        // vc306 Worker B: giliran baru = stop lama hangus; composer pindah
+        // ke state berjalan (hint "Membuat…", tombol ■, pill otomasi ke strip).
+        stopRequestedVc306 = false
+        endTurnStoppedInFlightVc334 = false
+        turnSessionId = currentSessionId
+        refreshComposerButtonsVc306()
+        emitPhase("think")
+        refreshLiveCard()
+        // T10: proses baru = requestStartMs 0 → semua durasi giliran
+        // lanjutan jadi epoch. Anggap giliran mulai saat dibuka.
+        requestStartMs = System.currentTimeMillis()
+        autoContinueCount = 0
+        malformedRetry = 0
+        refusalRetryVc251 = 0
+        pendingAskVc229 = null
+        agentSteps = 0
+        rejectRetryCount = 0
+        stuckMap.clear()
+        // VC303-P3-16/17/19: reset penjaga loop lapis kedua per giliran —
+        // perpanjangan +10, klaster fuzzy, penolakan pola terkunci.
+        extendCountVc303 = 0
+        extendOkMarkVc303 = 0
+        lockedRefusalsVc303 = 0
+        stuckFuzzySetsVc303.clear()
+        // vc302 Fix A: giliran baru — guard baca-ulang identik direset
+        // (baca yang sama boleh lagi di giliran berikutnya).
+        Tools.resetRereadGuardVc302()
+        turnStuckBlocked = false
+        capStopSentVc277 = false
+        resumeOfferShownVc303 = false // VC303-P2-14 (CX-9): tawaran lanjut boleh muncul lagi di giliran baru
+        unknownToolCount = 0
+        consecInvalid = 0
+        invalidNames.clear()
+        pendingEndReason = null
+        turnStoppedReason = null // vc232 S4
+        forcedToolVc282 = null
+        toolChoiceRepairVc282 = 0
+        // F5b: reset state giliran openai-native (cermin blok reset di atas).
+        openaiTurnMessagesVc5b.clear()
+        openaiTextFallbackVc5b = false
+        openaiToolRepairVc5b = 0
+        openaiRoleFallbackArmedVc5b = false
+        openaiToolNamesVc5b.clear()
+        turnSource = "" // vc232 S10(c): sumber turn lama tidak terbawa ke pill turn baru
+        // vc306 Worker C: hitungan + registry auto-collapse giliran baru.
+        turnProcessViewsVc306.clear(); thinkPillsVc306.clear()
+        turnToolRowsVc306 = 0; turnMsgCountVc306 = 0; turnThinkBlocksVc306 = 0
+        lastTurnContainerVc306 = null; lastTurnExpandedContentVc306 = null; lastTurnToggleVc306 = null
+        TurnMetrics.beginTurn(this)
+        blockedAttempts = 0
+        // vc265 V-m7 (vc299: plafon naik 50 → 200): cap dibatasi 200 (batas UI) — nilai restore/backup
+        // buatan di atas 200 tidak lagi menaikkan cap langkah.
+        // vc304 B1: baca pref dipusatkan ke loadStepBudgetVc304() (dipakai
+        // juga maybeResumeTurn) — nilai & coercion TIDAK berubah.
+        loadStepBudgetVc304()
+        pendingTool = null
+        turnUsedTools = false
+        retriedTools.clear()
+        autoRetryTools.clear()
+    }
+
     private fun onUserMessage(text: String) {
         try { ApprovalFloat.hide(applicationContext) } catch (e: Exception) {}
         if (handleCameraCommand(text)) return
@@ -4742,29 +4829,14 @@ class MainActivity : Activity() {
             return
         }
         if (turnActive && !drainingFollow) { enqueueFollowUp(text); return }
-        turnActive = true
-        userTurnActive = true
-        // vc334 R1: generasi giliran naik tiap giliran baru dibuka —
-        // thread basi dari giliran lama (catch/continuation) dikenali
-        // lewat gen ini dan tidak boleh menutup giliran baru.
-        turnGenerationVc334++
-        turnTokenVc334 = turnGenerationVc334
-        // vc306 Worker B: giliran baru = stop lama hangus; composer pindah
-        // ke state berjalan (hint "Membuat…", tombol ■, pill otomasi ke strip).
-        stopRequestedVc306 = false
-        refreshComposerButtonsVc306()
-        val prevTurnSessionVc234 = turnSessionId // vc234 K3: sesi giliran lama, dibaca SEBELUM turnSessionId ditimpa sesi baru
-        turnSessionId = currentSessionId
-        emitPhase("think")
-        refreshLiveCard()
-        autoContinueCount = 0
-        malformedRetry = 0
-        refusalRetryVc251 = 0
-        pendingAskVc229 = null
+        // vc234 K3: sesi giliran lama, dibaca SEBELUM resetTurnStateVc334
+        // menimpa turnSessionId dengan sesi baru (dipakai digest/flush
+        // turnWork di bawah).
+        val prevTurnSessionVc234 = turnSessionId
+        // vc334 R2 (B11): blok reset per-giliran tinggal di sini — satu
+        // fungsi bersama maybeResumeTurn, bukan salinan kedua.
+        resetTurnStateVc334()
         addBubble(text, true)
-        requestStartMs = System.currentTimeMillis()
-        agentSteps = 0
-        rejectRetryCount = 0
         // v4.48.5 (P3): digest bukti giliran sebelumnya — dihitung SEBELUM turnWork.clear().
         // Cap eksplisit — jalur PoW tanpa limit token: maks 5 langkah terbaru, evidence 300 char/langkah, total 2000 char.
         // vc234 K3: digest hanya berlaku untuk sesi yang sama. Bila giliran
@@ -4797,47 +4869,10 @@ class MainActivity : Activity() {
         // VC303-P2-8 (CX-1): diekstrak ke flushTurnWork (idempotent) —
         // titik panggil yang sama, semantik baris tidak berubah.
         flushTurnWork(prevTurnSessionVc234)
-        stuckMap.clear()
-        // VC303-P3-16/17/19: reset penjaga loop lapis kedua per giliran —
-        // perpanjangan +10, klaster fuzzy, penolakan pola terkunci.
-        // (Pola terkunci TIDAK direset: itu simpanan prefs per sesi,
-        // sengaja bertahan ke giliran berikut.)
-        extendCountVc303 = 0
-        extendOkMarkVc303 = 0
-        lockedRefusalsVc303 = 0
-        stuckFuzzySetsVc303.clear()
-        // vc302 Fix A: giliran baru — guard baca-ulang identik direset
-        // (baca yang sama boleh lagi di giliran berikutnya).
-        Tools.resetRereadGuardVc302()
-        turnStuckBlocked = false
-        capStopSentVc277 = false
-        resumeOfferShownVc303 = false // VC303-P2-14 (CX-9): tawaran lanjut boleh muncul lagi di giliran baru
-        unknownToolCount = 0
-        consecInvalid = 0
-        invalidNames.clear()
-        pendingEndReason = null
-        turnStoppedReason = null // vc232 S4
+        // vc334 R2 (B11): sisa blok reset (stuckMap, penjaga loop,
+        // openai-native, TurnMetrics, stepBudget) sudah di
+        // resetTurnStateVc334() di atas — jangan salin ulang di sini.
         forcedToolVc282 = AgentPrompt.detectForcedTool(text)
-        toolChoiceRepairVc282 = 0
-        // F5b: reset state giliran openai-native (cermin blok reset di atas).
-        openaiTurnMessagesVc5b.clear()
-        openaiTextFallbackVc5b = false
-        openaiToolRepairVc5b = 0
-        openaiRoleFallbackArmedVc5b = false
-        openaiToolNamesVc5b.clear()
-        turnSource = "" // vc232 S10(c): sumber turn lama tidak terbawa ke pill turn baru
-        // vc306 Worker C: hitungan + registry auto-collapse giliran baru.
-        turnProcessViewsVc306.clear(); thinkPillsVc306.clear()
-        turnToolRowsVc306 = 0; turnMsgCountVc306 = 0; turnThinkBlocksVc306 = 0
-        lastTurnContainerVc306 = null; lastTurnExpandedContentVc306 = null; lastTurnToggleVc306 = null
-        TurnMetrics.beginTurn(this)
-        blockedAttempts = 0
-        // vc265 V-m7 (vc299: plafon naik 50 → 200): cap dibatasi 200 (batas UI) — nilai restore/backup
-        // buatan di atas 200 tidak lagi menaikkan cap langkah.
-        // vc304 B1: baca pref dipusatkan ke loadStepBudgetVc304() (dipakai
-        // juga maybeResumeTurn) — nilai & coercion TIDAK berubah.
-        loadStepBudgetVc304()
-        pendingTool = null
         lastUserText = text
         // vc212 Item 1: routing thinking otomatis 1-1. Manual menang: bila user
         // mengetuk checkbox DeepThink giliran ini, nilai checkbox dipakai apa adanya.
@@ -8807,7 +8842,7 @@ class MainActivity : Activity() {
     // Perilaku tool TIDAK berubah: nama/argumen/hasil tool, cap langkah,
     // Governor, dan gerbang tidak disentuh; guard cap + trim proaktif
     // di bawah tetap jalan (kini hampir selalu no-op karena delta kecil).
-    private fun sendContinuation(text: String, hasToolResult: Boolean = false) {
+    private fun sendContinuation(text: String, hasToolResult: Boolean = false, closingVc334: Boolean = false) {
         // F5b: engine openai NATIVE → lanjutan = append messages (hasil
         // tool sebagai role:tool + instruksi lanjut) lalu helper — BUKAN
         // kirim ulang prompt penuh teks. Dialek teks (text_fallback / 400
@@ -8818,8 +8853,13 @@ class MainActivity : Activity() {
         // hasil analyze_photo/handlePlannerTool yang belum terstruktur —
         // keduanya tetap sampai ke model sebagai pesan user, lihat
         // laporan F5b).
+        // vc334 R2 (B9): closingVc334=true = call PENUTUP (giliran
+        // berakhir karena stop/cap/stuck) — diteruskan ke
+        // continueOpenaiVc5b agar dikirim dengan tools=null (model
+        // tidak bisa memanggil tool lagi). Di dialek teks tidak ada
+        // tools yang dikirim, jadi flag ini tidak berpengaruh di sana.
         if (AgentEngines.current(this) == "openai" && openaiNativeActiveVc5b()) {
-            continueOpenaiVc5b(emptyList(), text)
+            continueOpenaiVc5b(emptyList(), text, closingVc334)
             return
         }
         // Fase 6 K1: gerbang apiMode dihapus — lanjutan selalu dibangun
@@ -9300,9 +9340,6 @@ class MainActivity : Activity() {
             if (age < 20_000 || age > 3 * 60 * 60 * 1000) return
             if (turnPrefs().getLongSafe("turnCkptResumedFor", 0) == ts) return
             turnPrefs().edit().putLong("turnCkptResumedFor", ts).apply()
-            // T10: proses baru = requestStartMs 0 → semua durasi giliran
-            // lanjutan jadi epoch. Anggap giliran mulai saat dipulihkan.
-            if (requestStartMs == 0L) requestStartMs = System.currentTimeMillis()
             val user = o.optString("user", "")
             // v4.15.0 (K1/K5): resume MILIK sesi checkpoint — pindah sesi
             // dulu bila perlu, kunci sesi giliran, pulihkan rencana sesi
@@ -9312,7 +9349,7 @@ class MainActivity : Activity() {
             val ckptSess = o.optLong("session", 0)
             if (ckptSess > 0 && ckptSess != currentSessionId) switchSession(ckptSess)
             currentTurnUser = user
-            turnSessionId = currentSessionId
+            lastUserText = user
             restorePlan()
             var trail = ""
             try {
@@ -9326,34 +9363,15 @@ class MainActivity : Activity() {
                     }
                 }
             } catch (e: Exception) {}
-            // vc304 B1: giliran hasil resume = giliran BARU untuk anggaran
-            // langkah. Sebelum vc304, resume tidak memuat ulang stepBudget
-            // dan tidak mereset agentSteps: sesudah app mati/proses dibunuh,
-            // field kembali ke init (stepBudget 10, agentSteps 0) → giliran
-            // resume kehabisan budget di 10 lalu +10 sekali = 20, walau pref
-            // maxToolSteps 200 (laporan user). Muat dari pref + reset
-            // penghitung & kuota perpanjangan +10 per giliran (cermin blok
-            // reset onUserMessage). Hanya state anggaran — state lain
-            // (stuckMap, planItems, turnWork, capStopSentVc277,
-            // blockedAttempts, dst) sengaja TIDAK disentuh di sini.
-            loadStepBudgetVc304()
-            agentSteps = 0
-            extendCountVc303 = 0
-            extendOkMarkVc303 = 0
+            // vc334 R2 (B8+B11): resume = giliran SUNGGUHAN — blok reset
+            // per-giliran yang sama seperti onUserMessage (satu fungsi,
+            // resetTurnStateVc334): giliran dibuka resmi (tombol ■
+            // hidup, antrean follow-up aktif, strip/lifecycle jalan),
+            // generasi+token baru, semua penghitung/penjaga sekali-
+            // per-giliran bersih. planItems/turnWork TIDAK direset
+            // (restorePlan + turnJournal di atas yang memulihkannya).
+            resetTurnStateVc334()
             addMsg("↻ Sesi sebelumnya terputus di tengah jalan — kulanjutkan dari checkpoint.", "meta", turn = true)
-            // F5b: resume = giliran baru untuk state openai-native (riwayat
-            // messages lama hilang bersama proses — lanjutan resume mulai
-            // segar dari instruksi resume sebagai pesan user).
-            openaiTurnMessagesVc5b.clear()
-            openaiTextFallbackVc5b = false
-            openaiToolRepairVc5b = 0
-            openaiRoleFallbackArmedVc5b = false
-            openaiToolNamesVc5b.clear()
-            // vc334 R1: resume = giliran hidup untuk token — tanpa ini
-            // lanjutan resume dibuang penjaga token (turnActive=false
-            // saat resume, B8 — R2; satu baris ini hanya menjaga resume
-            // tetap jalan di bawah aturan token).
-            turnTokenVc334 = turnGenerationVc334
             sendContinuation("Sesi terputus di tengah jalan (app ditutup / proses dibunuh sistem) saat mengerjakan perintah user: \"$user\". Lanjutkan tugas itu dari keadaan terakhir: cek jejak tool & rencana di konteks, jangan mengulang langkah yang sudah selesai, lalu selesaikan dan laporkan hasilnya." + trail)
         } catch (e: Exception) {}
     }
@@ -9933,8 +9951,11 @@ class MainActivity : Activity() {
      *  instruction = instruksi lanjut (pesan user, didahului konteks
      *  JEJAK + rencana ringkas). 400 menyebut role/tool → SEKALI fallback
      *  format teks hasil tool (§2.5.3); 400 menyebut tools → dialek teks
-     *  (§2.5.1b + §8.2-3). */
-    private fun continueOpenaiVc5b(toolMsgs: List<ChatMessage>, instruction: String) {
+     *  (§2.5.1b + §8.2-3).
+     *  vc334 R2 (B9): closingVc334=true = call PENUTUP — dikirim dengan
+     *  tools=null + tanpa tool_choice paksa, supaya model tidak bisa
+     *  memanggil tool lagi di call penutup (stop/cap/stuck). */
+    private fun continueOpenaiVc5b(toolMsgs: List<ChatMessage>, instruction: String, closingVc334: Boolean = false) {
         // vc334 R1: generasi giliran saat lanjutan ini dimulai.
         val genVc334 = turnGenerationVc334
         // vc334 R1: token giliran saat lanjutan ini dimulai — hasil telat dibuang.
@@ -9950,10 +9971,12 @@ class MainActivity : Activity() {
                 // forced-tool berjalan (forcedToolVc282 masih terpasang);
                 // sesudah model memanggilnya / repair habis, flag sudah
                 // dibersihkan handleAgentResponse → auto.
-                val toolChoiceVc5b: Any? = if (forcedToolVc282 != null) JSONObject().put("type", "function")
+                // vc334 R2 (B9): call penutup TIDAK memaksa tool apa pun
+                // (tool_choice juga null) — model hanya boleh jawab final.
+                val toolChoiceVc5b: Any? = if (closingVc334) null else if (forcedToolVc282 != null) JSONObject().put("type", "function")
                     .put("function", JSONObject().put("name", forcedToolVc282)) else null
                 beginStreamBubble()
-                val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, ToolRegistry.ALL, toolChoiceVc5b)
+                val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, if (closingVc334) null else ToolRegistry.ALL, toolChoiceVc5b)
                 if (tokenVc334 != turnTokenVc334) return@Thread
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.addAll(msgs)
@@ -9975,7 +9998,7 @@ class MainActivity : Activity() {
                         val st = WorkLog.statusTag(WorkLog.classifyResult(tm.content))
                         ChatMessage("user", "Hasil tool $nm $st:\n" + tm.content)
                     }
-                    continueOpenaiTextResultsVc5b(textMsgs, instruction)
+                    continueOpenaiTextResultsVc5b(textMsgs, instruction, closingVc334)
                     return@Thread
                 }
                 if (retryTextFallbackVc5b(err)) return@Thread
@@ -9988,8 +10011,10 @@ class MainActivity : Activity() {
 
     /** F5b: lanjutan dengan hasil tool format TEKS (§2.5.3 — provider
      *  menolak role:tool). tools tetap dikirim (model boleh lanjut
-     *  native); hanya HASIL yang berbentuk pesan user teks. */
-    private fun continueOpenaiTextResultsVc5b(textMsgs: List<ChatMessage>, instruction: String) {
+     *  native); hanya HASIL yang berbentuk pesan user teks.
+     *  vc334 R2 (B9): closingVc334=true = call PENUTUP (diteruskan dari
+     *  continueOpenaiVc5b) — tools=null, tanpa tool_choice paksa. */
+    private fun continueOpenaiTextResultsVc5b(textMsgs: List<ChatMessage>, instruction: String, closingVc334: Boolean = false) {
         // vc334 R1: generasi giliran saat lanjutan ini dimulai.
         val genVc334 = turnGenerationVc334
         // vc334 R1: token giliran saat lanjutan ini dimulai — hasil telat dibuang.
@@ -10002,7 +10027,7 @@ class MainActivity : Activity() {
                 val instrVc5b = (if (ctxVc5b.isNotBlank()) ctxVc5b + "\n" else "") + instruction
                 if (instrVc5b.isNotBlank()) msgs.add(ChatMessage("user", instrVc5b))
                 beginStreamBubble()
-                val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, ToolRegistry.ALL, null)
+                val result = callNativeVc5b(msgs, LlmCallKind.INTERACTIVE, false, if (closingVc334) null else ToolRegistry.ALL, null)
                 if (tokenVc334 != turnTokenVc334) return@Thread
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.addAll(msgs)
@@ -10049,6 +10074,13 @@ class MainActivity : Activity() {
      *  call — mesin batch-nya sendiri TIDAK diubah, hanya pengiriman
      *  hasilnya (dulu satu teks gabungan). */
     private fun sendBatchResultsVc5b(outcomes: List<BatchOutcomeVc273>, leftover: Int, steerSuffix: String) {
+        // vc334 R2 (B9): batch yang kehabisan cap di tengah jalan
+        // (ada call skipped karena batas langkah) = call PENUTUP —
+        // model hanya boleh jawab final, tidak boleh panggil tool lagi.
+        // Skipped karena alasan lain (batch dihentikan: tulis gagal /
+        // unknown / stuck) BUKAN penutup — model masih boleh coba
+        // strategi lain.
+        val closingVc334 = outcomes.any { it.kind == "skipped" && it.result.startsWith("Tidak dieksekusi — batas ") }
         if (openaiRoleFallbackOnVc5b()) {
             val textMsgs = outcomes.map { oc ->
                 var t = "Hasil tool ${oc.tool} " + WorkLog.statusTag(WorkLog.classifyResult(oc.result)) + " [HASIL TOOL ${oc.callId}]" + (if (oc.resultId != null) " [id=${oc.resultId}, total ${oc.resultTotal} char]" else "") + ":\n" + toolResultContentVc5b(oc.result, oc.resultId, oc.resultTotal, AgentPrompt.BATCH_RESULT_CAP_VC273)
@@ -10058,14 +10090,14 @@ class MainActivity : Activity() {
                 if (oc.stuckText.isNotBlank()) t += "\n" + oc.stuckText
                 ChatMessage("user", t)
             }
-            continueOpenaiTextResultsVc5b(textMsgs, batchInstructionVc5b(outcomes, leftover) + steerSuffix)
+            continueOpenaiTextResultsVc5b(textMsgs, batchInstructionVc5b(outcomes, leftover) + steerSuffix, closingVc334)
             return
         }
         val toolMsgs = outcomes.map { oc ->
             openaiToolNamesVc5b[oc.callId] = oc.tool
             ChatMessage("tool", toolResultContentVc5b(oc.result, oc.resultId, oc.resultTotal, AgentPrompt.BATCH_RESULT_CAP_VC273), toolCallId = oc.callId.ifBlank { null })
         }
-        continueOpenaiVc5b(toolMsgs, batchInstructionVc5b(outcomes, leftover) + steerSuffix)
+        continueOpenaiVc5b(toolMsgs, batchInstructionVc5b(outcomes, leftover) + steerSuffix, closingVc334)
     }
 
     /** F5b: instruksi lanjut sesudah satu batch — catatan per call yang di
@@ -10698,6 +10730,59 @@ class MainActivity : Activity() {
         }
     }
 
+    // vc334 R2 (B4): SATU-SATUNYA alur cap-langkah — dipakai proceedTool
+    // DAN handlePlannerTool (planner = 1 langkah penuh di bawah plafon
+    // yang sama). Jangan salin blok ini ke tempat lain. Isi = tawaran
+    // +10 (bila syarat terpenuhi) / cap-stop jujur sekali per giliran /
+    // terminal keras bila model tetap memanggil tool.
+    private fun handleStepCapVc334(tool: String, args: JSONObject, callId: String) {
+        pendingTool = tool to args
+        pendingCallIdVc272 = callId
+        // vc301 SF-C5 (Gas user 12 Nov ~14:58): dialog "Tambah 10
+        // langkah lagi?" adalah perpanjangan BUDGET langkah, bukan
+        // approval per-tool — syaratnya HANYA prefs askExtendSteps
+        // (dipisah dari ToolGate.GATES_DISABLED; vc247 TIDAK
+        // dilanggar — tidak ada gate approval yang dihidupkan
+        // kembali). Syarat lama `!GATES_DISABLED && askExtendSteps`
+        // membuat dialog ini mati total sejak vc247.
+        val ask = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("askExtendSteps", true)
+        // VC303-P3-16 (LP-2): dialog +10 maks 3x per giliran (+30)
+        // + opsi keras (mayExtendVc303): hanya bila ada progres
+        // sejak perpanjangan terakhir (>= 1 tool sukses). Bila
+        // tidak ditawarkan, alur jatuh ke cabang else-if di bawah
+        // (berhenti jujur seperti ask=false) — dialognya sendiri
+        // DIPERTAHANKAN (garis SF-C5), hanya dibatasi.
+        if (ask && AgentPrompt.mayExtendVc303(extendCountVc303, okCountVc303(), extendOkMarkVc303)) {
+            // vc304 B2: giliran background — JANGAN tampilkan dialog
+            // +10 / float di sesi lain; parkir tawaran sampai user
+            // kembali ke sesi pemilik (switchSession menawarkan ulang
+            // via offerExtendStepsVc304). Giliran TIDAK dihentikan.
+            if (SessionBackgroundVc304.shouldParkDecision(turnActive, turnSessionId, currentSessionId)) {
+                extendOfferPendingVc304 = true
+            } else {
+                offerExtendStepsVc304()
+            }
+        } else if (!capStopSentVc277) {
+            // vc277 O15(b): berhenti yang jujur — model diminta
+            // menjawab final dengan format selesai/belum, bukan
+            // diam-diam final. Sekali saja per giliran; bila model
+            // tetap memanggil tool, panggilan itu kena cabang ini
+            // lagi dan jatuh ke addBubble + finish di bawah.
+            capStopSentVc277 = true
+            pendingTool = null
+            val taskVc277 = currentTurnUser.ifBlank { lastUserText }.take(300)
+            // vc334 R2 (B9): call penutup — tools=null, model hanya
+            // boleh jawab final (cap langkah tercapai).
+            sendContinuation("⛔ CAP LANGKAH TERCAPAI — kamu BERHENTI DI TENGAH pada langkah $agentSteps dari $stepBudget untuk tugas: $taskVc277. Jawab FINAL sekarang dengan jujur, format persis: \"berhenti di tengah pada langkah $agentSteps dari tugas $taskVc277 — ini yang sudah selesai: …; ini yang belum: …\". Sebutkan dari kartu tool di atas apa yang sudah selesai dan apa yang belum. JANGAN panggil tool lagi — panggilan tool berikutnya akan ditolak.", closingVc334 = true)
+        } else {
+            pendingTool = null
+            addBubble("⛔ Dihentikan: batas $stepBudget langkah tool per perintah tercapai dan app tidak di depan. Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true)
+            // vc334 R1 (B2): cap-stop terminal menutup giliran
+            // (endUserTurn menutup TurnMetrics sendiri).
+            endTurnErrorVc334(turnGenerationVc334, "anggaran-langkah")
+        }
+    }
+
     private fun proceedTool(tool: String, args: JSONObject, counted: Boolean, callId: String = "") {
         // vc334 R1 (A2): state stop = gerbang PALING ATAS — tool apa pun
         // ditolak tanpa eksekusi selama stop diminta, tanpa bertanya ke
@@ -10718,7 +10803,9 @@ class MainActivity : Activity() {
                     endUserTurn()
                 }
             } else {
-                sendContinuation("⛔ GILIRAN INI DIKUNCI StuckDetector: kamu sudah berputar tanpa progres. JANGAN panggil tool lagi apa pun — jawab FINAL sekarang: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user.")
+                // vc334 R2 (B9): call penutup — tools=null, model hanya
+                // boleh jawab final (giliran dikunci StuckDetector).
+                sendContinuation("⛔ GILIRAN INI DIKUNCI StuckDetector: kamu sudah berputar tanpa progres. JANGAN panggil tool lagi apa pun — jawab FINAL sekarang: laporkan apa yang sudah tercapai, di mana macetnya, dan apa yang kamu butuhkan dari user.", closingVc334 = true)
             }
             return
         }
@@ -10756,49 +10843,7 @@ class MainActivity : Activity() {
             if (agentSteps == 1) emitPhase("act")
             turnUsedTools = true
             if (agentSteps > stepBudget) {
-                pendingTool = tool to args
-                pendingCallIdVc272 = callId
-                // vc301 SF-C5 (Gas user 12 Nov ~14:58): dialog "Tambah 10
-                // langkah lagi?" adalah perpanjangan BUDGET langkah, bukan
-                // approval per-tool — syaratnya HANYA prefs askExtendSteps
-                // (dipisah dari ToolGate.GATES_DISABLED; vc247 TIDAK
-                // dilanggar — tidak ada gate approval yang dihidupkan
-                // kembali). Syarat lama `!GATES_DISABLED && askExtendSteps`
-                // membuat dialog ini mati total sejak vc247.
-                val ask = getSharedPreferences("harness", MODE_PRIVATE).getBoolean("askExtendSteps", true)
-                // VC303-P3-16 (LP-2): dialog +10 maks 3x per giliran (+30)
-                // + opsi keras (mayExtendVc303): hanya bila ada progres
-                // sejak perpanjangan terakhir (>= 1 tool sukses). Bila
-                // tidak ditawarkan, alur jatuh ke cabang else-if di bawah
-                // (berhenti jujur seperti ask=false) — dialognya sendiri
-                // DIPERTAHANKAN (garis SF-C5), hanya dibatasi.
-                if (ask && AgentPrompt.mayExtendVc303(extendCountVc303, okCountVc303(), extendOkMarkVc303)) {
-                    // vc304 B2: giliran background — JANGAN tampilkan dialog
-                    // +10 / float di sesi lain; parkir tawaran sampai user
-                    // kembali ke sesi pemilik (switchSession menawarkan ulang
-                    // via offerExtendStepsVc304). Giliran TIDAK dihentikan.
-                    if (SessionBackgroundVc304.shouldParkDecision(turnActive, turnSessionId, currentSessionId)) {
-                        extendOfferPendingVc304 = true
-                    } else {
-                        offerExtendStepsVc304()
-                    }
-                } else if (!capStopSentVc277) {
-                    // vc277 O15(b): berhenti yang jujur — model diminta
-                    // menjawab final dengan format selesai/belum, bukan
-                    // diam-diam final. Sekali saja per giliran; bila model
-                    // tetap memanggil tool, panggilan itu kena cabang ini
-                    // lagi dan jatuh ke addBubble + finish di bawah.
-                    capStopSentVc277 = true
-                    pendingTool = null
-                    val taskVc277 = currentTurnUser.ifBlank { lastUserText }.take(300)
-                    sendContinuation("⛔ CAP LANGKAH TERCAPAI — kamu BERHENTI DI TENGAH pada langkah $agentSteps dari $stepBudget untuk tugas: $taskVc277. Jawab FINAL sekarang dengan jujur, format persis: \"berhenti di tengah pada langkah $agentSteps dari tugas $taskVc277 — ini yang sudah selesai: …; ini yang belum: …\". Sebutkan dari kartu tool di atas apa yang sudah selesai dan apa yang belum. JANGAN panggil tool lagi — panggilan tool berikutnya akan ditolak.")
-                } else {
-                    pendingTool = null
-                    addBubble("⛔ Dihentikan: batas $stepBudget langkah tool per perintah tercapai dan app tidak di depan. Hasil sementara ada di kartu-kartu tool di atas. (Naikkan batasnya di Setup tombol 26.)", false, turn = true)
-                    // vc334 R1 (B2): cap-stop terminal menutup giliran
-                    // (endUserTurn menutup TurnMetrics sendiri).
-                    endTurnErrorVc334(turnGenerationVc334, "anggaran-langkah")
-                }
+                handleStepCapVc334(tool, args, callId)
                 return
             }
         }
@@ -10985,6 +11030,31 @@ class MainActivity : Activity() {
         }
     }
 
+    // vc334 R2 (B4): SATU-SATUNYA penghitung langkah planner — dipanggil
+    // sekali per panggilan planner yang BENAR-BENAR dieksekusi.
+    // make_plan/update_plan = 1 langkah penuh di bawah plafon
+    // maxToolSteps yang sama (agentSteps++ + cap + TurnMetrics +
+    // StuckDetector), sama seperti tool lain. Anggaran planner TERPISAH
+    // TIDAK dibuat (NEEDS-DECISION D8 — belum diputuskan).
+    // Mengembalikan teks StuckDetector ("" bila tidak ada) atau null bila
+    // cap tercapai (alur cap sudah dijalankan, pemanggil harus return).
+    // Penolakan (validasi / guard T15 / index di luar rentang) TIDAK
+    // memanggil fungsi ini — penolakan tidak memakan langkah, sama
+    // seperti validasi di proceedTool.
+    private fun countPlannerStepVc334(tool: String, args: JSONObject, result: String): String? {
+        agentSteps++
+        if (agentSteps == 1) emitPhase("act")
+        turnUsedTools = true
+        if (agentSteps > stepBudget) { handleStepCapVc334(tool, args, ""); return null }
+        TurnMetrics.recordStep(tool, false, 0, argsHash(args), false)
+        val stuckVc334 = stuckSuffix(tool, args, result)
+        if (stuckVc334.contains("🛑")) {
+            turnStuckBlocked = true
+            try { recordLockedPatternVc303(tool, args) } catch (e: Exception) {}
+        }
+        return stuckVc334
+    }
+
     private fun handlePlannerTool(tool: String, args: JSONObject) {
         // vc282: validasi skema O3 menutup celah bypass — jalur 1-1 ini
         // dipanggil SEBELUM proceedTool, jadi validateArgs di sana tidak
@@ -11005,14 +11075,19 @@ class MainActivity : Activity() {
                 }
                 return
             }
+            val stepsVc334 = ArrayList<String>()
+            val arr = args.optJSONArray("steps")
+            if (arr != null) for (i in 0 until arr.length()) stepsVc334.add(arr.optString(i))
+            // vc334 R2 (B4): planner dihitung 1 langkah penuh SEBELUM
+            // mutasi — cap tercapai = alur cap, bukan rencana gratis.
+            val stuckVc334 = countPlannerStepVc334(tool, args, "Rencana tercatat (${stepsVc334.size} langkah): " + stepsVc334.joinToString("; ")) ?: return
             emitPhase("plan")
             planItems.clear()
-            val arr = args.optJSONArray("steps")
-            if (arr != null) for (i in 0 until arr.length()) planItems.add("☐ " + arr.optString(i))
+            for (s in stepsVc334) planItems.add("☐ " + s)
             persistPlan()
             runOnUiThread {
                 planCard = addActivityRow("🗺️ Rencana", planCountTextVc254(), planStepsTextVc254(), turn = true, tool = "make_plan")
-                sendContinuation("Rencana tercatat (${planItems.size} langkah). Mulai langkah 1 sekarang: panggil tool yang sesuai, jangan mengulang make_plan.")
+                sendContinuation("Rencana tercatat (${planItems.size} langkah). Mulai langkah 1 sekarang: panggil tool yang sesuai, jangan mengulang make_plan." + stuckVc334)
             }
         } else {
             val idx = args.optInt("index", -1)
@@ -11023,11 +11098,14 @@ class MainActivity : Activity() {
                 runOnUiThread { sendContinuation("Hasil tool update_plan DITOLAK SISTEM: index $idx di luar rencana (${planItems.size} langkah, indeks sah 0..${planItems.size - 1}). Tidak ada langkah yang ditandai. Panggil ulang update_plan dengan index yang ada di rencana aktif.") }
                 return
             }
+            // vc334 R2 (B4): planner dihitung 1 langkah penuh SEBELUM
+            // mutasi — cap tercapai = alur cap, bukan centang gratis.
+            val stuckVc334 = countPlannerStepVc334(tool, args, "Langkah ${idx + 1} ditandai selesai.") ?: return
             planItems[idx] = planItems[idx].replace("☐", "☑")
             persistPlan()
             runOnUiThread {
                 setPlanCardVc254()
-                sendContinuation("Langkah ${idx + 1} ditandai selesai. Lanjut ke langkah berikutnya, atau jawab final bila rencana tuntas.")
+                sendContinuation("Langkah ${idx + 1} ditandai selesai. Lanjut ke langkah berikutnya, atau jawab final bila rencana tuntas." + stuckVc334)
             }
         }
     }
@@ -12130,7 +12208,9 @@ class MainActivity : Activity() {
             runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta", turn = true) }
             pendingEndReason = "kill-switch"
             turnStoppedReason = "kill switch F1 dimatikan user"
-            sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.")
+            // vc334 R2 (B9): call penutup — tools=null, model hanya
+            // boleh jawab final (kill switch dimatikan user).
+            sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.", closingVc334 = true)
             return
         }
         // Kunci StuckDetector aktif: serahkan ke proceedTool (cabang kunci
@@ -12158,6 +12238,24 @@ class MainActivity : Activity() {
             var unknownStop = false
             var i = 0
             while (i < batch.size) {
+                // vc334 R2 (A3): stop dicek TIAP iterasi (sebelum tiap
+                // call + sebelum runReadGroupVc273 di bawah) — state stop
+                // R1 (stopRequestedVc306), tanpa flag baru. ■ ditekan di
+                // tengah batch = sisa call skipped (tanpa eksekusi, tanpa
+                // continuation tool) + giliran ditutup lewat jalur
+                // akhir-stop tunggal. Call yang sudah telanjur berjalan
+                // di pool baca dibiarkan selesai (keputusan R1), hasilnya
+                // dibuang lewat token giliran (blok runOnUiThread di
+                // bawah menolak continuation bila token sudah berubah).
+                if (stopRequestedVc306) {
+                    while (i < batch.size) {
+                        val o = batch[i]
+                        outcomes.add(BatchOutcomeVc273(o.optString("tool"), o.optJSONObject("args") ?: JSONObject(), callIds[i], "Tidak dieksekusi — dihentikan user.", null, 0, false, "skipped", "", false, 0))
+                        i++
+                    }
+                    endTurnStopped()
+                    break
+                }
                 if (stopBatch) {
                     val o = batch[i]
                     outcomes.add(BatchOutcomeVc273(o.optString("tool"), o.optJSONObject("args") ?: JSONObject(), callIds[i], "Tidak dieksekusi — batch dihentikan: $stopReason", null, 0, false, "skipped", "", false, 0))
@@ -12263,7 +12361,12 @@ class MainActivity : Activity() {
                     sendBatchResultsVc5b(outcomes, leftover, steerSuffixVc5b)
                     return@runOnUiThread
                 }
-                sendContinuation(combinedVc273 + steerSuffixVc5b, hasToolResult = true)
+                // vc334 R2 (B9): batch kehabisan cap = call penutup
+                // (di dialek teks flag ini tidak berpengaruh — tidak ada
+                // tools yang dikirim — tapi dicatat demi konsistensi
+                // dengan jalur native di sendBatchResultsVc5b).
+                val capSkippedVc334 = outcomes.any { it.kind == "skipped" && it.result.startsWith("Tidak dieksekusi — batas ") }
+                sendContinuation(combinedVc273 + steerSuffixVc5b, hasToolResult = true, closingVc334 = capSkippedVc334)
             }
         }.start()
     }
@@ -12540,7 +12643,9 @@ class MainActivity : Activity() {
             runOnUiThread { addMsg("⛔ Dihentikan: kill switch F1 dimatikan oleh user — tugas dihentikan.", "meta", turn = true) }
             pendingEndReason = "kill-switch"
             turnStoppedReason = "kill switch F1 dimatikan user" // vc232 S4: jawaban final paksa sesudahnya tidak lagi mendapat pill Selesai
-            sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.")
+            // vc334 R2 (B9): call penutup — tools=null, model hanya
+            // boleh jawab final (kill switch dimatikan user).
+            sendContinuation("⛔ F1 DIMATIKAN oleh user (kill switch). HENTIKAN tugas ini sekarang juga: jangan panggil tool lain apa pun, langsung jawab final bahwa tugas dihentikan oleh kill switch F1. Sampaikan ke user: untuk melanjutkan tugas ini nanti, ia harus mengaktifkan lagi F1 lewat Profil > Kill Switch F1 (mematikan kill switch), lalu mengulang perintahnya.", closingVc334 = true)
             return
         }
         val isAutoRetry = autoRetryTools.remove(tool)

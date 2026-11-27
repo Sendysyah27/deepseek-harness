@@ -95,6 +95,7 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/ToolFallbackTest.kt" \
   "$PROJ/app/src/test/VerificationRemovedTest.kt" \
   "$PROJ/app/src/test/StopButtonVc334Test.kt" \
+  "$PROJ/app/src/test/StopButtonVc334R2Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -142,6 +143,9 @@ java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.Veri
 
 echo "== jalankan StopButtonVc334Test =="
 java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.StopButtonVc334TestKt
+
+echo "== jalankan StopButtonVc334R2Test =="
+java -Dproj.dir="$PROJ" -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.StopButtonVc334R2TestKt
 
 echo "== jalankan BrainBackupG7Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt
