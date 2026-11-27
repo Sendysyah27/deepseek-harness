@@ -776,6 +776,7 @@ import java.io.File
                     prevTurnResultIdsVc286.clear() // vc286: jendela 2 giliran ikut wipe
                     prevTurnResultIdsSessionVc286 = -1
                     WorkNotesVc301.clearSession(this, currentSessionId) // vc301 SF-D2: catatan kerja + status ikut wipe
+                    try { SessionMessagesStore(filesDir).deleteAll() } catch (e: Exception) {} // vc335 R1 (D1): file messages semua sesi ikut wipe
                     TurnMetrics.clearSnapshot(this)
                     try { ResultStore.wipe(this) } catch (e: Exception) {}
                     try { java.io.File(filesDir, "dump/harness-prompt-last.txt").delete() } catch (e: Exception) {}

@@ -4848,6 +4848,7 @@ class MainActivity : Activity() {
         toolChoiceRepairVc282 = 0
         // F5b: reset state giliran openai-native (cermin blok reset di atas).
         openaiTurnMessagesVc5b.clear()
+        turnPersistMessagesVc335 = false // vc335 R1 (D1): persist per giliran, reset di sini
         openaiTextFallbackVc5b = false
         openaiToolRepairVc5b = 0
         openaiRoleFallbackArmedVc5b = false
@@ -9193,14 +9194,16 @@ class MainActivity : Activity() {
     }
 
     // vc322: delta giliran 1-1 dulu dikirim lewat parameter kedua
-    // sendToAgent (jangkar + perintah user + work-notes) — vc334 R3
-    // (B7): parameter itu DIHAPUS karena tidak pernah dibaca di badan
-    // sendToAgent; yang dikirim selalu prompt penuh. Mesin delta
-    // (AgentPrompt.deltaTurnPromptVc327 / deltaExtractPromptVc330)
-    // dipertahankan, menunggu keputusan D1 — jangan hapus.
-    // Governor tetap dihitung dari prompt penuh (konservatif — kuota
-    // tidak berubah).
-    private fun sendToAgent(prompt: String) {
+    // sendToAgent (jangkar + perintah user + work-notes) — vc335 R1
+    // (D1): mesin delta HIDUP kembali. Bila deltaVc335 diisi (oleh
+    // dispatchTurn) DAN ada messages terpersist untuk sesi ini
+    // (SessionMessagesVc335.canUseDelta), yang dikirim adalah messages
+    // terpersist + SATU pesan user delta — prompt penuh TIDAK dibangun
+    // ulang / dikirim ulang. Bila tidak ada messages terpersist (sesi
+    // baru) atau giliran bukan native, perilaku lama dipertahankan:
+    // SATU pesan user berisi prompt penuh. Governor tetap dihitung
+    // dari messages yang benar-benar dikirim (helper).
+    private fun sendToAgent(prompt: String, deltaVc335: String? = null) {
         statusTv.text = "Models API: berpikir…"
         beginStreamBubble()
         // FULL MIGRATION: engine "openai" = otak Models API (OpenAI-compatible).
@@ -9231,10 +9234,33 @@ class MainActivity : Activity() {
                 openaiTurnMessagesVc5b.clear()
                 openaiTurnMessagesVc5b.add(ChatMessage("user", prompt))
             }
+            val nativeVc5b = openaiNativeActiveVc5b()
+            // vc335 R1 (D1): giliran native 1-1 dengan delta — ganti daftar
+            // kirim dengan messages TERPERSIST + delta (bukan prompt penuh
+            // yang baru dibangun). canUseDelta=false (sesi baru / belum
+            // ada anchor user) -> tetap prompt penuh seperti biasa.
+            // turnPersistMessagesVc335 disetel di sini (dipakai endUserTurn
+            // untuk menyimpan daftar akhir giliran).
+            var sentPromptVc335 = prompt
+            if (!internalTurn && nativeVc5b && deltaVc335 != null) {
+                val persistedVc335 = try {
+                    SessionMessagesStore(filesDir).load(currentSessionId)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+                if (SessionMessagesVc335.canUseDelta(persistedVc335)) {
+                    val nextVc335 = SessionMessagesVc335.nextTurnMessages(
+                        persistedVc335, prompt, deltaVc335
+                    )
+                    openaiTurnMessagesVc5b.clear()
+                    openaiTurnMessagesVc5b.addAll(nextVc335)
+                    sentPromptVc335 = deltaVc335
+                }
+            }
+            turnPersistMessagesVc335 = !internalTurn && nativeVc5b
             val messagesVc5b: List<ChatMessage> =
                 if (internalTurn) listOf(ChatMessage("user", prompt))
                 else openaiTurnMessagesVc5b.toList()
-            val nativeVc5b = openaiNativeActiveVc5b()
             // F5b: tools + tool_choice NATIVE (ganti pseudo vc282).
             // - native: tools = ToolRegistry.ALL (helper mengonversi
             //   sendiri via toolsToJson → toolsJson, excluded tersaring).
@@ -9258,8 +9284,8 @@ class MainActivity : Activity() {
             // handleAgentResponse memang dirancang dipanggil dari sana
             // (addMsg/addBubble mem-post ke UI thread sendiri).
             turnSource = "Models API"
-            dumpPromptLast(prompt)
-            recordSendPoint(prompt)
+            dumpPromptLast(sentPromptVc335)
+            recordSendPoint(sentPromptVc335)
             // vc334 R1: generasi giliran saat thread ini dimulai — catch
             // di bawah hanya boleh menutup giliran ini, bukan giliran baru.
             val genVc334 = turnGenerationVc334
@@ -9462,6 +9488,24 @@ class MainActivity : Activity() {
             // per-giliran bersih. planItems/turnWork TIDAK direset
             // (restorePlan + turnJournal di atas yang memulihkannya).
             resetTurnStateVc334()
+            // vc335 R1 (D1): resume sesudah proses mati — muat messages
+            // terpersist sesi ini ke daftar giliran, supaya lanjutan
+            // native (continueOpenaiVc5b) mengirim riwayat yang benar,
+            // bukan mulai dari daftar kosong. Tanpa ini resume kehilangan
+            // konteks giliran yang terputus. turnPersistMessagesVc335
+            // SENGAJA tidak disetel di sini: giliran resume tidak
+            // dipersist (isinya lanjutan, bukan giliran native penuh) —
+            // giliran 1-1 berikut tetap memakai file dari giliran
+            // terakhir yang tersimpan utuh.
+            if (AgentEngines.current(this) == "openai") {
+                try {
+                    val resumedVc335 = SessionMessagesStore(filesDir).load(currentSessionId)
+                    if (SessionMessagesVc335.canUseDelta(resumedVc335)) {
+                        openaiTurnMessagesVc5b.addAll(resumedVc335)
+                    }
+                } catch (e: Exception) {
+                }
+            }
             addMsg("↻ Sesi sebelumnya terputus di tengah jalan — kulanjutkan dari checkpoint.", "meta", turn = true)
             sendContinuation("Sesi terputus di tengah jalan (app ditutup / proses dibunuh sistem) saat mengerjakan perintah user: \"$user\". Lanjutkan tugas itu dari keadaan terakhir: cek jejak tool & rencana di konteks, jangan mengulang langkah yang sudah selesai, lalu selesaikan dan laporkan hasilnya." + trail)
         } catch (e: Exception) {}
@@ -9500,7 +9544,30 @@ class MainActivity : Activity() {
         // delta TIDAK LAGI dikirim (param sendToAgent dihapus — tidak
         // pernah dibaca); yang dikirim prompt penuh seperti biasa.
         // Mesin delta dipertahankan, menunggu keputusan D1.
-        sendToAgent(toSendVc240)
+        // vc335 R1 (D1): KEPUTUSAN D1 HIDUP — messages kini dipersist
+        // per sesi (SessionMessagesVc335), jadi delta DIKIRIM lagi:
+        // sendToAgent memakai messages terpersist + delta ini bila
+        // canUseDelta, dan prompt penuh di atas HANYA dipakai bila sesi
+        // belum punya messages terpersist. CATATAN JUJUR: prompt penuh
+        // di atas TETAP dibangun tiap giliran (biaya CPU lokal) karena
+        // work-notes + auto-save block delta diambil darinya; yang
+        // dihemat D1 adalah BYTES YANG DIKIRIM ke provider (delta
+        // ~1–2rb char vs prompt penuh ~60–90rb char). Melewati build
+        // prompt penuh saat delta berlaku adalah optimasi lanjutan
+        // (butuh refactor onUserMessage) — sengaja DITUNDA ronde ini
+        // supaya diff R1 kecil dan aman.
+        val deltaVc335: String? = if (AgentEngines.current(this) == "openai") {
+            try {
+                AgentPrompt.deltaTurnPromptVc327(
+                    rawUser,
+                    AgentPrompt.workNotesBlockVc302(this, currentSessionId),
+                    AgentPrompt.autoSaveBlockVc327(promptNoUser)
+                )
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+        sendToAgent(toSendVc240, deltaVc335)
     }
 
 
@@ -11277,6 +11344,11 @@ class MainActivity : Activity() {
     //   fallback "Hasil tool <nama> ...", karena ChatMessage tool tidak
     //   membawa nama).
     private var openaiTurnMessagesVc5b: MutableList<ChatMessage> = ArrayList()
+    // vc335 R1 (D1): true bila giliran ini berjalan native 1-1 dan daftar
+    // messages-nya BOLEH dipersist di endUserTurn (hanya giliran native
+    // non-internal; dialek teks + ekstraksi internal TIDAK dipersist —
+    // daftarnya bukan riwayat percakapan yang benar).
+    private var turnPersistMessagesVc335: Boolean = false
     private var openaiTextFallbackVc5b: Boolean = false
     private var openaiToolRepairVc5b: Int = 0
     private var openaiRoleFallbackArmedVc5b: Boolean = false
@@ -11375,6 +11447,21 @@ class MainActivity : Activity() {
         // Idempotent: bila clearTurnCheckpoint sudah flush lebih dulu,
         // panggilan ini no-op.
         flushTurnWork(currentSessionId)
+        // vc335 R1 (D1): simpan daftar messages giliran ini untuk sesi
+        // giliran ini (turnSessionId) — endUserTurn adalah corong TUNGGAL
+        // semua akhir giliran (normal/stop/error). Hanya bila giliran ini
+        // native 1-1 (turnPersistMessagesVc335, disetel sendToAgent):
+        // dialek teks + ekstraksi internal tidak dipersist. Best-effort:
+        // gagal simpan tidak menggagalkan penutupan giliran, dan giliran
+        // berikut tetap jalan (jatuh ke prompt penuh bila file tidak ada).
+        // Disimpan SEBELUM antrean follow-up dikonsumsi — giliran berikut
+        // memuat file yang sudah berisi giliran ini.
+        if (turnPersistMessagesVc335 && openaiTurnMessagesVc5b.isNotEmpty()) {
+            try {
+                SessionMessagesStore(filesDir).save(turnSessionId, openaiTurnMessagesVc5b)
+            } catch (e: Exception) {
+            }
+        }
         // vc334 R1 (B3): SEMUA pintu keluar giliran membersihkan
         // checkpoint — giliran yang berakhir (normal/gagal/dihentikan)
         // tidak boleh di-resume. Idempotent (clearTurnCheckpoint flush

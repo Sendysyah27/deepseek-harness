@@ -105,6 +105,8 @@ echo "== kompilasi test Kotlin =="
   "$PROJ/app/src/test/VisionPathsVc334R4Test.kt" \
   "$PROJ/app/src/test/SkillsVc334R5Test.kt" \
   "$PROJ/app/src/test/MinorsSweepVc334R6Test.kt" \
+  "$PROJ/app/src/main/java/com/senzwh/deepharness/SessionMessagesVc335.kt" \
+  "$PROJ/app/src/test/PersistMessagesVc335R1Test.kt" \
   "$PROJ/app/src/main/java/com/senzwh/deepharness/PrefsSafe.kt" \
   "$PROJ/app/src/test/BrainBackupG7Test.kt"
 
@@ -173,6 +175,9 @@ java -Dproj.dir="$PROJ" -Djava.net.preferIPv6Addresses=true -cp "$OUT:$STDLIB:$J
 
 echo "== jalankan BrainBackupG7Test =="
 java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.BrainBackupG7TestKt
+
+echo "== jalankan PersistMessagesVc335R1Test =="
+java -cp "$OUT:$STDLIB:$JSON_JAR" com.senzwh.deepharness.PersistMessagesVc335R1TestKt
 
 echo "== jalankan test_flavor.py =="
 python3 "$PROJ/tools/test_flavor.py"

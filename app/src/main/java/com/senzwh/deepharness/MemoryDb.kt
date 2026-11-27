@@ -1680,6 +1680,9 @@ class MemoryDb private constructor(ctx: Context) :
                 WorkNotesVc301.clearSession(appCtx, id)
                 appCtx.getSharedPreferences("harness", Context.MODE_PRIVATE).edit().remove("planJson_" + id).apply()
             } catch (e: Exception) {}
+            // vc335 R1 (D1): file messages sesi ini ikut terhapus —
+            // tanpa ini file yatim hidup selamanya walau sesi sudah dihapus.
+            try { SessionMessagesStore(appCtx.filesDir).delete(id) } catch (e: Exception) {}
             r
         } catch (e: Exception) { id }
     }

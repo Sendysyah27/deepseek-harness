@@ -424,15 +424,27 @@ fun main() {
         "\n    /** F5b: konteks ringkas")
 
     // ---- B7: parameter mati deltaPrompt hilang.
+    // vc335 R1 (D1): B7 DICABUT — keputusan D1 yang ditunggu B7 sudah
+    // diambil: messages dipersist per sesi (SessionMessagesVc335), jadi
+    // delta HIDUP kembali. Dua cek di bawah diperbarui dari "delta TIDAK
+    // dipakai" menjadi penegak kontrak D1 yang baru (tanda tangan +
+    // call-site delta); cek lain B7 tetap berlaku apa adanya.
     checkR3("B7 MainActivity: TIDAK ADA lagi kata deltaPrompt",
         !main.contains("deltaPrompt"),
         "parameter mati masih ada / komentar mengklaimnya hidup")
-    checkR3("B7 sendToAgent: tanda tangan satu argumen",
-        main.contains("private fun sendToAgent(prompt: String)"),
-        "tanda tangan masih dua argumen")
-    checkR3("B7 call-site dispatchTurn: sendToAgent(toSendVc240) tanpa delta",
-        dispatchFn.contains("sendToAgent(toSendVc240)"),
-        "call-site masih mengoper delta")
+    checkR3("B7 (vc335 R1 D1: B7 dicabut — delta HIDUP) sendToAgent: tanda tangan (prompt, deltaVc335?)",
+        main.contains("private fun sendToAgent(prompt: String, deltaVc335: String? = null)"),
+        "tanda tangan bukan (prompt, deltaVc335? = null)")
+    checkR3("B7 (vc335 R1 D1) call-site dispatchTurn: sendToAgent(toSendVc240, deltaVc335)",
+        dispatchFn.contains("sendToAgent(toSendVc240, deltaVc335)"),
+        "call-site tidak mengoper delta")
+    checkR3("B7 (vc335 R1 D1) dispatchTurn membangun delta via deltaTurnPromptVc327",
+        dispatchFn.contains("AgentPrompt.deltaTurnPromptVc327("),
+        "delta tidak dibangun di dispatchTurn")
+    checkR3("B7 (vc335 R1 D1) sendToAgent memakai messages terpersist (nextTurnMessages + canUseDelta)",
+        sendToAgentFn.contains("SessionMessagesVc335.nextTurnMessages(") &&
+            sendToAgentFn.contains("SessionMessagesVc335.canUseDelta("),
+        "sendToAgent tidak memakai messages terpersist")
     checkR3("B7 call-site sendContinuation: sendToAgent(finalTxt) tanpa delta",
         main.contains("sendToAgent(finalTxt)"),
         "call-site masih mengoper delta")
